@@ -7,6 +7,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pixelart import Canvas, P, text_width  # noqa: E402
+import wire  # noqa: E402
 
 W, H = 384, 216
 GROUND = 152          # pavement top
@@ -211,18 +212,17 @@ def rain(c: Canvas, rng):
         c.set(x, y, (150, 170, 200, 255))
 
 
-def hud(c: Canvas):
-    c.panel(6, 5, 96, 13, border=P["grey"])
-    c.text(10, 8, "day 3  18:40", P["white"])
-    c.panel(276, 5, 102, 13, border=P["gold"])
-    c.text(280, 8, "$1,280", P["gold"])
-    c.text_r(374, 8, "xp 240", P["grey"])
-    c.panel(6, 21, 96, 23, border=P["grey_dk"])
-    c.text(10, 24, "energy", P["grey"])
-    c.meter(54, 24, 42, 5, 0.62, P["neon_green"])
-    c.text(10, 33, "focus", P["grey"])
-    c.meter(54, 33, 42, 5, 0.40, P["neon_cyan"])
-    c.text(10, 41, "", P["grey"])
+def hud(c: Canvas, dy=0):
+    c.panel(6, 5 + dy, 96, 13, border=P["grey"])
+    c.text(10, 8 + dy, "day 3  18:40", P["white"])
+    c.panel(276, 5 + dy, 102, 13, border=P["gold"])
+    c.text(280, 8 + dy, "$1,280", P["gold"])
+    c.text_r(374, 8 + dy, "xp 240", P["grey"])
+    c.panel(6, 21 + dy, 96, 23, border=P["grey_dk"])
+    c.text(10, 24 + dy, "energy", P["grey"])
+    c.meter(54, 24 + dy, 42, 5, 0.62, P["neon_green"])
+    c.text(10, 33 + dy, "focus", P["grey"])
+    c.meter(54, 33 + dy, 42, 5, 0.40, P["neon_cyan"])
 
 
 def incident(c: Canvas):
@@ -260,7 +260,7 @@ def player(c: Canvas):
     c.text_c(x + 6, y - 16, "you", P["white"], shadow=P["ink"])
 
 
-def main():
+def render(with_wire=True):
     rng = random.Random(11)
     c = Canvas(W, H)
     sky(c, rng)
@@ -270,10 +270,19 @@ def main():
     tram(c, 16, 152)
     rain(c, rng)
     player(c)
-    hud(c)
+    if with_wire:
+        wire.bar(c, "player", "AMING LANDED THE BANK NOC CONTRACT - $3,400",
+                 queue=(5, 1), dwell=0.55)
+        hud(c, dy=wire.WIRE_H)
+    else:
+        hud(c)
     incident(c)
     footer(c)
-    c.save("01-city-night.png", scale=3)
+    return c
+
+
+def main():
+    render().save("01-city-night.png", scale=3)
 
 
 if __name__ == "__main__":

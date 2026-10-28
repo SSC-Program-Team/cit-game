@@ -24,6 +24,7 @@ All mockups are generated pixel art (native 384×216, 3× upscale), not AI image
 | [Job ticket + diagnostic console](docs/mockups/02-job-console.png) | the learning surface: read real console output, name the fault |
 | [Home network build](docs/mockups/03-home-network.png) | the housing capstone: plan, cable, score coverage/cost/security |
 | [The ladder](docs/mockups/04-progression.png) | housing tiers and the employed / own-business fork |
+| [The wire](docs/mockups/05-wire.png) | the headline strip: live news, richest-player fallback, breaking push |
 
 Regenerate them:
 
@@ -41,5 +42,6 @@ local-first saves with export/import. See §8 of the design document.
 
 ## Open decisions
 
-Five questions are waiting on the teacher in §12 of the design doc — syllabus binding,
-lesson shape, grades vs practice, business-sim scope, and who authors content.
+Seven questions are waiting on the teacher in §12 of the design doc — syllabus binding,
+lesson shape, grades vs practice, business-sim scope, who authors content, whether the
+leaderboard needs a real backend at launch, and how player handles are chosen.

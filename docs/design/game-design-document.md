@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | Concept v0.1 — direction agreed, systems drafted, demo not yet built |
+| **Status** | Concept v0.2 — direction agreed, systems drafted, wire spec'd, demo not yet built |
 | **Owner** | Ryan (ICT) · SSC-Program-Team |
 | **Repo** | `SSC-Program-Team/cit-game` |
 | **Platform** | Browser, desktop-first, keyboard-playable, offline-capable |
@@ -172,6 +172,33 @@ Two clocks: the **job clock** (the timed ticket) and the **city clock** (the wor
 - **Certs** (in-game, modelled on real ones): "CIT Certified Technician I/II", "Network Specialist", "Security Fundamentals". Each requires a mastery threshold and a practical exam job — never a multiple-choice test.
 - **Skill tree:** Diagnostics (faster checks), Configuration (fewer rework ticks), Security (audit reveals), Business (better quotes, staff quality).
 
+### 4.8 The wire — the headline strip
+
+Ten pixels at the top of every screen carry the world: who just landed a job, what broke, what parts cost this week, who is richest. It is the only part of the game that talks about other people, and it is what makes a solo session feel like a server.
+
+![The wire](../mockups/05-wire.png)
+
+| Slug | Content | Dwell | Source |
+|---|---|---|---|
+| `WIRE` | world + city news | 6 s | server events |
+| `MKT` | parts, rent, wage index | 2.5 s | economy ticks |
+| `ALERT` | distress call — a live job on the board | 6 s | job generator |
+| `JOBS` | a player landed / promoted / bought / certified | 6 s | validated player events |
+| `RICH` | the money leaderboard (fallback) | 8 s | standings query |
+| `LIVE` | breaking push, two lines, red | until dismissed | city events |
+
+**Rotation.** Newest first, then severity; one item at a time, 5-item window, queue pips on the right so the player knows the strip repeats. An item is never cut mid-word.
+
+**Fallback.** If the server produced no event in six in-game hours, the strip becomes `RICH` — the top four by money, class-scoped, with the player's own row in gold wherever they sit. The strip is never empty and never shows "no news"; a dead feed is worse than a boring one. `TAB` opens the full wire log and the full standings.
+
+**Breaking.** Typhoons, district outages, a client going dark, and one-per-session emergencies. It interrupts the city screen *and* the job screen, pauses nothing (the job clock keeps running), and `T` opens the story. Never more than one per session.
+
+**Interaction.** `ENTER` on an `ALERT` item opens the job board with that ticket pre-selected — the wire doubles as the job market, which is how real technicians find work.
+
+**Flip, not crawl.** A Bloomberg crawl at this font scrolls ~9 characters per second; a second-language reader loses the start of the sentence before it finishes. Default is a snap-flip with a dwell bar and queue pips; continuous crawl is a settings toggle for teachers who want atmosphere on a projector. `P` pauses the strip, and it pauses on keyboard focus.
+
+**During a job the strip shrinks to 0 px** except for `LIVE` — a ticker above a diagnostic console is a distraction tax on the exact task being assessed.
+
 ---
 
 ## 5. Learning design
@@ -271,6 +298,24 @@ cit-game/
 - **Testing:** Vitest on systems; Playwright smoke that plays all three demo jobs headless; a `sim:balance` script that runs 200 bot-played sessions to check the money curve before any tuning ships.
 - **Accessibility:** full keyboard play, remappable keys, text scale 1×/2×, colour never the only signal (shape + label for pass/fail), particle toggle, no flashing above 3 Hz, and a hard budget of **< 5 MB total assets** so it runs on a lab laptop over school Wi-Fi.
 
+### 8.1 The wire feed
+
+The strip has three sources, and which one ships when decides the whole backend story.
+
+| Version | Source | Why |
+|---|---|---|
+| v0.1 demo | `content/wire/npc_careers.json` — a scripted cast of 12 NPC technicians with their own careers | a class of three at 8 a.m. must not see an empty feed; the simulated world *is* the feature at this stage |
+| v1.0 class | server events from validated player completions | one class, one teacher, class-scoped standings |
+| v2.0 school | same table, more classes, opt-in global | comparison pressure is opt-in, never default |
+
+**Server-authoritative money, or no leaderboard.** The client never reports what it earned. On job completion it submits `{jobId, seed, taskLog, durationMs}`; the server replays the deterministic systems with that seed and derives the fee, mastery delta and rank. Only a replay that matches emits `player.job.completed`, and only those events can move the standings. This is the entire reason the systems in §8 are pure functions — a leaderboard that trusts `localStorage` is a leaderboard of whoever opened devtools.
+
+Additional guards: fee caps (a job can never pay more than its `fee × 1.2`), rate limits per handle, no client-supplied timestamps, and a teacher `unpublish` that hides any offending headline without deleting the event.
+
+**Text is templated, never authored.** Headlines are filled from validated fields (`{handle} landed the {jobTier} contract at {client}`, `{district} fibre cut — {n} client jobs at risk`). No student ever types a string that reaches another student's screen — that single rule removes abuse, doxxing and moderation from the problem list. Handles are generated at first run from a school-safe word list, with a custom option that is filtered and teacher-visible.
+
+**Privacy (PDPO).** The feed stores a handle, a money figure and a rank — no real names, no classes visible outside the class, no per-student event history retained past the term. Export and delete on request, and the whole feature can be switched off per class: some classes should not have a money ranking, and that is the teacher's call, not the design's.
+
 ---
 
 ## 9. v1 demo — one lesson
@@ -292,6 +337,7 @@ cit-game/
 5. Save survives a browser restart, and export/import round-trips.
 6. Works keyboard-only, at 60 fps on a 2019 lab laptop, under 5 MB.
 7. Editing one JSON file (e.g. the subnet requirement in job 2) changes the game with no code change, and CI rejects a malformed edit.
+8. The wire runs on the simulated NPC cast with at least 8 headline templates, falls back to `RICH` after six empty hours, and never shows an empty strip.
 
 **Explicitly out of scope for v1:** housing builds, business sim, MTR/districts, Chinese, accounts, leaderboards, mobile layout.
 
@@ -322,6 +368,9 @@ cit-game/
 | **Lab hardware** | old laptops, no GPU, school Wi-Fi | canvas fallback, < 5 MB, offline-capable, no server dependency |
 | **Data privacy** | student mastery data is personal data under the PDPO | local-first by default; any sync is opt-in, school-owned, documented |
 | **Teacher workload** | authoring 300 tasks is a term's work | generators for numeric topics; JSON import for existing question banks |
+| **Leaderboard inflation** | any client-trusted money figure is a cheat magnet, and a fake rich list kills trust in the whole scoreboard | server-side replay of the task log; fee caps; standings only from validated events |
+| **Comparison pressure** | a public ranking of money makes a slow learner feel ranked, not taught | class-scoped, handles only, off by default for S4, teacher switch, and the strip never sorts by mastery |
+| **Wire as noise** | a moving strip above a diagnostic console steals attention from the assessed task | strip collapses to 0 px during a job; `LIVE` only; pause on focus; reduced-motion mode |
 
 ---
 
@@ -332,6 +381,8 @@ cit-game/
 3. **Grades or practice** — do you want mastery exported into the marksheet, or is this deliberately outside assessment? *Recommendation: practice first; export behind a flag.*
 4. **Business sim** — is "run your own shop" essential to the story or a late optional branch? It is the most expensive system in the design. *Recommendation: v0.3 optional branch, employed track is the main line.*
 5. **Who authors content** — you writing JSON by hand, or an in-game authoring tool for you and other ICT teachers? *Recommendation: JSON + generators for v1, authoring tool only if a second school adopts it.*
+6. **Does "the server" mean a real backend at launch?** A shared class leaderboard needs accounts, a Postgres table and replay validation — a week of work that teaches nothing. *Recommendation: v0.1 ships the wire on the simulated NPC cast with no backend at all; the real feed lands in v1.0 when there is a class actually playing.*
+7. **Handles** — generated school-safe names, or do students pick their own (filtered)? *Recommendation: generated by default, custom opt-in and teacher-visible.*
 
 ---
 
