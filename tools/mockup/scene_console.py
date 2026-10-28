@@ -85,7 +85,7 @@ def cafe(rng) -> Canvas:
 
 def laptop(c: Canvas):
     """The one surface allowed a border: your screen, sitting on the counter."""
-    x, y, w, h = 104, 40, 268, 122
+    x, y, w, h = 104, 38, 272, 124
     c.rect(x, y, w, h, (28, 30, 38, 255))
     c.rect(x + 2, y + 2, w - 4, h - 4, (10, 12, 18, 255))
     c.hline(x, y, w, (86, 90, 110, 255))
@@ -135,9 +135,10 @@ def main():
     ticket(c)
     note(c)
     laptop(c)
-    ui.prompt(c, 190, ["[1] wrong mask", "[2] not forwarding", "[3] printer"],
+    ui.prompt(c, 196, ["[1] wrong mask", "[2] not forwarding", "[3] printer"],
               active=1, gap=18)
-    c.text(8, 205, "h  call the master  -$80", P["grey"])
+    ui.scrim(c, 0, 204, W, 12, 208)
+    c.text(8, 208, "h  call the master  -$80", P["grey"])
     c.save("02-job-console.png", scale=3)
 
 

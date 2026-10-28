@@ -42,7 +42,7 @@ def road(c: Canvas, x, y, w, h, vertical=False):
     c.rect(x, y, w, h, ASPH)
     c.dither(x, y, w, h, ASPH_2, 3)
     if vertical:
-        for ty in range(y, y + h, 16):
+        for ty in range(y, y + h - 7, 16):
             c.rect(x + w // 2 - 1, ty, 2, 8, (200, 194, 150, 255))
         c.vline(x, y, h, CURB)
         c.vline(x + w - 1, y, h, CURB)
@@ -150,7 +150,7 @@ def render(with_wire=True) -> Canvas:
     sidewalk(c, 0, ROAD_Y + 36, W, 12)                 # south walk
     road(c, 0, ROAD_Y, W, 36)
     c.rect(ROAD_X, 0, 36, H, ASPH)                      # cross street
-    road(c, ROAD_X, ROAD_Y - 12, 36, ROAD_Y + 48, vertical=True)
+    road(c, ROAD_X, ROAD_Y - 12, 36, H - (ROAD_Y - 12), vertical=True)
     sidewalk(c, ROAD_X - 12, 0, 12, H)
     sidewalk(c, ROAD_X + 36, 0, 12, H)
 
@@ -204,11 +204,14 @@ def render(with_wire=True) -> Canvas:
                  w=W, queue=(4, 1), dwell=0.4)
         y = 16 + wire.H
         ui.scrim(c, 0, y - 4, W, 14, 150)
-        c.text(300, y, "18:40", P["white"])
-        c.text(342, y, "$1,280", P["gold"])
-        ui.energy(c, 388, y, 3)
+        ui.scrim(c, 0, y - 4, 112, 14, 165)
+        c.text(8, y, "sham shui po", P["grey"])
+        c.text(274, y, "18:40", P["white"])
+        c.text(312, y, "$1,280", P["gold"])
+        ui.bolt(c, 352, y - 1)
+        ui.energy(c, 358, y, 3)
         ui.prompt(c, 196, ["[e] talk to chan tai", "[m] map", "[tab] jobs"], active=0)
-        c.text_r(376, 187, "sham shui po", P["grey"])
+
     return c
 
 

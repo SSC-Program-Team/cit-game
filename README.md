@@ -13,6 +13,7 @@ accept is a real networking task, scored.
 ## Read this first
 
 - **[Game design document](docs/design/game-design-document.md)** — pillars, systems, curriculum mapping, demo scope, risks, open questions.
+- **[Layout spec](docs/design/layout-spec.md)** — the grid every screen is drawn to, and the defects the visual pass caught.
 
 ## Visual direction
 
@@ -31,7 +32,8 @@ All mockups are generated pixel art (native 384×216, 3× upscale), not AI image
 Regenerate them:
 
 ```bash
-python3 tools/mockup/build.py     # needs Pillow + Noto Sans CJK HK
+python3 tools/mockup/build.py                     # needs Pillow + Noto Sans CJK HK
+PIXEL_AUDIT=1 python3 tools/mockup/build.py       # also reports anything drawn off-canvas
 ```
 
 `tools/mockup/pixelart.py` holds the canonical palette and the 5×7 bitmap font,

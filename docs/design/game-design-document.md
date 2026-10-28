@@ -328,6 +328,8 @@ The first pass at these mockups was a dashboard: eleven bordered panels, five HU
 
 **The 5-second test** applies to every screen before it ships: hide the UI, ask a student who has not played what they would do next. If they cannot say, the screen has too much on it — and the fix is deletion, not another tooltip.
 
+The numbers these rules resolve to — margins, anchors, type scale, touch minimums, and the character budget — live in [`layout-spec.md`](layout-spec.md), with `PIXEL_AUDIT=1` as the machine check for anything drawn off-canvas.
+
 Concretely, what that removed:
 
 | Cut | Was | Now |

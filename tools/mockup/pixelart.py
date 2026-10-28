@@ -123,6 +123,19 @@ _F = {
 }
 FONT_W, FONT_H, FONT_SP = 5, 7, 1
 
+AUDIT = os.environ.get("PIXEL_AUDIT") == "1"
+AUDIT_LOG: dict[str, list[int]] = {}
+
+
+def audit_report():
+    """right / bottom / left / top overshoot in px, per canvas name."""
+    for name, (r, b, l, t) in sorted(AUDIT_LOG.items()):
+        if r or b:
+            print(f"  CLIPPED {name}: +{r}px right, +{b}px bottom")
+        if l > 8 or t > 8:
+            print(f"  BLEED   {name}: -{l}px left, -{t}px top (check it is deliberate)")
+    AUDIT_LOG.clear()
+
 
 def text_width(s: str, scale: int = 1) -> int:
     return max(0, len(s) * (FONT_W + FONT_SP) * scale - FONT_SP * scale)
@@ -145,13 +158,26 @@ def cjk_text(text: str, size: int = 12, color=None, threshold: int = 96) -> Imag
 
 
 class Canvas:
-    def __init__(self, w: int = 384, h: int = 216, bg=None):
+    def __init__(self, w: int = 384, h: int = 216, bg=None, name: str = ""):
+        self.name = name or "canvas"
         self.w, self.h = w, h
         self.img = Image.new("RGBA", (w, h), bg or P["night0"])
         self.px = self.img.load()
 
     # -- primitives ---------------------------------------------------------
     def set(self, x, y, c):
+        if AUDIT and not (0 <= x < self.w and 0 <= y < self.h):
+            # layout QA: anything drawn past the canvas edge never reaches the player
+            AUDIT_LOG.setdefault(self.name, [0, 0, 0, 0])
+            rec = AUDIT_LOG[self.name]
+            if x >= self.w:
+                rec[0] = max(rec[0], int(x) - self.w + 1)
+            if y >= self.h:
+                rec[1] = max(rec[1], int(y) - self.h + 1)
+            if x < 0:
+                rec[2] = max(rec[2], -int(x))
+            if y < 0:
+                rec[3] = max(rec[3], -int(y))
         if 0 <= x < self.w and 0 <= y < self.h:
             self.px[int(x), int(y)] = c
 

@@ -26,12 +26,12 @@ def room(rng) -> Canvas:
     c.hline(0, 170, W, (86, 62, 44, 255))
 
     # window onto the street: rain and neon spill
-    c.rect(236, 16, 140, 54, (18, 22, 36, 255))
-    c.frame(236, 16, 140, 54, (70, 66, 62, 255))
+    c.rect(236, 12, 140, 50, (18, 22, 36, 255))
+    c.frame(236, 12, 140, 50, (70, 66, 62, 255))
     for _ in range(70):
-        c.set(rng.randrange(240, 372), rng.randrange(20, 66), (110, 140, 170, 255))
-    c.alpha_rect(240, 50, 132, 18, (255, 90, 150), 34)
-    c.vline(306, 16, 54, (70, 66, 62, 255))
+        c.set(rng.randrange(240, 372), rng.randrange(16, 60), (110, 140, 170, 255))
+    c.alpha_rect(240, 44, 132, 16, (255, 90, 150), 34)
+    c.vline(306, 12, 50, (70, 66, 62, 255))
 
     # one chair, so the floor is not empty
     c.rect(332, 150, 34, 40, (40, 36, 48, 255))
@@ -43,14 +43,14 @@ def room(rng) -> Canvas:
 
 
 def title(c: Canvas):
-    c.text(14, 24, "netlife", P["white"], scale=3)
-    c.text(16, 50, "hong kong", P["grey"])
-    c.text(16, 60, "season 2  -  week 4", P["neon_cyan"])
+    c.text(8, 24, "netlife", P["white"], scale=3)
+    c.text(10, 50, "hong kong", P["grey"])
+    c.text(10, 60, "season 2  -  week 4", P["neon_cyan"])
 
 
 def continue_card(c: Canvas):
     """The one next action, in words a person can act on."""
-    x, y, w, h = 14, 74, 176, 66
+    x, y, w, h = 8, 74, 176, 66
     ui.scrim(c, x, y, w, h, 225)
     c.rect(x, y, 3, h, P["neon_amber"])
     c.text(x + 10, y + 5, "continue", P["neon_amber"])
@@ -65,7 +65,7 @@ def continue_card(c: Canvas):
 
 def side(c: Canvas):
     x, y = 200, 74
-    ui.scrim(c, x, y - 4, 182, 70, 215)
+    ui.scrim(c, x, y - 4, 176, 70, 215)
     c.text(x + 4, y, "on now", P["grey"])
     c.text(x + 46, y, "3 players", P["white"])
     c.text(x + 4, y + 10, "momentum", P["grey"])

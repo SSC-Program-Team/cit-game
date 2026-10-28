@@ -131,13 +131,13 @@ def plan() -> Canvas:
     coverage(p, 133, 103, 34, (70, 224, 230, 255))
 
     for (x, y, label) in ROOM_LABELS:
-        p.alpha_rect(x, y, len(label) * 6 + 4, 9, (22, 22, 30), 205)
+        p.alpha_rect(x, y, len(label) * 6 + 4, 9, (22, 22, 30), 238)
         p.text(x + 2, y + 1, label, LBL)
     return p
 
 
 def right_panel(c: Canvas):
-    x, y, w, h = 258, 26, 120, 150
+    x, y, w, h = 258, 26, 118, 150
     c.panel(x, y, w, h, border=P["neon_cyan"], title="build", title_c=P["neon_cyan"])
     c.text(x + 6, y + 6, "2b flat tsuen wan", P["grey"])
     c.text(x + 6, y + 15, "spent $5,240", P["white"])
@@ -156,16 +156,16 @@ def right_panel(c: Canvas):
     for (label, val, col) in rows:
         c.text(x + 6, ry, label, P["grey"])
         c.text_r(x + w - 6, ry, val, col)
-        ry += 9
+        ry += 8
 
     c.hline(x + 4, ry, w - 8, P["grey_dk"])
-    ry += 5
+    ry += 6
     for (label, pct, col) in (("coverage 92", 0.92, P["neon_cyan"]),
                               ("cost 76", 0.76, P["gold"]),
                               ("security 84", 0.84, P["neon_green"])):
         c.text(x + 6, ry, label, P["white"])
-        c.meter(x + 6, ry + 8, w - 12, 4, pct, col)
-        ry += 13
+        c.meter(x + 6, ry + 8, w - 12, 3, pct, col)
+        ry += 15
 
     c.text(x + 6, y + h - 13, "+15% remote pay", P["neon_green"])
 
@@ -190,8 +190,8 @@ def bottom(c: Canvas):
 def main():
     c = Canvas(W, H, P["night0"])
     c.rect(0, 0, W, H, (20, 21, 30, 255))
-    c.paste(plan(), 6, 26)
-    c.frame(6, 26, 244, 152, P["grey_dk"])
+    c.paste(plan(), 8, 26)
+    c.frame(8, 26, 244, 152, P["grey_dk"])
     top(c)
     right_panel(c)
     bottom(c)
