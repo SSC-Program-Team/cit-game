@@ -32,8 +32,12 @@ Regenerate them:
 python3 tools/mockup/build.py     # needs Pillow + Noto Sans CJK HK
 ```
 
-`tools/mockup/pixelart.py` holds the canonical palette and the 5×7 bitmap font — copy
-those values into the game, do not invent a second style.
+`tools/mockup/pixelart.py` holds the canonical palette and the 5×7 bitmap font,
+`tools/mockup/ui.py` holds the screen grammar (scrims, prompt line, paper, sticky) —
+copy those values into the game, do not invent a second style.
+
+**Layout rule:** one focus surface per screen, three permanent numbers, one prompt line,
+and edges only on things that are physical objects. See §7.1 of the design doc.
 
 ## Planned stack
 

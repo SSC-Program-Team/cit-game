@@ -8,6 +8,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pixelart import Canvas, P, text_width  # noqa: E402
 import wire  # noqa: E402
+import ui  # noqa: E402
 
 W, H = 384, 216
 GROUND = 152          # pavement top
@@ -199,8 +200,7 @@ def tram(c: Canvas, x, y):
     for wx in range(x + 6, x + w - 8, 12):
         c.rect(wx, y + 28, 8, 7, (132, 152, 164, 255))
     c.rect(x, y + 38, w, 6, (20, 42, 38, 255))
-    c.text(x + 5, y + 39, "#62", P["win_lit"])
-    c.text_r(x + w - 5, y + 39, "kenndy tn", P["win_lit"])
+    c.text(x + 5, y + 3, "#62", P["win_lit"])
     c.set(x + 4, y + 3, P["neon_amber"])
     c.rect(x + 12, y + h - 2, 8, 3, P["ink"])
     c.rect(x + w - 20, y + h - 2, 8, 3, P["ink"])
@@ -213,42 +213,34 @@ def rain(c: Canvas, rng):
 
 
 def hud(c: Canvas, dy=0):
-    c.panel(6, 5 + dy, 96, 13, border=P["grey"])
-    c.text(10, 8 + dy, "day 3  18:40", P["white"])
-    c.panel(276, 5 + dy, 102, 13, border=P["gold"])
-    c.text(280, 8 + dy, "$1,280", P["gold"])
-    c.text_r(374, 8 + dy, "xp 240", P["grey"])
-    c.panel(6, 21 + dy, 96, 23, border=P["grey_dk"])
-    c.text(10, 24 + dy, "energy", P["grey"])
-    c.meter(54, 24 + dy, 42, 5, 0.62, P["neon_green"])
-    c.text(10, 33 + dy, "focus", P["grey"])
-    c.meter(54, 33 + dy, 42, 5, 0.40, P["neon_cyan"])
+    """Three numbers, no boxes: time, money, energy. Everything else is a menu."""
+    y = 15 + dy
+    ui.scrim(c, 232, y - 4, 152, 14, 130)
+    c.text(240, y, "18:40", P["white"])
+    c.text(280, y, "$1,280", P["gold"])
+    c.text(322, y, "en", P["grey"])
+    ui.energy(c, 340, y, 3)
+    c.text(8, y, "sham shui po", P["grey"])
 
 
 def incident(c: Canvas):
-    x, y, w, h = 202, 100, 176, 92
-    c.panel(x, y, w, h, border=P["neon_red"], title="incident", title_c=P["neon_red"])
-    c.text(x + 8, y + 6, "! network down !", P["neon_red"])
-    c.cjk(x + 8, y + 15, "陳太茶餐廳", size=12, color=P["white"])
-    c.text(x + 8, y + 32, "pos + card reader offline", P["win_lit"])
-    c.text(x + 8, y + 42, "queue out the door", P["grey"])
-    c.text(x + 8, y + 54, "reward  $1,200", P["gold"])
-    c.text_r(x + w - 8, y + 54, "45 min", P["neon_amber"])
-    c.meter(x + 8, y + 63, w - 16, 5, 0.75, P["neon_amber"])
-    c.text(x + 8, y + 71, "[y] take", P["white"])
-    c.text_r(x + w - 8, y + 71, "[n] skip  -10 rep", P["grey"])
+    """A client calling you: scrim, a red rule, four lines. No frame, no title tab."""
+    x, y, w, h = 196, 118, 180, 62
+    ui.scrim(c, x, y, w, h, 228)
+    c.rect(x, y, 3, h, P["neon_red"])
+    # client name on a paper tab: dark-on-light stays legible where white-on-dark blobs
+    ui.paper(c, x + 8, y + 3, 46, 15, (208, 202, 186))
+    c.cjk(x + 12, y + 4, "陳太", size=12, color=(52, 48, 42))
+    c.text(x + 60, y + 7, "cha chaan teng", P["grey"])
+    c.text(x + 9, y + 22, "pos + card reader offline", P["win_lit"])
+    c.text(x + 9, y + 30, "$1,200  -  45 min", P["gold"])
+    c.text(x + 9, y + 45, "[y] take   [n] skip", P["white"])
 
 
 def footer(c: Canvas):
-    y = 196
-    c.alpha_rect(0, y, W, H - y, P["ink"], 205)
-    c.hline(0, y, W, P["grey_dk"])
-    c.text(8, y + 6, "wasd move", P["white"])
-    c.text(62, y + 6, "e interact", P["white"])
-    c.text(124, y + 6, "j jobs", P["white"])
-    c.text(164, y + 6, "c console", P["white"])
-    c.text_r(376, y + 6, "sham shui po", P["grey"])
-
+    """One instruction line, low contrast. Learnt once, then ignored."""
+    ui.scrim(c, 0, 197, W, 19, 150)
+    c.text(8, 203, "wasd move    e talk    j jobs    tab wire", P["grey"])
 
 
 def player(c: Canvas):
@@ -273,7 +265,7 @@ def render(with_wire=True):
     if with_wire:
         wire.bar(c, "player", "AMING LANDED THE BANK NOC CONTRACT - $3,400",
                  queue=(5, 1), dwell=0.55)
-        hud(c, dy=wire.WIRE_H)
+        hud(c, dy=wire.H)
     else:
         hud(c)
     incident(c)
