@@ -36,7 +36,7 @@ function img(src: string): HTMLImageElement {
   i.src = src;
   return i;
 }
-const mapImg = img('img/map.png?v=4');
+const mapImg = img('img/map.png?v=5');
 const fontImg = img('img/font.png?v=4');
 
 // ------------------------------------------------------------------ text ---
@@ -186,6 +186,7 @@ class Job {
   feedback = '';
   feedbackColour = '#ffc84a';
   options: string[] = [];
+  confirmLeave = false;
 
   constructor(readonly def: JobDef, readonly mission: boolean) {}
 
@@ -219,6 +220,7 @@ class Job {
     const st = this.def.stages[this.stage];
     const c = st.choices[i];
     if (!c) return;
+    this.confirmLeave = false;
     if (c.crime) { arrest(c.crime); return; }
     if (c.ok) {
       this.stage += 1;
@@ -325,13 +327,17 @@ function tickMissions(dt: number): void {
 function missMission(): void {
   const d = missionDef();
   state.mission = null;
+  noShow(d, 'missed the callout');
+}
+
+function noShow(d: JobDef | undefined, what: string): void {
   nextMission = 150 + Math.random() * 90;
   if (d) {
     state.rep[d.client] = (state.rep[d.client] ?? 0) - 10;
     news.unshift(`${d.client} called ah ming instead`);
   }
   addMoney(-NO_SHOW_FEE);
-  toast = { text: `missed the callout - no-show fee -$${NO_SHOW_FEE}`, colour: '#ff6a6a', t: 4 };
+  toast = { text: `${what} - no-show fee -$${NO_SHOW_FEE}`, colour: '#ff6a6a', t: 4 };
   audio.play('bad');
   save();
   buildSpots();
@@ -407,6 +413,29 @@ function activate(s: Spot): void {
   dialogue = { title: s.title, line: s.line, shown: 0 };
 }
 
+const exitRect: Rect = { x: 500, y: 326, w: 106, h: 24 };
+
+/** Walk out of a job. A mission asks twice: leaving it is a no-show. */
+function leaveJob(): void {
+  if (!job) return;
+  if (job.step === 'paid') { job.advance(); return; }
+  if (job.mission && !job.confirmLeave) {
+    job.confirmLeave = true;
+    job.feedback = `walk out? they call ah ming. -$${NO_SHOW_FEE}`;
+    job.feedbackColour = '#ff6a6a';
+    audio.play('bad');
+    return;
+  }
+  const left = job;
+  job = null;
+  audio.play('door');
+  if (left.mission) noShow(left.def, 'walked out of the callout');
+  else {
+    toast = { text: `left ${left.def.client}. the job is still there`, colour: '#9aa0b8', t: 3 };
+    buildSpots();
+  }
+}
+
 // ------------------------------------------------------------------ input ---
 function toGame(ev: { clientX: number; clientY: number }): { x: number; y: number } {
   const r = canvas.getBoundingClientRect();
@@ -419,6 +448,7 @@ canvas.addEventListener('pointerdown', (ev) => {
   if (state.jail) return;
   if (job) {
     if (job.step === 'paid') { job.advance(); return; }
+    if (inRect(exitRect, x, y)) { leaveJob(); return; }
     if (job.step === 'typing') { job.timer = 99; job.update(1); return; }
     const idx = job.options.findIndex((_, i) => inRect(optRect(i), x, y));
     if (idx >= 0) job.choose(idx);
@@ -448,6 +478,7 @@ window.addEventListener('keydown', (ev) => {
   if (ev.key === 'm' || ev.key === 'M') { audio.toggleMute(); return; }
   if (state.jail) return;
   if (job) {
+    if (ev.key === 'Escape') { leaveJob(); ev.preventDefault(); return; }
     if (ev.key === 'Enter' || ev.key === ' ') {
       if (job.step === 'paid') job.advance();
       else if (job.step === 'typing') { job.timer = 99; job.update(1); }
@@ -873,6 +904,14 @@ function drawJob(): void {
   });
 
   text(job.options.length === 2 ? '1-2 choose' : job.options.length ? '1-3 choose' : 'tap or enter to skip', 36, 336, '#6f7688');
+
+  const xr = exitRect;
+  const leave = job.confirmLeave ? `again: -$${NO_SHOW_FEE}` : '[esc] leave';
+  ctx.fillStyle = job.confirmLeave ? 'rgba(90,20,28,0.96)' : 'rgba(20,24,34,0.96)';
+  ctx.fillRect(xr.x, xr.y, xr.w, xr.h);
+  ctx.strokeStyle = job.confirmLeave ? '#ff6a6a' : '#3a4054';
+  ctx.strokeRect(xr.x + 0.5, xr.y + 0.5, xr.w - 1, xr.h - 1);
+  text(leave, xr.x + (xr.w - tw(leave)) / 2, xr.y + 8, job.confirmLeave ? '#ffd0d0' : '#c8ccdc');
 
   if (job.step === 'paid') {
     ctx.fillStyle = '#0a0d14'; ctx.fillRect(0, 0, W, H);
