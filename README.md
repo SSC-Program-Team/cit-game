@@ -10,6 +10,9 @@ accept is a real networking task, scored.
 
 **Status:** concept — design doc written, visual direction fixed, nothing playable yet.
 
+**Live preview:** <https://cit-game.iengineer.cc.cd> — a clickable mockup (tap 陳太, then answer the
+ticket). Hosting notes in [docs/deploy.md](docs/deploy.md).
+
 ## Read this first
 
 - **[Game design document](docs/design/game-design-document.md)** — pillars, systems, curriculum mapping, demo scope, risks, open questions.

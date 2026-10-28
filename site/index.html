@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NETLIFE: Hong Kong — design preview</title>
+<style>
+  :root{
+    --ink:#0b0d16; --bg:#12141f; --panel:#191c2b; --line:#2a2e42;
+    --fg:#e8e8f0; --muted:#9aa0b8; --cyan:#46e0e6; --gold:#ffc84a;
+    --pink:#ff4d9d; --green:#5ce08a; --red:#ff3b5c;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--mono);
+    -webkit-text-size-adjust:100%}
+  img{display:block;max-width:100%;height:auto;image-rendering:pixelated}
+  .wrap{max-width:1080px;margin:0 auto;padding:24px 16px 72px}
+  header{border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:24px}
+  h1{font-size:clamp(26px,6vw,44px);letter-spacing:.06em;margin:0 0 6px;text-transform:uppercase}
+  h1 span{color:var(--cyan)}
+  .tag{color:var(--muted);font-size:13px;line-height:1.6;max-width:62ch}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  .chip{font-size:11px;letter-spacing:.08em;text-transform:uppercase;padding:6px 10px;
+    border:1px solid var(--line);color:var(--muted)}
+  .chip.on{border-color:var(--cyan);color:var(--cyan)}
+  h2{font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--cyan);
+    margin:40px 0 12px}
+  h2::before{content:"■ ";color:var(--pink)}
+  p{line-height:1.65;font-size:14px;color:#cdd2e4;margin:0 0 12px}
+  .muted{color:var(--muted)}
+  figure{margin:0 0 8px}
+  figcaption{font-size:12px;color:var(--muted);line-height:1.55;margin-top:8px}
+  .grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+  .card{border:1px solid var(--line);background:var(--panel);padding:14px}
+  .card h3{font-size:12px;letter-spacing:.12em;text-transform:uppercase;margin:0 0 8px;color:var(--gold)}
+  .card p{font-size:13px;margin:0;color:var(--muted)}
+  /* prototype */
+  .stage{position:relative;border:1px solid var(--line);background:var(--ink);
+    margin-top:4px;touch-action:manipulation}
+  .stage img{width:100%}
+  .hot{position:absolute;background:transparent;border:0;padding:0;cursor:pointer;
+    -webkit-tap-highlight-color:transparent}
+  .hot::after{content:"";position:absolute;inset:0;border:1px solid transparent;
+    animation:pulse 2.4s infinite}
+  @keyframes pulse{0%,100%{border-color:rgba(70,224,230,0)}50%{border-color:rgba(70,224,230,.8)}}
+  .hot:focus-visible::after{border-color:var(--cyan)}
+  .hot:hover::after{border-color:var(--cyan)}
+  .answer{position:absolute;background:transparent;border:0;cursor:pointer;
+    -webkit-tap-highlight-color:transparent}
+  .answer:hover{background:rgba(70,224,230,.14)}
+  .answer:focus-visible{outline:2px solid var(--cyan);outline-offset:-2px}
+  .result{margin-top:12px;border-left:3px solid var(--cyan);background:var(--panel);
+    padding:12px 14px;font-size:13px;line-height:1.6}
+  .result.bad{border-color:var(--red)}
+  .result b{color:var(--gold)}
+  .hidden{display:none}
+  .hint{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-top:10px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:400;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+  code{background:#0e1019;padding:1px 5px;border:1px solid var(--line);color:var(--cyan);font-size:12px}
+  footer{margin-top:48px;border-top:1px solid var(--line);padding-top:16px;
+    font-size:12px;color:var(--muted);line-height:1.7}
+  a{color:var(--cyan)}
+  @media (max-width:520px){.wrap{padding:16px 12px 56px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Net<span>life</span>: Hong Kong</h1>
+    <p class="tag">A pixel-art life sim where the job <em>is</em> the lesson: you take networking work
+    across a walkable Hong Kong, get paid, get burned, and wire your own flat. Played in free time,
+    in a browser, on a laptop or an iPad.</p>
+    <div class="chips">
+      <span class="chip on">concept v0.3</span>
+      <span class="chip">no build yet</span>
+      <span class="chip">laptop + iPad</span>
+      <span class="chip">open world</span>
+      <span class="chip">live board</span>
+    </div>
+  </header>
+
+  <h2>Try it</h2>
+  <p class="muted">This is a clickable mockup, not the game — three screens wired together so you can
+  feel the interaction. Tap the woman outside the tea shop.</p>
+
+  <div class="stage" id="stage">
+    <img id="shot" src="img/01-city-night.png" alt="Top-down Hong Kong street at night">
+    <button class="hot" id="hot-chan" aria-label="Talk to Chan Tai outside the tea shop"
+            style="left:13.5%;top:22%;width:8%;height:24%"></button>
+    <button class="answer hidden" data-opt="1" aria-label="Answer 1: wrong subnet mask"
+            style="left:0;top:89%;width:33%;height:11%"></button>
+    <button class="answer hidden" data-opt="2" aria-label="Answer 2: router not forwarding"
+            style="left:33%;top:89%;width:33%;height:11%"></button>
+    <button class="answer hidden" data-opt="3" aria-label="Answer 3: printer offline"
+            style="left:66%;top:89%;width:34%;height:11%"></button>
+  </div>
+  <div class="result hidden" id="result"></div>
+  <div class="hint" id="hint">tap the client to start the job</div>
+
+  <h2>The overworld</h2>
+  <figure>
+    <img src="img/01-city-night.png" alt="Sham Shui Po street, top-down">
+    <figcaption>Sham Shui Po, 18:40. Jobs live at addresses: 陳太 is on the pavement, the 網吧 has a
+    note on its door, and the wire is calling out a POS outage. No quest log, no level gate.</figcaption>
+  </figure>
+
+  <h2>The work</h2>
+  <figure>
+    <img src="img/02-job-console.png" alt="Job screen: laptop console on a cafe counter">
+    <figcaption>Walk up to a client and the camera drops to the desk. Your laptop is the only heavy
+    object on screen: real console output, one prompt line, three answers.</figcaption>
+  </figure>
+
+  <div class="grid" style="margin-top:18px">
+    <div class="card"><h3>One focus surface</h3><p>Eleven bordered panels became two. Edges belong to
+      physical objects — paper, a laptop, a sign.</p></div>
+    <div class="card"><h3>Three numbers</h3><p>Time, money, energy. Everything else is a menu or a
+      prompt, or it gets deleted.</p></div>
+    <div class="card"><h3>No OS keyboard</h3><p>Steppers and an in-game keypad, because an iPad
+      keyboard covers half the screen.</p></div>
+  </div>
+
+  <h2>The wire</h2>
+  <figure>
+    <img src="img/05-wire.png" alt="News strip variants">
+    <figcaption>A 10 px headline strip on every screen: world news, market prices, distress calls,
+    other players' milestones — and the richest-player board when nothing has happened for six hours.</figcaption>
+  </figure>
+
+  <h2>The hub</h2>
+  <figure>
+    <img src="img/07-hub.png" alt="Hub screen with continue card and live board">
+    <figcaption>What you see at 11 p.m.: one unfinished job in plain words, the live board, momentum
+    instead of a streak, and an honest autosave line.</figcaption>
+  </figure>
+
+  <h2>The ladder</h2>
+  <figure>
+    <img src="img/04-progression.png" alt="Housing tiers and career lanes">
+    <figcaption>Every housing tier unlocks a network build you cannot skip — and the employed and
+    freelance lanes run in parallel, not as a fork.</figcaption>
+  </figure>
+
+  <h2>Wiring your own flat</h2>
+  <figure>
+    <img src="img/03-home-network.png" alt="Floor plan network build screen">
+    <figcaption>Concrete walls eat 5 GHz. Score the build on coverage, cost and security; the buffs
+    only activate when you ship something defensible.</figcaption>
+  </figure>
+
+  <h2>On an iPad</h2>
+  <figure>
+    <img src="img/06-ipad.png" alt="The job screen at 4:3 with a touch action bar">
+    <figcaption>Fixed 384 px design width, fluid height (216–272). The prompt line becomes a
+    24 px action bar — about 70 pt on a 10.9-inch iPad.</figcaption>
+  </figure>
+
+  <h2>Rules this is drawn to</h2>
+  <table>
+    <tr><th>Rule</th><th>Value</th></tr>
+    <tr><td>Canvas</td><td><code>384 × 216</code>, integer scale, no smoothing</td></tr>
+    <tr><td>Margin</td><td><code>8 px</code> on every edge, everything on a 4 px unit</td></tr>
+    <tr><td>Prompt baseline</td><td><code>196</code> — the same on every screen</td></tr>
+    <tr><td>Touch target</td><td><code>24 px</code> rows, 6 px slop, 8 px safe insets</td></tr>
+    <tr><td>Character budget</td><td><code>(width − padding) // 6</code> — write to it, never widen</td></tr>
+  </table>
+
+  <footer>
+    Concept, not a build. Design document and layout spec live in
+    <a href="https://github.com/SSC-Program-Team/cit-game">SSC-Program-Team/cit-game</a>.
+    <br>Every screen here is generated pixel art from <code>tools/mockup/</code> — regenerate with
+    <code>python3 tools/mockup/build.py</code>.
+  </footer>
+</div>
+
+<script>
+(function(){
+  const shot = document.getElementById('shot');
+  const hotChan = document.getElementById('hot-chan');
+  const answers = Array.from(document.querySelectorAll('.answer'));
+  const result = document.getElementById('result');
+  const hint = document.getElementById('hint');
+
+  const COPY = {
+    1: {ok:false, text:'<b>Wrong tool, right instinct.</b> The mask is a /24 and the peer answers ping on that same subnet — so the mask is not what is broken. You burn four minutes and 陳太 watches the queue grow.'},
+    2: {ok:true,  text:'<b>Correct.</b> Local config is sane, the LAN peer replies, and 8.8.8.8 times out: the box has no path off the subnet. You set the gateway, the card reader comes back, and the job pays <b>$450</b>.'},
+    3: {ok:false, text:'<b>The printer was never the problem.</b> It is powered on and idle; the whole subnet cannot reach the internet. 陳太 now thinks you fix printers.'}
+  };
+
+  function showJob(){
+    shot.src = 'img/02-job-console.png';
+    shot.alt = 'Job screen: diagnostic console on the cafe counter';
+    hotChan.classList.add('hidden');
+    answers.forEach(a => a.classList.remove('hidden'));
+    result.className = 'result hidden';
+    hint.textContent = 'pick a diagnosis';
+  }
+
+  function answer(n){
+    const c = COPY[n];
+    result.className = 'result' + (c.ok ? '' : ' bad');
+    result.innerHTML = c.text + (c.ok
+      ? '<br><br><span class="muted">Mockup ends here — the real job runs six more tasks.</span>'
+      : '<br><br><span class="muted">In the game this is a rework scene: the job stays winnable.</span>');
+    hint.textContent = c.ok ? 'job complete' : 'try another answer';
+  }
+
+  hotChan.addEventListener('click', showJob);
+  answers.forEach(a => a.addEventListener('click', () => answer(a.dataset.opt)));
+})();
+</script>
+</body>
+</html>
