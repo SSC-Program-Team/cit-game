@@ -4,7 +4,7 @@
  * oscillators. iOS/Safari will not start an AudioContext before a user gesture,
  * so unlock() is called from the first pointerdown or keydown.
  */
-type Sfx = 'ui' | 'ok' | 'bad' | 'cash' | 'door' | 'step';
+type Sfx = 'ui' | 'ok' | 'bad' | 'cash' | 'door' | 'step' | 'alert';
 
 const CHORDS: number[][] = [
   [220.0, 261.63, 329.63, 392.0],  // Am7
@@ -152,6 +152,9 @@ export class AudioEngine {
         break;
       case 'door':
         this.tone(140, now, 0.18, 0.07, 'sine', bus, 0.01);
+        break;
+      case 'alert':
+        [0, 0.16, 0.32].forEach((d) => this.tone(1320, now + d, 0.09, 0.05, 'square', bus, 0.004));
         break;
       case 'step':
         this.tone(90 + Math.random() * 20, now, 0.03, 0.02, 'sine', bus, 0.004);

@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run check && tsc --noEmit && vite build",
+    "check": "node --experimental-strip-types --no-warnings scripts/check-jobs.ts",
     "dev": "vite"
   },
   "devDependencies": {

@@ -7,6 +7,7 @@
  */
 import { state, save, clock, load, addMoney, addMinutes, addMastery } from './state';
 import { audio } from './audio';
+import { JOBS, MISSIONS, OFFER, CHARSET, type JobDef, type Crime, type Prop } from './jobs';
 
 const W = 640;
 const H = 360;
@@ -39,7 +40,6 @@ const mapImg = img('img/map.png');
 const fontImg = img('img/font.png');
 
 // ------------------------------------------------------------------ text ---
-const CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,:;-/$%+!?[]()*#'<>=";
 const CELL_W = 6;
 const CELL_H = 8;
 const COLS = 24;
@@ -67,8 +67,9 @@ function text(s: string, x: number, y: number, colour = '#e8e8f0', scale = 1): n
   for (const ch of s.toUpperCase()) {
     const i = CHARSET.indexOf(ch);
     if (i >= 0) {
+      // whole pixels only: a fractional x samples the neighbouring glyph in the atlas
       ctx.drawImage(a, (i % COLS) * CELL_W, Math.floor(i / COLS) * CELL_H, CELL_W, CELL_H,
-        cx, y, CELL_W * scale, CELL_H * scale);
+        Math.round(cx), Math.round(y), CELL_W * scale, CELL_H * scale);
     }
     cx += CELL_W * scale;
   }
@@ -81,8 +82,36 @@ function textRight(s: string, right: number, y: number, colour: string): void {
   text(s, right - tw(s), y, colour);
 }
 
+function wrap(s: string, max: number): string[] {
+  const out: string[] = [];
+  let line = '';
+  for (const word of s.split(' ')) {
+    if (line && line.length + 1 + word.length > max) { out.push(line); line = word; }
+    else line = line ? `${line} ${word}` : word;
+  }
+  if (line) out.push(line);
+  return out;
+}
+
+type Rect = { x: number; y: number; w: number; h: number };
+const inRect = (r: Rect, x: number, y: number, slop = 3): boolean =>
+  x >= r.x - slop && x <= r.x + r.w + slop && y >= r.y - slop && y <= r.y + r.h + slop;
+
+// answer rows on the job screen and the two buttons in a street choice; drawing and
+// hit-testing share these so a tap lands on the row it looks like it lands on
+const optRect = (i: number): Rect => ({ x: 262, y: 198 + i * 28, w: 344, h: 24 });
+const dlgRect = (i: number): Rect => ({ x: 30 + i * 296, y: 284, w: 284, h: 26 });
+
 // ------------------------------------------------------------------ state ---
-type Spot = { x: number; y: number; my: number; r: number; title: string; line: string; job?: boolean; shut?: boolean };
+type Spot = {
+  id: string; x: number; y: number; my: number; r: number; title: string; line: string;
+  job?: JobDef; mission?: boolean; offer?: boolean; shut?: boolean;
+};
+
+const MISSION_WINDOW = 90;
+const MISSION_PAY = 2;
+const NO_SHOW_FEE = 100;
+const JAIL_MS = 30 * 60 * 1000;
 
 // the road band, measured off map.png: asphalt sits at y 184-212
 const WALK = { minX: 16, maxX: 624, minY: 187, maxY: 209 };
@@ -103,9 +132,18 @@ let near: Spot | null = null;
 let wireIndex = 0;
 let wireX = W;
 let wireTimer = 0;
-let dialogue: { title: string; line: string; shown: number } | null = null;
+let wireText = WIRE[0];
+let wireAlert = false;
+/** what the player did this session, newest first: the wire carries it */
+const news: string[] = [];
+type DlgOption = { label: string; act: () => void };
+let dialogue: { title: string; line: string; shown: number; options?: DlgOption[] } | null = null;
 let job: Job | null = null;
 let stepTimer = 0;
+let nextMission = 60;
+let declined = false;
+let toast: { text: string; colour: string; t: number } | null = null;
+let frames = 0;
 
 // ------------------------------------------------------------- ambience ---
 type Drop = { x: number; y: number; len: number; v: number };
@@ -137,21 +175,11 @@ function lampGlow(x: number, y: number, r: number, colour: string, alpha: number
 }
 
 // -------------------------------------------------------------------- job ---
-const CONSOLE_LINES = [
-  'C:\\> ipconfig',
-  '  ipv4 ..... 192.168.18.77',
-  '  mask ..... 255.255.255.0',
-  '  gateway .. 192.168.18.254',
-  'C:\\> ping 192.168.18.50',
-  '  reply 1ms  ttl=64',
-  'C:\\> ping 8.8.8.8',
-  '  request timed out.',
-];
-
-type Step = 'typing' | 'diagnose' | 'explain' | 'paid';
+type Step = 'typing' | 'ask' | 'paid';
 
 class Job {
   step: Step = 'typing';
+  stage = 0;
   shown = 0;
   timer = 0;
   hint = '';
@@ -159,94 +187,223 @@ class Job {
   feedbackColour = '#ffc84a';
   options: string[] = [];
 
+  constructor(readonly def: JobDef, readonly mission: boolean) {}
+
+  get pay(): number {
+    return this.def.pay * (this.mission ? MISSION_PAY : 1);
+  }
+
   update(dt: number): void {
     if (this.step !== 'typing') return;
+    const lines = this.def.console;
     this.timer += dt;
-    const n = Math.min(CONSOLE_LINES.length, Math.floor(this.timer / 0.32));
+    const n = Math.min(lines.length, Math.floor(this.timer / 0.32));
     if (n > this.shown) {
       this.shown = n;
       audio.play('ui');
-      if (this.shown === CONSOLE_LINES.length) {
-        this.step = 'diagnose';
-        this.hint = 'what is wrong?';
-        this.options = ['wrong subnet mask', 'not forwarding', 'printer offline'];
+      if (this.shown === lines.length) {
+        this.step = 'ask';
+        this.ask();
       }
     }
   }
 
+  private ask(): void {
+    const st = this.def.stages[this.stage];
+    this.hint = st.prompt;
+    this.options = st.choices.map((c) => c.label);
+  }
+
   choose(i: number): void {
-    if (this.step === 'diagnose') {
-      if (i === 1) {
-        audio.play('ok');
-        this.step = 'explain';
-        this.hint = 'correct. now tell her';
-        this.feedback = 'the gateway was never set';
-        this.feedbackColour = '#7be08a';
-        this.options = ['the router was not passing traffic', 'the printer firmware corrupted'];
-        return;
-      }
-      audio.play('bad');
-      addMinutes(4);
-      state.energy = Math.max(0, state.energy - 1);
-      save();
-      this.feedback = 'wrong - four minutes gone';
-      this.feedbackColour = '#ff6a6a';
-      this.hint = i === 0 ? 'a /24 with a peer answering is fine' : 'the printer is idle';
+    if (this.step !== 'ask') return;
+    const st = this.def.stages[this.stage];
+    const c = st.choices[i];
+    if (!c) return;
+    if (c.crime) { arrest(c.crime); return; }
+    if (c.ok) {
+      this.stage += 1;
+      if (this.stage >= this.def.stages.length) { this.settle(); return; }
+      audio.play('ok');
+      this.feedback = st.right ?? '';
+      this.feedbackColour = '#7be08a';
+      this.ask();
       return;
     }
-    if (this.step === 'explain') {
-      if (i === 0) {
-        audio.play('cash');
-        addMoney(450);
-        addMastery('gateway', 40);
-        if (!state.done.includes('chantai')) state.done.push('chantai');
-        addMinutes(20);
-        save();
-        this.step = 'paid';
-        this.options = [];
-        return;
-      }
-      audio.play('bad');
-      this.feedback = 'she does not believe you';
-      this.feedbackColour = '#ff6a6a';
-    }
+    audio.play('bad');
+    this.feedbackColour = '#ff6a6a';
+    if (st.free) { this.feedback = c.hint ?? ''; return; }
+    addMinutes(4);
+    state.energy = Math.max(0, state.energy - 1);
+    save();
+    this.feedback = 'wrong - four minutes gone';
+    this.hint = c.hint ?? st.prompt;
+  }
+
+  private settle(): void {
+    audio.play('cash');
+    addMoney(this.pay);
+    addMastery(...this.def.mastery);
+    if (!state.done.includes(this.def.id)) state.done.push(this.def.id);
+    addMinutes(this.def.minutes);
+    news.unshift(this.def.wire);
+    save();
+    this.step = 'paid';
+    this.options = [];
   }
 
   advance(): void {
     if (this.step !== 'paid') return;
     job = null;
     buildSpots();
+    showWire(news[0], false);
   }
+}
+
+// ------------------------------------------------------------ consequence ---
+function arrest(c: Crime): void {
+  audio.play('bad');
+  job = null;
+  dialogue = null;
+  target = null;
+  keys.clear();
+  state.mission = null;
+  state.jail = { until: Date.now() + JAIL_MS, ...c };
+  news.unshift('a stanley technician was detained tonight');
+  save();
+  buildSpots();
+}
+
+const jailed = (): boolean => !!state.jail && Date.now() < state.jail.until;
+
+function release(): void {
+  state.jail = null;
+  player.x = 600;
+  player.y = 196;
+  state.x = player.x;
+  state.y = player.y;
+  nextMission = 90;
+  save();
+  buildSpots();
+  dialogue = { title: 'stanley prison 99', line: 'released. the gate shuts behind you. nobody waves.', shown: 0 };
+}
+
+// --------------------------------------------------------------- missions ---
+const missionDef = (): JobDef | undefined =>
+  state.mission ? MISSIONS.find((d) => d.id === state.mission!.id) : undefined;
+
+function showWire(s: string | undefined, alert: boolean): void {
+  wireAlert = alert;
+  if (s) wireText = s;
+  wireX = W;
+  wireTimer = 0;
+}
+
+function missionHeadline(): string {
+  const d = missionDef();
+  if (!d || !state.mission) return '';
+  return `${d.client}: ${d.symptom} - $${d.pay * MISSION_PAY} double pay - ${Math.ceil(state.mission.left)}s`;
+}
+
+function tickMissions(dt: number): void {
+  if (state.mission) {
+    state.mission.left -= dt;
+    if (state.mission.left <= 0) missMission();
+    return;
+  }
+  nextMission -= dt;
+  if (nextMission > 0) return;
+  const open = MISSIONS.filter((d) => !state.done.includes(d.id));
+  if (!open.length) { nextMission = Infinity; return; }
+  const d = open[Math.floor(Math.random() * open.length)];
+  state.mission = { id: d.id, left: MISSION_WINDOW };
+  save();
+  buildSpots();
+  showWire(undefined, true);
+  audio.play('alert');
+}
+
+function missMission(): void {
+  const d = missionDef();
+  state.mission = null;
+  nextMission = 150 + Math.random() * 90;
+  if (d) {
+    state.rep[d.client] = (state.rep[d.client] ?? 0) - 10;
+    news.unshift(`${d.client} called ah ming instead`);
+  }
+  addMoney(-NO_SHOW_FEE);
+  toast = { text: `missed the callout - no-show fee -$${NO_SHOW_FEE}`, colour: '#ff6a6a', t: 4 };
+  audio.play('bad');
+  save();
+  buildSpots();
+  showWire(news[0], false);
 }
 
 // ------------------------------------------------------------------ world ---
 function buildSpots(): void {
-  const done = state.done.includes('chantai');
+  const done = (id: string): boolean => state.done.includes(id);
+  const sore = (client: string): boolean => (state.rep[client] ?? 0) < 0;
   spots = [
-    { x: 52, y: 196, my: 148, r: 26, title: 'chan tai', job: !done,
-      line: done ? 'you fixed the till. she gives you buns now.' : 'the till cannot reach the internet. she is not calm.' },
-    { x: 142, y: 196, my: 148, r: 22, title: 'stanley restaurant', shut: true, line: 'shut for the night. the wifi password is on a laminated card by the door.' },
-    { x: 214, y: 196, my: 148, r: 20, title: 'the store', shut: true, line: 'the shutter is half down. someone is watching a drama on a phone.' },
-    { x: 320, y: 196, my: 148, r: 26, title: 'stanley market', shut: true, line: 'stalls folded. a cat owns the walkway now.' },
-    { x: 402, y: 196, my: 152, r: 22, title: 'bakery', shut: true, line: 'the last batch went at seven. the till is still on.' },
-    { x: 484, y: 196, my: 160, r: 24, title: 'college gate 22', line: 'mr lau is not in. the field lights are still on.' },
-    { x: 600, y: 196, my: 150, r: 24, title: 'stanley prison 99', line: 'a wall, wire, and the mosque the prisoners built in 1937.' },
-    { x: 630, y: 196, my: 156, r: 16, title: 'stanley fort', line: 'no entry. the road ends here for you.' },
-    { x: 60, y: 206, my: 262, r: 26, title: 'murray house', line: 'dismantled in central, rebuilt here stone by stone.' },
-    { x: 186, y: 206, my: 268, r: 26, title: 'stanley plaza', shut: true, line: 'the mall wifi works. the mall itself is asleep.' },
-    { x: 268, y: 206, my: 264, r: 22, title: 'bus terminus', line: 'the 6, the 40, the n40. one of them will come.' },
-    { x: 372, y: 206, my: 252, r: 24, title: "st stephen's beach", line: 'rain on the sand. nobody swimming.' },
+    { id: 'chantai', x: 52, y: 196, my: 148, r: 26, title: 'chan tai',
+      line: done('chantai') ? 'you fixed the till. she gives you buns now.' : 'the till cannot reach the internet. she is not calm.' },
+    { id: 'restaurant', x: 142, y: 196, my: 148, r: 22, title: 'stanley restaurant', shut: true, line: 'shut for the night. the wifi password is on a laminated card by the door.' },
+    { id: 'store', x: 214, y: 196, my: 148, r: 20, title: 'the store', shut: !done('m.store'),
+      line: done('m.store') ? 'the card machine beeps. the owner nods at you.'
+        : sore('the store') ? 'they called ah ming last time. the shutter stays down.'
+          : 'the shutter is half down. someone is watching a drama on a phone.' },
+    { id: 'market', x: 320, y: 196, my: 148, r: 26, title: 'stanley market', shut: !done('m.market'),
+      line: done('m.market') ? 'the stall tablets glow. someone saved you a fish ball.'
+        : sore('stall holders') ? 'the stall holders remember you did not come.'
+          : 'stalls folded. a cat owns the walkway now.' },
+    { id: 'bakery', x: 402, y: 196, my: 152, r: 22, title: 'bakery',
+      line: done('bakery') ? 'receipts print. she waves you in for coffee.' : 'the new receipt printer prints nothing. she is cross.' },
+    { id: 'college', x: 484, y: 196, my: 160, r: 24, title: 'college gate 22', line: 'mr lau is not in. the field lights are still on.' },
+    { id: 'prison', x: 600, y: 196, my: 150, r: 24, title: 'stanley prison 99', line: 'a wall, wire, and the mosque the prisoners built in 1937.' },
+    { id: 'fort', x: 630, y: 196, my: 156, r: 16, title: 'stanley fort', line: 'no entry. the road ends here for you.' },
+    { id: 'murray', x: 60, y: 206, my: 262, r: 26, title: 'murray house', line: 'dismantled in central, rebuilt here stone by stone.' },
+    { id: 'plaza', x: 186, y: 206, my: 268, r: 26, title: 'stanley plaza', shut: true, line: 'the mall wifi works. the mall itself is asleep.' },
+    { id: 'terminus', x: 268, y: 206, my: 264, r: 22, title: 'bus terminus', offer: !declined,
+      line: 'the 6, the 40, the n40. one of them will come.' },
+    { id: 'beach', x: 372, y: 206, my: 252, r: 24, title: "st stephen's beach", line: 'rain on the sand. nobody swimming.' },
   ];
+  const m = missionDef();
+  for (const s of spots) {
+    const j = JOBS.find((d) => d.spot === s.id && !done(d.id));
+    if (j) { s.job = j; s.shut = false; }
+    if (m && m.spot === s.id) { s.job = m; s.mission = true; s.shut = false; }
+  }
 }
 
-function spotAt(x: number, y: number): Spot | null {
+/** walking reaches a spot by its road anchor; a tap also counts on its shopfront marker */
+function spotAt(x: number, y: number, tap = false): Spot | null {
   for (const s of spots) if (Math.hypot(x - s.x, y - s.y) <= s.r) return s;
+  if (tap) for (const s of spots) if (s.job && Math.hypot(x - s.x, y - (s.my - 6)) <= 14) return s;
   return null;
 }
 
 function activate(s: Spot): void {
   audio.play(s.shut ? 'door' : 'ui');
-  if (s.job) { job = new Job(); return; }
+  if (s.job) {
+    if (s.mission) { state.mission = null; nextMission = 150 + Math.random() * 90; }
+    job = new Job(s.job, !!s.mission);
+    target = null;
+    save();
+    return;
+  }
+  if (s.offer) {
+    dialogue = {
+      title: OFFER.who, line: OFFER.line, shown: 0,
+      options: [
+        { label: OFFER.walk, act: () => {
+          declined = true;
+          dialogue = null;
+          buildSpots();
+          toast = { text: 'he shrugs and lights a cigarette', colour: '#9aa0b8', t: 3 };
+        } },
+        { label: OFFER.take, act: () => arrest(OFFER.crime) },
+      ],
+    };
+    return;
+  }
   dialogue = { title: s.title, line: s.line, shown: 0 };
 }
 
@@ -259,15 +416,24 @@ function toGame(ev: { clientX: number; clientY: number }): { x: number; y: numbe
 canvas.addEventListener('pointerdown', (ev) => {
   audio.unlock();
   const { x, y } = toGame(ev);
+  if (state.jail) return;
   if (job) {
     if (job.step === 'paid') { job.advance(); return; }
     if (job.step === 'typing') { job.timer = 99; job.update(1); return; }
-    const idx = job.options.findIndex((_, i) => y >= 258 + i * 30 && y <= 284 + i * 30 && x >= 262 && x <= 606);
+    const idx = job.options.findIndex((_, i) => inRect(optRect(i), x, y));
     if (idx >= 0) job.choose(idx);
     return;
   }
-  if (dialogue) { dialogue = null; return; }
-  const hit = spotAt(x, y);
+  if (dialogue) {
+    if (dialogue.options) {
+      const idx = dialogue.options.findIndex((_, i) => inRect(dlgRect(i), x, y));
+      if (idx >= 0) dialogue.options[idx].act();
+      return;
+    }
+    dialogue = null;
+    return;
+  }
+  const hit = spotAt(x, y, true);
   if (hit) { activate(hit); return; }
   target = {
     x: Math.min(WALK.maxX, Math.max(WALK.minX, x)),
@@ -280,6 +446,7 @@ const keys = new Set<string>();
 window.addEventListener('keydown', (ev) => {
   audio.unlock();
   if (ev.key === 'm' || ev.key === 'M') { audio.toggleMute(); return; }
+  if (state.jail) return;
   if (job) {
     if (ev.key === 'Enter' || ev.key === ' ') {
       if (job.step === 'paid') job.advance();
@@ -289,6 +456,12 @@ window.addEventListener('keydown', (ev) => {
     }
     const n = ['1', '2', '3'].indexOf(ev.key);
     if (n >= 0 && job.options[n]) job.choose(n);
+    return;
+  }
+  if (dialogue?.options) {
+    const n = ['1', '2'].indexOf(ev.key);
+    if (n >= 0 && dialogue.options[n]) dialogue.options[n].act();
+    else if (ev.key === 'Escape') dialogue.options[0].act();
     return;
   }
   if (ev.key === 'e' || ev.key === 'E') { if (dialogue) dialogue = null; else if (near) activate(near); return; }
@@ -320,7 +493,27 @@ function update(dt: number): void {
     if (car.x > W + 100) { car.x = -100; car.wait = 5 + Math.random() * 6; }
   }
 
+  if (state.jail) {
+    if (!jailed()) release();
+    return;
+  }
+
+  if (toast) { toast.t -= dt; if (toast.t <= 0) toast = null; }
+
   if (job) { job.update(dt); return; }
+
+  tickMissions(dt);
+  wireTimer += dt;
+  if (wireTimer > 6.5) {
+    // an open callout takes every other slot on the wire until it is answered or missed
+    if (state.mission && !wireAlert) showWire(undefined, true);
+    else {
+      const list = [...news.slice(0, 4), ...WIRE];
+      wireIndex = (wireIndex + 1) % list.length;
+      showWire(list[wireIndex], false);
+    }
+  }
+  if (wireX > 40) wireX = Math.max(40, wireX - (wireTimer < 0.9 ? 900 : 130) * dt);
 
   if (dialogue) { dialogue.shown = Math.min(dialogue.line.length, dialogue.shown + dt * 54); return; }
 
@@ -354,10 +547,6 @@ function update(dt: number): void {
   }
 
   near = spotAt(player.x, player.y);
-
-  wireTimer += dt;
-  if (wireTimer > 6.5) { wireTimer = 0; wireIndex = (wireIndex + 1) % WIRE.length; wireX = W; }
-  if (wireX > 8) wireX = Math.max(8, wireX - (wireTimer < 0.9 ? 900 : 130) * dt);
 }
 
 // ------------------------------------------------------------------- draw ---
@@ -413,12 +602,14 @@ function drawPlayer(): void {
 function drawHud(): void {
   // wire
   ctx.fillStyle = 'rgba(8,10,18,0.92)'; ctx.fillRect(0, 0, W, 15);
-  ctx.fillStyle = '#5ce08a'; ctx.fillRect(0, 14, W, 1);
-  ctx.fillStyle = '#5ce08a'; ctx.fillRect(0, 0, 34, 14);
-  text('wire', 6, 3, '#08110c');
+  const alert = wireAlert && !!state.mission;
+  const tag = alert ? '#ff4a5f' : '#5ce08a';
+  ctx.fillStyle = tag; ctx.fillRect(0, 14, W, 1);
+  ctx.fillStyle = tag; ctx.fillRect(0, 0, 34, 14);
+  text(alert ? 'alert' : 'wire', alert ? 2 : 6, 3, '#08110c');
   ctx.save();
   ctx.beginPath(); ctx.rect(36, 0, W - 44, 15); ctx.clip();
-  text(WIRE[wireIndex], wireX, 3, '#dfe4f2');
+  text(alert ? missionHeadline() : wireText, wireX, 3, alert ? '#ffb3bc' : '#dfe4f2');
   ctx.restore();
 
   // status bar
@@ -467,15 +658,29 @@ function drawCity(): void {
     drawFigure(Math.round(w.x), 228, w.coat, Math.floor(w.phase) % 4, w.umbrella, w.dir);
   }
 
+  // the man at the terminus, until you have heard him out
+  if (!declined) {
+    drawFigure(258, 228, '#2c2e36', 0, false, 1);
+    ctx.fillStyle = '#1a1b22'; ctx.fillRect(254, 215, 8, 2);
+  }
+
   drawPlayer();
 
-  // job markers
+  // job markers; a callout is red and counts down
   const bob = Math.sin(performance.now() / 320) * 2;
   for (const s of spots) {
-  if (!s.job) continue;
-  ctx.fillStyle = 'rgba(8,10,18,0.88)'; ctx.fillRect(s.x - 5, s.my - 12 + bob, 11, 12);
-  ctx.fillStyle = '#ffc84a'; ctx.fillRect(s.x - 5, s.my - 1 + bob, 11, 1);
-  text('!', s.x - 2, s.my - 11 + bob, '#ffc84a');
+    if (!s.job) continue;
+    const colour = s.mission ? '#ff4a5f' : '#ffc84a';
+    const pulse = s.mission ? Math.sin(performance.now() / 90) * 0.5 + 0.5 : 0;
+    ctx.fillStyle = 'rgba(8,10,18,0.88)'; ctx.fillRect(s.x - 5, s.my - 12 + bob, 11, 12);
+    ctx.fillStyle = colour; ctx.fillRect(s.x - 5, s.my - 1 + bob, 11, 1);
+    if (pulse > 0.5) { ctx.strokeStyle = colour; ctx.strokeRect(s.x - 6.5, s.my - 13.5 + bob, 14, 14); }
+    text('!', s.x - 2, s.my - 11 + bob, colour);
+    if (s.mission && state.mission) {
+      const secs = `${Math.ceil(state.mission.left)}`;
+      ctx.fillStyle = 'rgba(8,10,18,0.88)'; ctx.fillRect(s.x - tw(secs) / 2 - 2, s.my + 1 + bob, tw(secs) + 4, 10);
+      text(secs, s.x - tw(secs) / 2, s.my + 2 + bob, colour);
+    }
   }
 
   // rain
@@ -539,13 +744,37 @@ function drawCity(): void {
     ctx.fillStyle = '#46e0e6'; ctx.fillRect(8, 339, 13, 14);
     text('e', 12, 342, '#08110c');
     text(near.title, 27, 342, '#ffffff');
-    if (near.shut) text('(shut)', 27 + tw(near.title) + 6, 342, '#6f7688');
-    else if (near.job) text('(job)', 27 + tw(near.title) + 6, 342, '#ffc84a');
+    const after = 27 + tw(near.title) + 6;
+    if (near.mission && state.mission) text(`(callout $${near.job!.pay * MISSION_PAY} - ${Math.ceil(state.mission.left)}s)`, after, 342, '#ff4a5f');
+    else if (near.job) text(`(job $${near.job.pay})`, after, 342, '#ffc84a');
+    else if (near.offer) text('(a man in a cap)', after, 342, '#9aa0b8');
+    else if (near.shut) text('(shut)', after, 342, '#6f7688');
   } else {
     text('wasd / tap to walk    e interact    m mute', 8, 342, '#6f7688');
   }
 
-  if (dialogue) {
+  if (toast && !dialogue) {
+    const w = tw(toast.text) + 20;
+    ctx.globalAlpha = Math.min(1, toast.t * 2);
+    ctx.fillStyle = 'rgba(8,10,18,0.95)'; ctx.fillRect((W - w) / 2, 306, w, 20);
+    ctx.fillStyle = toast.colour; ctx.fillRect((W - w) / 2, 306, w, 1);
+    text(toast.text, (W - w) / 2 + 10, 312, toast.colour);
+    ctx.globalAlpha = 1;
+  }
+
+  if (dialogue?.options) {
+    ctx.fillStyle = 'rgba(8,10,18,0.96)'; ctx.fillRect(20, 240, 600, 80);
+    ctx.fillStyle = '#ff4a5f'; ctx.fillRect(20, 240, 600, 1);
+    text(dialogue.title, 30, 248, '#ffc84a');
+    text(dialogue.line.slice(0, Math.floor(dialogue.shown)), 30, 264, '#dfe4f2');
+    dialogue.options.forEach((o, i) => {
+      const r = dlgRect(i);
+      ctx.fillStyle = 'rgba(20,24,34,0.96)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.strokeStyle = '#3a4054'; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+      text(`[${i + 1}]`, r.x + 10, r.y + 9, '#46e0e6');
+      text(o.label, r.x + 40, r.y + 9, '#e8e8f0');
+    });
+  } else if (dialogue) {
     ctx.fillStyle = 'rgba(8,10,18,0.95)'; ctx.fillRect(20, 288, 600, 40);
     ctx.fillStyle = '#46e0e6'; ctx.fillRect(20, 288, 600, 1);
     text(dialogue.title, 30, 295, '#ffc84a');
@@ -571,71 +800,79 @@ function drawJob(): void {
   ctx.fillStyle = 'rgba(20,14,10,0.55)';
   for (let x = 0; x < W; x += 26) ctx.fillRect(x, 290, 1, 70);
 
-  // router on the counter, the thing that is actually broken
+  // the thing that is actually broken, on the counter
   const rx = 36, ry = 246;
-  ctx.fillStyle = '#20242e'; ctx.fillRect(rx, ry, 84, 26);
-  ctx.fillStyle = '#2c3140'; ctx.fillRect(rx, ry, 84, 3);
-  ctx.fillStyle = '#12151c'; ctx.fillRect(rx + 6, ry + 8, 30, 5);
-  const blink = Math.floor(performance.now() / 420) % 3;
-  const leds: Array<[number, string]> = [[78, '#5ce08a'], [86, '#5ce08a'], [94, blink === 1 ? '#ffb200' : '#4a3a12'], [102, '#a83232']];
-  for (const [lx, colour] of leds) {
-    ctx.fillStyle = colour;
-    ctx.fillRect(rx + lx, ry + 17, 3, 3);
-  }
-  text('router', rx, ry + 30, '#6f7688');
+  drawProp(job.def.prop, rx, ry);
   // cable to the laptop
   ctx.strokeStyle = '#2a2f3c'; ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(rx + 84, ry + 20);
+  ctx.moveTo(rx + { router: 84, printer: 76, terminal: 62 }[job.def.prop], ry + 20);
   ctx.lineTo(196, ry + 24);
   ctx.lineTo(250, ry + 4);
   ctx.stroke();
-  // mug
-  ctx.fillStyle = '#d9d2c0'; ctx.fillRect(150, 258, 18, 20);
-  ctx.fillStyle = '#b3ab98'; ctx.fillRect(150, 274, 18, 4);
-  ctx.fillStyle = '#d9d2c0'; ctx.fillRect(168, 263, 4, 8);
-  ctx.fillStyle = '#8a7f6a'; ctx.fillRect(154, 262, 10, 1);
 
+  if (job.def.note) {
+    // a paper slip: evidence that is not on the screen
+    const nx = 132, ny = 236;
+    ctx.fillStyle = '#efe9d8'; ctx.fillRect(nx, ny, 122, 42);
+    ctx.fillStyle = '#c9c3b2'; ctx.fillRect(nx, ny + 41, 122, 1);
+    job.def.note.forEach((l, i) => text(l, nx + 4, ny + 5 + i * 12, i === 0 ? '#6a675c' : '#20201d'));
+  } else {
+    // mug
+    ctx.fillStyle = '#d9d2c0'; ctx.fillRect(150, 258, 18, 20);
+    ctx.fillStyle = '#b3ab98'; ctx.fillRect(150, 274, 18, 4);
+    ctx.fillStyle = '#d9d2c0'; ctx.fillRect(168, 263, 4, 8);
+    ctx.fillStyle = '#8a7f6a'; ctx.fillRect(154, 262, 10, 1);
+  }
+
+  const d = job.def;
   ctx.fillStyle = '#c9c3b2'; ctx.fillRect(36, 46, 204, 140);
   ctx.fillStyle = '#efe9d8'; ctx.fillRect(36, 46, 204, 2);
   ctx.fillStyle = '#b3ad9d'; ctx.fillRect(36, 184, 204, 1);
-  text('job 4471', 46, 56, '#6a675c');
-  text('chan tai', 46, 76, '#20201d');
-  text('tea shop', 46, 96, '#4a473f');
+  text(d.ticket, 46, 56, job.mission ? '#a8323c' : '#6a675c');
+  text(d.client, 46, 76, '#20201d');
+  text(d.place, 46, 96, '#4a473f');
   ctx.fillStyle = '#b3ad9d'; ctx.fillRect(46, 110, 184, 1);
-  text('pay $450', 46, 120, '#3c3a34');
-  text('no internet', 46, 142, '#8a2c2c');
-  text('1 of 3 checks', 46, 162, '#4a473f');
+  text(job.mission ? `pay $${job.pay} (x${MISSION_PAY})` : `pay $${job.pay}`, 46, 120, '#3c3a34');
+  text(d.symptom, 46, 142, '#8a2c2c');
+  text(`check ${Math.min(job.stage + 1, d.stages.length)} of ${d.stages.length}`, 46, 162, '#4a473f');
 
   ctx.fillStyle = '#2a2c36'; ctx.fillRect(262, 26, 344, 164);
   ctx.fillStyle = '#0a0c12'; ctx.fillRect(268, 32, 332, 152);
   ctx.fillStyle = '#555a70'; ctx.fillRect(262, 26, 344, 2);
 
-  for (let i = 0; i < job.shown && i < CONSOLE_LINES.length; i += 1) {
-    const line = CONSOLE_LINES[i];
-    const colour = line.includes('timed out') ? '#ff6a6a'
+  const lines = d.console;
+  const lh = lines.length > 9 ? 14 : 16;
+  for (let i = 0; i < job.shown && i < lines.length; i += 1) {
+    const line = lines[i];
+    const colour = /timed out|unable|50 of 50/.test(line) ? '#ff6a6a'
       : line.includes('reply') ? '#7be08a'
-      : line.startsWith('C:') ? '#ffffff' : '#a8aec8';
-    text(line, 278, 42 + i * 16, colour);
+      : /^(C:|router>)/.test(line) ? '#ffffff' : '#a8aec8';
+    text(line, 278, 42 + i * lh, colour);
   }
 
   if (job.step === 'typing' && Math.floor(performance.now() / 400) % 2 === 0) {
     ctx.fillStyle = '#7be08a';
-    ctx.fillRect(278, 48 + Math.max(0, job.shown - 1) * 16, 5, 1);
+    ctx.fillRect(278, 48 + Math.max(0, job.shown - 1) * lh, 5, 1);
   }
 
-  text(job.hint, 36, 200, '#9aa0b8');
-  if (job.feedback) text(job.feedback, 36, 218, job.feedbackColour);
+  // what just happened reads first, then the question in front of you
+  if (job.feedback) {
+    text(job.feedback, 36, 200, job.feedbackColour);
+    text(job.hint, 36, 218, '#9aa0b8');
+  } else {
+    text(job.hint, 36, 200, '#9aa0b8');
+  }
 
   job.options.forEach((label, i) => {
-    const y = 198 + i * 28;
-    ctx.fillStyle = 'rgba(20,24,34,0.96)'; ctx.fillRect(262, y, 344, 24);
-    ctx.strokeStyle = '#3a4054'; ctx.strokeRect(262.5, y + 0.5, 343, 23);
-    text(`[${i + 1}]`, 272, y + 5, '#46e0e6');
-    text(label, 312, y + 5, '#e8e8f0');
+    const r = optRect(i);
+    ctx.fillStyle = 'rgba(20,24,34,0.96)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = '#3a4054'; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+    text(`[${i + 1}]`, r.x + 10, r.y + 8, '#46e0e6');
+    text(label, r.x + 40, r.y + 8, '#e8e8f0');
   });
 
-  text('1-3 choose    enter', 36, 336, '#6f7688');
+  text(job.options.length === 2 ? '1-2 choose' : job.options.length ? '1-3 choose' : 'tap or enter to skip', 36, 336, '#6f7688');
 
   if (job.step === 'paid') {
     ctx.fillStyle = '#0a0d14'; ctx.fillRect(0, 0, W, H);
@@ -644,17 +881,114 @@ function drawJob(): void {
     ctx.fillStyle = '#46e0e6'; ctx.fillRect(bx, by, bw, 1);
     ctx.fillStyle = '#232a3a'; ctx.fillRect(bx, by + bh - 1, bw, 1);
 
-    text('job 4471 - closed', bx + 24, by + 18, '#6f7688');
+    text(`${d.ticket} - closed`, bx + 24, by + 18, '#6f7688');
     text('paid', bx + 24, by + 44, '#7be08a', 3);
-    text('+ $450', bx + 24, by + 84, '#ffc84a', 2);
+    text(`+ $${job.pay}`, bx + 24, by + 84, '#ffc84a', 2);
 
-    text('she pays in cash and gives you buns', bx + 24, by + 126, '#e8e8f0');
-    text('mastery: gateway +40', bx + 24, by + 146, '#9aa0b8');
-    text('the wire carries your name for an hour', bx + 24, by + 166, '#9aa0b8');
+    text(d.paid, bx + 24, by + 126, '#e8e8f0');
+    text(`mastery: ${d.mastery[0]} +${d.mastery[1]}`, bx + 24, by + 146, '#9aa0b8');
+    text(job.mission ? 'double pay: you beat the clock' : 'the wire carries your name for an hour', bx + 24, by + 166, '#9aa0b8');
 
     ctx.fillStyle = '#232a3a'; ctx.fillRect(bx + 24, by + 190, bw - 48, 1);
     text('[enter] back to the road', bx + 24, by + 206, '#46e0e6');
   }
+}
+
+function drawProp(kind: Prop, rx: number, ry: number): void {
+  const blink = Math.floor(performance.now() / 420) % 3;
+  if (kind === 'router') {
+    ctx.fillStyle = '#20242e'; ctx.fillRect(rx, ry, 84, 26);
+    ctx.fillStyle = '#2c3140'; ctx.fillRect(rx, ry, 84, 3);
+    ctx.fillStyle = '#12151c'; ctx.fillRect(rx + 6, ry + 8, 30, 5);
+    const leds: Array<[number, string]> = [[78, '#5ce08a'], [86, '#5ce08a'], [94, blink === 1 ? '#ffb200' : '#4a3a12'], [102, '#a83232']];
+    for (const [lx, colour] of leds) {
+      ctx.fillStyle = colour;
+      ctx.fillRect(rx + lx - 32, ry + 17, 3, 3);
+    }
+    text('router', rx, ry + 30, '#6f7688');
+    return;
+  }
+  if (kind === 'printer') {
+    // receipt printer with a test page curling out of the slot
+    ctx.fillStyle = '#d6d1c4'; ctx.fillRect(rx + 8, ry, 68, 26);
+    ctx.fillStyle = '#ebe7dc'; ctx.fillRect(rx + 8, ry, 68, 3);
+    ctx.fillStyle = '#9d988a'; ctx.fillRect(rx + 8, ry + 22, 68, 4);
+    ctx.fillStyle = '#2a2b30'; ctx.fillRect(rx + 18, ry + 5, 48, 2);
+    ctx.fillStyle = '#f6f3ea'; ctx.fillRect(rx + 24, ry - 14, 36, 19);
+    ctx.fillStyle = '#b8b2a2';
+    for (let i = 0; i < 4; i += 1) ctx.fillRect(rx + 28, ry - 11 + i * 4, 20 + (i % 2) * 6, 1);
+    ctx.fillStyle = blink === 1 ? '#ffb200' : '#5ce08a'; ctx.fillRect(rx + 68, ry + 12, 3, 3);
+    text('printer', rx, ry + 30, '#6f7688');
+    return;
+  }
+  // card terminal: a handset with a screen and a keypad
+  ctx.fillStyle = '#26292f'; ctx.fillRect(rx + 22, ry - 12, 40, 38);
+  ctx.fillStyle = '#353943'; ctx.fillRect(rx + 22, ry - 12, 40, 2);
+  ctx.fillStyle = '#1b3a2c'; ctx.fillRect(rx + 27, ry - 8, 30, 11);
+  ctx.fillStyle = blink === 1 ? '#ff6a6a' : '#7b2a2a'; ctx.fillRect(rx + 30, ry - 4, 24, 3);
+  ctx.fillStyle = '#4a4f5c';
+  for (let r = 0; r < 3; r += 1) for (let c = 0; c < 3; c += 1) ctx.fillRect(rx + 29 + c * 9, ry + 6 + r * 6, 6, 4);
+  text('card machine', rx, ry + 30, '#6f7688');
+}
+
+function drawPrison(): void {
+  const j = state.jail;
+  if (!j) return;
+  // the cell: block wall, a high barred window, bars in front of everything
+  ctx.fillStyle = '#14161f'; ctx.fillRect(0, 0, W, H);
+  for (let y = 0; y < H; y += 12) {
+    for (let x = (y / 12) % 2 ? -14 : 0; x < 236; x += 28) {
+      ctx.fillStyle = '#1b1e29'; ctx.fillRect(x + 1, y + 1, 26, 10);
+    }
+  }
+  ctx.fillStyle = '#26324f'; ctx.fillRect(72, 50, 92, 56);
+  lampGlow(118, 78, 60, 'rgba(150,180,255,0.18)', 1);
+  ctx.fillStyle = '#3a3f52';
+  for (let x = 72; x <= 164; x += 13) ctx.fillRect(x, 50, 3, 56);
+  ctx.fillStyle = '#2a2d3a'; ctx.fillRect(30, 250, 170, 14);
+  ctx.fillStyle = '#4a4d5c'; ctx.fillRect(30, 246, 170, 4);
+  ctx.fillStyle = '#353846';
+  for (let x = 6; x < 236; x += 22) {
+    ctx.fillRect(x, 0, 5, H);
+    ctx.fillStyle = '#4d5165'; ctx.fillRect(x, 0, 1, H); ctx.fillStyle = '#353846';
+  }
+  text('stanley prison', 20, 300, '#dfe4f2', 2);
+  text('99 tung tau wan road', 20, 322, '#6f7688');
+
+  // the case sheet is paper, so it gets an edge
+  const act = wrap(j.act, 56);
+  const offence = wrap(j.offence, 56);
+  const fix = wrap(j.fix, 56);
+  const sx = 254, sw = 362;
+  const sh = 196 + 12 * (act.length + offence.length + fix.length);
+  const sy = Math.round((H - sh) / 2);
+  ctx.fillStyle = '#c9c3b2'; ctx.fillRect(sx, sy, sw, sh);
+  ctx.fillStyle = '#efe9d8'; ctx.fillRect(sx, sy, sw, 2);
+  ctx.fillStyle = '#b3ad9d'; ctx.fillRect(sx, sy + sh - 1, sw, 1);
+  const lx = sx + 14;
+  const ink = '#20201d';
+  const label = '#6a675c';
+  let y = sy + 12;
+  text('case sheet', lx, y, '#8a2c2c'); y += 20;
+  text('what you did', lx, y, label); y += 12;
+  for (const l of act) { text(l, lx, y, ink); y += 12; }
+  y += 8;
+  text('the law', lx, y, label); y += 12;
+  text(j.law, lx, y, ink); y += 12;
+  for (const l of offence) { text(l, lx, y, '#4a473f'); y += 12; }
+  y += 8;
+  text('what would have stopped it', lx, y, label); y += 12;
+  for (const l of fix) { text(l, lx, y, ink); y += 12; }
+  y += 8;
+  ctx.fillStyle = '#b3ad9d'; ctx.fillRect(lx, y, sw - 28, 1); y += 10;
+
+  const left = Math.max(0, j.until - Date.now());
+  const mm = String(Math.floor(left / 60000)).padStart(2, '0');
+  const ss = String(Math.floor((left % 60000) / 1000)).padStart(2, '0');
+  text('released in', lx, y, label); y += 14;
+  text(`${mm}:${ss}`, lx, y, '#8a2c2c', 3); y += 32;
+  text('real minutes. closing the tab does not', lx, y, '#4a473f'); y += 12;
+  text('shorten it. no fine, no record: just time.', lx, y, '#4a473f');
 }
 
 // ------------------------------------------------------------------- loop ---
@@ -662,15 +996,19 @@ let last = performance.now();
 function frame(now: number): void {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
+  frames += 1;
   update(dt);
-  if (job) drawJob();
+  if (state.jail) drawPrison();
+  else if (job) drawJob();
   else drawCity();
   requestAnimationFrame(frame);
 }
 
 function start(): void {
   load();
+  if (state.mission && !missionDef()) state.mission = null;
   buildSpots();
+  if (state.mission) showWire(undefined, true);
   player = {
     x: Math.min(WALK.maxX, Math.max(WALK.minX, state.x)),
     y: Math.min(WALK.maxY, Math.max(WALK.minY, state.y)),
@@ -690,4 +1028,7 @@ else {
 
 (window as unknown as { __audio: typeof audio }).__audio = audio;
 (window as unknown as { __job: () => unknown }).__job = () =>
-  (job ? { step: job.step, shown: job.shown, opts: job.options } : null);
+  (job ? { id: job.def.id, step: job.step, stage: job.stage, shown: job.shown, opts: job.options, mission: job.mission } : null);
+Object.defineProperty(window, '__frames', { get: () => frames });
+/** test hook: open a callout now instead of waiting for the street timer */
+(window as unknown as { __mission: () => void }).__mission = () => { nextMission = 0; };

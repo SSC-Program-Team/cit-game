@@ -1,3 +1,5 @@
+export type Jail = { until: number; act: string; law: string; offence: string; fix: string };
+
 export type Save = {
   v: 1;
   money: number;
@@ -8,6 +10,12 @@ export type Save = {
   y: number;
   done: string[];
   mastery: Record<string, number>;
+  /** per client: missed callouts cost trust */
+  rep: Record<string, number>;
+  /** wall-clock release time, so closing the tab does not shorten the sentence */
+  jail: Jail | null;
+  /** an open callout on the street and its seconds left */
+  mission: { id: string; left: number } | null;
 };
 
 const KEY = 'citgame.save.v1';
@@ -22,6 +30,9 @@ export const state: Save = {
   y: 118,
   done: [],
   mastery: {},
+  rep: {},
+  jail: null,
+  mission: null,
 };
 
 export function load(): void {
