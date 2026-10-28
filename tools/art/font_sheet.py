@@ -14,7 +14,7 @@ from pixelart import Canvas, P, _F  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUT = os.path.join(ROOT, "public", "img")
 
-CHARSET = ("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,:;-/$%+!?[]()*#'<>=")
+CHARSET = ("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,:;-/$%+!?[]()*#'<>=\\")
 CELL_W, CELL_H, COLS = 6, 8, 24
 SCALE = 1
 
