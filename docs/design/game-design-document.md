@@ -16,7 +16,9 @@
 
 ## 1. What it is
 
-You are an 18-year-old school leaver in Hong Kong with a CompTIA study guide, a second-hand laptop and no money. Over two school years of in-game weeks you take IT jobs, get paid, get burned, rent a walk-up studio, split a flat network for a 茶餐廳 owner, buy your first flat — and have to wire it yourself.
+You are an 18-year-old school leaver in Hong Kong with a CompTIA study guide, a second-hand laptop and no money. You take IT jobs, get paid, get burned, rent a walk-up studio, split a flat network for a 茶餐廳 owner, buy your first flat — and have to wire it yourself.
+
+You play it the way you play any life sim: fifteen minutes after dinner, a five-minute burst on the MTR, a long Sunday session. Nothing is scheduled, no one assigns it, and no lesson has to end before the good part. It is a game first — the fact that you come out of it knowing how a network actually works is the trap door underneath.
 
 The work *is* the game. There is no separate quiz screen bolted onto a story: every job you accept is a networking task, scored, and the money you earn from it is what buys your next tool, your rent, your rack.
 
@@ -46,7 +48,7 @@ The work *is* the game. There is no separate quiz screen bolted onto a story: ev
 2. **Money is the scoreboard, mastery is the gate.** Money is visible and motivating; mastery decides which jobs you are allowed to accept. You cannot buy your way past a subnetting gate.
 3. **Fail forward.** No game over, no lives. A wrong diagnosis costs in-game time, money and reputation, then hands you a rework scene that shows what the evidence actually meant.
 4. **Hong Kong is the setting, not the skin.** Concrete walls eat 5 GHz. Landlords refuse drilling. Parts are cheap in 黃金商場 and the queue at the till is the actual reason the job is urgent.
-5. **A teacher can author content without touching the game.** Every question, job and scoring rule lives in JSON, validated in CI.
+5. **You can put it down and pick it up.** Every job is a self-contained sitting with a clean ending, and the game tells you where you were when you come back — three minutes or three weeks later. Nothing rots while you are away.
 
 ---
 
@@ -54,9 +56,9 @@ The work *is* the game. There is no separate quiz screen bolted onto a story: ev
 
 ### 3.1 Players
 
-- **Primary:** S4–S6 ICT students, in class, 35–40 minute lessons, one student per machine — school laptops *and* iPads, same build, same save format.
-- **Secondary:** S5–S6 revision at home, and juniors (S1–S3) playing the same build on an easier job tier.
-- **Tertiary:** the teacher, who needs to see *which topic* a class is weak on without reading 30 save files.
+- **Primary:** S4–S6 ICT students playing **on their own time** — after school, at night, on the MTR, in the holidays. School laptops and iPads, same build, same save.
+- **Secondary:** juniors (S1–S3) on an easier job tier, and anyone who just wants the life sim.
+- **Tertiary, and deliberately last:** the teacher. They can look at progress if they want to, but the game never requires a teacher to run, mark, or release anything.
 
 ### 3.2 Curriculum binding
 
@@ -84,12 +86,31 @@ The first content pack binds to the DSE ICT networking surface: compulsory **Uni
 
 ## 4. Systems
 
-### 4.1 Time
+### 4.1 Sessions, not lessons
 
-- One school lesson ≈ **one in-game week**. A lesson opens on Monday morning; the week closes with rent due.
-- Each day has **4 blocks**: morning, afternoon, evening, night. A job costs 1–2 blocks, travel 1, sleep resets energy.
-- The clock only advances when the player acts — no real-time pressure, so a slow reader is never punished for reading.
-- **Full campaign = 30 weeks** (one school year of lessons). The demo is week 1.
+- **The shift is the unit of play**, not the lesson. A shift is one job: 5–10 minutes, a clean end, a payment, an autosave. A long session is two or three shifts; a burst on the bus is one.
+- **Nothing is time-gated by the real world.** The in-game clock advances by *blocks you spend*, never by wall time. Leave for a week and the game has not moved; rent is only charged when you finish a block.
+- **Every screen autosaves.** There is no "you may lose progress" popup, no quitting ceremony, no save point that punishes a closed lid.
+- **Resume is a one-liner.** Opening the game lands on the hub with the exact state in plain words: *"陳太's till is still down — 12 minutes left on the clock — continue?"* No recap to read, no notes needed.
+- A **week** is roughly 6–8 shifts. The campaign is 20–30 in-game weeks and has no deadline: it ends when you get bored or you reach the ending, not when term does.
+
+### 4.9 Why you come back
+
+A game played in free time has to win the next five minutes against every other thing a 17-year-old could do, with no teacher to make them. That is a design problem, not a marketing one.
+
+| System | What it does | Why not the obvious version |
+|---|---|---|
+| **One next thing** | the hub always states the single most useful next action, in words | not a quest log of forty markers; a person with six open jobs does nothing |
+| **Momentum** | a bonus that grows across consecutive shifts and decays gently | not a login streak — a streak punishes a school trip and teaches students to game the calendar |
+| **Seasons (8 real weeks)** | standings and the wire fallback reset; your career, flat and tools persist | an eternal board is won by whoever started first and stops motivating everyone else |
+| **Collection** | certifications, tools, client relationships, a shelf of finished-job polaroids, flat upgrades | progress you can *look at* without reading a number |
+| **Chapters** | every few ranks, a scripted job with a story (the bank cutover, the ransomware night, the landlord's notice) | the moment the sim needs a narrative reason to escalate stakes |
+| **Watching other people** | live standings, wire events from real players, "阿明 did this job in six minutes" | the social layer is the wire, never a chat box — students do not need another chat box |
+| **Visible mastery** | skill tree unlocks and "you can now read a routing table" moments | never a grade, never a percentage that looks like a report card |
+
+![The hub](../mockups/07-hub.png)
+
+*The hub at 11 p.m.: one unfinished job stated in plain words, the live board, momentum instead of a streak, and an honest autosave line. There is never a quest log.*
 
 ### 4.2 The job loop
 
@@ -237,12 +258,14 @@ Per topic: `mastery = 0.60·accuracy + 0.20·streak + 0.10·speed + 0.10·hint-f
 - Generated values are seeded per student: the subnetting problem, the IP conflict and the channel plan differ between machines, so screenshot-sharing cannot cheat a class.
 - No leaderboard by default (opt-in, class-scoped) — comparison pressure is the fastest way to kill a slow learner's engagement.
 
-### 5.4 Teacher surface
+### 5.4 Teacher visibility (optional, never required)
 
-- Content lives in `content/` as JSON; `npm run validate:content` fails CI on a malformed task or an unsolvable subnet problem.
-- Each pack has a seed and a difficulty tag: `npm run pack -- --topic=subnet --count=20 --seed=SEP-24` prints a lesson pack.
-- Mastery export: CSV per class, or JSON for the marksheet, if the school wants numbers in the gradebook (§12 Q3).
-- Question generator means a teacher can produce 200 fresh subnetting items in a minute and *not* mark them by hand.
+The game is not a classroom tool with a story attached; it is a game a teacher is allowed to look inside.
+
+- Content lives in `content/` as JSON; `npm run validate:content` fails CI on a malformed task or an unsolvable subnet problem, so a bad edit cannot reach students.
+- An admin view lists per-topic mastery for whoever opts in — read-only, no marking queue, no class packs to schedule.
+- Topic export to CSV exists for the teacher who wants it, and is **off by default**: nothing about the game implies homework.
+- The question generators exist so *content* can scale to free-time play (a player burns 40 tasks a week, not 20 a term), and so nobody hand-marks anything.
 
 ---
 
@@ -387,11 +410,37 @@ Same build, same content, two input models. Nothing is desktop-only and nothing 
 
 Playwright plays all three demo jobs **twice** — once with keyboard events, once with touch emulation on the iPad Pro descriptor — and both runs must reach the summary screen with the same score.
 
+### 8.3 The live service (only because the board is live)
+
+Live standings are the single reason this game has a server. Keep the service as small as that reason.
+
+One Express app, `node:sqlite` (node 22, `--experimental-sqlite`), a `systemd --user` unit on 127.0.0.1:<port>, path-proxied by Apache exactly like `/transcriber` and `/spark`. One SQLite file, nightly copy.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/session` | handle + device id → short-lived bearer token |
+| `POST /api/event` | a finished job: `{jobId, seed, taskLog, durationMs}` |
+| `GET /api/standings?scope=school\|class&season=current` | top N + your row |
+| `GET /api/wire?since=` | feed since a cursor (SSE when connected, polling fallback) |
+| `POST /api/presence` | heartbeat, so "3 players on now" is honest |
+
+**The client never says what it earned.** The server replays the deterministic systems with the submitted seed and task log and derives the fee, mastery delta and rank; a mismatch is rejected and logged. This is the whole reason the systems in §8 are pure functions, and with no teacher watching it is now the *only* thing standing between the board and a devtools console.
+
+Also enforced server-side: fee caps (`≤ job.fee × 1.2`), one event per job id per handle, rate limits, no client timestamps, and a `shadow` flag that hides suspicious money from the public board while leaving it visible to the admin view.
+
+**Seasons.** A `season` column; a systemd timer freezes the previous board and stamps a champion. Career, flat, tools and mastery persist across seasons — only the ranking resets, so a new player in week 5 is not looking at a mountain.
+
+**Designed for sporadic load, not a timetable.** Players arrive at 7 a.m., 11 p.m. and 3 a.m., one at a time. That is a handful of writes per minute at school scale, so: no queue, no Redis, no containers — one process, one file, one unit. Live-ness comes from SSE held open per connected player, with polling when the connection drops.
+
+**Offline is a first-class state.** Events queue in IndexedDB and flush on reconnect; standings render with an "as of HH:MM" stamp; the game never blocks on the network to let a student play.
+
 ---
 
-## 9. v1 demo — one lesson
+## 9. v1 demo — the first shift
 
-**Scope:** your bedroom (start/save) and 陳太's 茶餐廳 (job site). One in-game day. Three jobs. **20 graded tasks.** ~15–20 minutes.
+**Scope:** your bedroom (start/save) and 陳太's 茶餐廳 (job site). Three jobs, **20 graded tasks**, 12–15 minutes — and built to be interrupted: every task autosaves and every job is a clean stopping point.
+
+**The question this build answers:** if a student is handed a link with no explanation, do they come back for a second session tomorrow? Nothing else about this build matters if the answer is no.
 
 | # | Job | Task types | Teaches | Fee |
 |---|---|---|---|---|
@@ -413,6 +462,8 @@ Playwright plays all three demo jobs **twice** — once with keyboard events, on
 10. All three jobs are completable with **touch only** on iPad Safari, with no hardware keyboard, and the save then opens on a laptop.
 11. Rotating the device mid-job loses nothing; portrait shows a rotate overlay and the clock does not advance.
 12. No task ever opens the OS keyboard — verified by using the demo on an iPad without one.
+13. **Cold resume:** closing the tab for three days and reopening lands on the hub, states the unfinished job in one line, and continues without re-reading anything.
+14. One job can be finished inside a single 5-minute sitting, with the payment screen reachable before the sitting ends.
 
 **Explicitly out of scope for v1:** housing builds, business sim, MTR/districts, Chinese, accounts, leaderboards, mobile layout.
 
@@ -425,7 +476,7 @@ Playwright plays all three demo jobs **twice** — once with keyboard events, on
 | **v0.1** demo | §9 scope | All 7 acceptance criteria; playtested with one class |
 | **v0.2** city | Sham Shui Po + Mong Kok maps, MTR, 12 jobs, week loop, employment track, 4 districts of content, mastery screen | A student plays 4 weeks without a dead end |
 | **v0.3** the ladder | business registration, staff, shopfront, all five housing builds, typhoon + outage events | Money curve verified by `sim:balance` |
-| **v1.0** class-ready | teacher dashboard, class packs, mastery CSV export, full 13-topic content pack (~300 tasks) | Teacher can run a lesson unaided |
+| **v1.0** open play | live service (standings, wire, seasons), hub, achievements, 13-topic content (~300 tasks) | A student plays a full in-game week unaided and the board updates live |
 | **v1.1** 中文 | 繁中 content + UI, bilingual toggle | Reviewed by a Chinese panel |
 | **v2.0** engine reuse | swap the content pack for another subject (physics/chemistry practicals) on the same job-engine | A second subject ships with no engine changes |
 
@@ -442,7 +493,9 @@ Playwright plays all three demo jobs **twice** — once with keyboard events, on
 | **Cheating by sharing** | one strong student answers for the class | seeded generation, per-machine numbers |
 | **Lab hardware** | old laptops, no GPU, school Wi-Fi | canvas fallback, < 5 MB, offline-capable, no server dependency |
 | **Data privacy** | student mastery data is personal data under the PDPO | local-first by default; any sync is opt-in, school-owned, documented |
-| **Teacher workload** | authoring 300 tasks is a term's work | generators for numeric topics; JSON import for existing question banks |
+| **Content volume for free play** | a player burns ~40 tasks a week, not 20 a term — hand-authored content runs out in a month and the game dies | numeric topics are generated (subnet, addressing, channels); jobs are templated from task pools; seasons add a content drop; measure tasks-per-session before scaling the bank |
+| **No one to enforce play** | no teacher, no homework, no marks — the game has to win against TikTok on a Tuesday night | the hub states one next action; shifts are 5–10 minutes; momentum instead of streaks; the first session ends on a hook (a client who will call back) |
+| **A server that must be up on a Sunday** | live standings mean the school box is now part of a leisure product | the game is fully playable offline against stale standings; the service is idle-cheap (SQLite, one unit); events queue in IndexedDB and flush on reconnect |
 | **Leaderboard inflation** | any client-trusted money figure is a cheat magnet, and a fake rich list kills trust in the whole scoreboard | server-side replay of the task log; fee caps; standings only from validated events |
 | **Comparison pressure** | a public ranking of money makes a slow learner feel ranked, not taught | class-scoped, handles only, off by default for S4, teacher switch, and the strip never sorts by mastery |
 | **Wire as noise** | a moving strip above a diagnostic console steals attention from the assessed task | strip collapses to 0 px during a job; `LIVE` only; pause on focus; reduced-motion mode |
@@ -456,13 +509,14 @@ Playwright plays all three demo jobs **twice** — once with keyboard events, on
 ## 12. Open questions for Ryan
 
 1. **Syllabus binding** — is "CIT" the DSE ICT line (Unit 3 + DCN elective) as assumed in §3.2, or the junior-secondary CIT syllabus? This decides whether v0.1 is subnetting-first or devices-and-safety-first. *Recommendation: DSE ICT, subnetting in the demo.*
-2. **Lesson shape** — one lesson = one in-game week with save/continue, or a 10-minute starter each lesson with the rest as homework? *Recommendation: one week per lesson, save/continue, homework optional.*
-3. **Grades or practice** — do you want mastery exported into the marksheet, or is this deliberately outside assessment? *Recommendation: practice first; export behind a flag.*
+2. **Session length** — should one job aim at a 5-minute burst or a 15-minute sitting? *Recommendation: the job is atomic at 5–10 minutes, three in a row is a session, and the hub never asks for more than one.*
+3. **Who is on the live board** — whole school, or class only, and do you want 8-week seasons? *Recommendation: whole school with a class filter and seasons, because a student playing at 11 p.m. is competing with the school, not with 4B.*
 4. **Business sim** — is "run your own shop" essential to the story or a late optional branch? It is the most expensive system in the design. *Recommendation: v0.3 optional branch, employed track is the main line.*
 5. **Who authors content** — you writing JSON by hand, or an in-game authoring tool for you and other ICT teachers? *Recommendation: JSON + generators for v1, authoring tool only if a second school adopts it.*
 6. **Does "the server" mean a real backend at launch?** A shared class leaderboard needs accounts, a Postgres table and replay validation — a week of work that teaches nothing. *Recommendation: v0.1 ships the wire on the simulated NPC cast with no backend at all; the real feed lands in v1.0 when there is a class actually playing.*
 7. **Handles** — generated school-safe names, or do students pick their own (filtered)? *Recommendation: generated by default, custom opt-in and teacher-visible.*
 8. **Which iPads, and are they managed?** Model and generation set the performance floor; MDM decides whether we can rely on a home-screen install or must live in a Safari tab, and whether a Bluetooth keyboard is ever present (which would let typing tasks exist). *Recommendation: target iPad 9th gen, Safari tab, touch-only, no keyboard assumption.*
+9. **Should mastery ever be visible to you by default?** With no lessons attached, a report-card view risks turning a game into surveillance of a student's free time. *Recommendation: off by default, opt-in per student, and never surfaced to students as a grade.*
 
 ---
 

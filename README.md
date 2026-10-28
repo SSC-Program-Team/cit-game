@@ -26,6 +26,7 @@ All mockups are generated pixel art (native 384×216, 3× upscale), not AI image
 | [The ladder](docs/mockups/04-progression.png) | housing tiers and the employed / own-business fork |
 | [The wire](docs/mockups/05-wire.png) | the headline strip: live news, richest-player fallback, breaking push |
 | [iPad layout](docs/mockups/06-ipad.png) | the same job screen at 4:3 with a touch action bar |
+| [The hub](docs/mockups/07-hub.png) | the front door: one next action, live board, cold resume |
 
 Regenerate them:
 
