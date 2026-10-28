@@ -1,0 +1,45 @@
+# NETLIFE: Hong Kong
+
+A browser-based pixel-art life sim for teaching networking to HKDSE ICT students.
+
+You are a school leaver in Sham Shui Po with a second-hand laptop. You take IT jobs,
+get paid, get burned, rent a walk-up studio, wire your first flat — and every job you
+accept is a real networking task, scored.
+
+![Sham Shui Po at night](docs/mockups/01-city-night.png)
+
+**Status:** concept — design doc written, visual direction fixed, nothing playable yet.
+
+## Read this first
+
+- **[Game design document](docs/design/game-design-document.md)** — pillars, systems, curriculum mapping, demo scope, risks, open questions.
+
+## Visual direction
+
+All mockups are generated pixel art (native 384×216, 3× upscale), not AI images:
+
+| | |
+|---|---|
+| [City + sudden-mission alert](docs/mockups/01-city-night.png) | the overworld and the timed-incident interrupt |
+| [Job ticket + diagnostic console](docs/mockups/02-job-console.png) | the learning surface: read real console output, name the fault |
+| [Home network build](docs/mockups/03-home-network.png) | the housing capstone: plan, cable, score coverage/cost/security |
+| [The ladder](docs/mockups/04-progression.png) | housing tiers and the employed / own-business fork |
+
+Regenerate them:
+
+```bash
+python3 tools/mockup/build.py     # needs Pillow + Noto Sans CJK HK
+```
+
+`tools/mockup/pixelart.py` holds the canonical palette and the 5×7 bitmap font — copy
+those values into the game, do not invent a second style.
+
+## Planned stack
+
+Phaser 3 + TypeScript + Vite, content in JSON, static deploy to GitHub Pages,
+local-first saves with export/import. See §8 of the design document.
+
+## Open decisions
+
+Five questions are waiting on the teacher in §12 of the design doc — syllabus binding,
+lesson shape, grades vs practice, business-sim scope, and who authors content.
