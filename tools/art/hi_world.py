@@ -76,6 +76,10 @@ NEON_G = P["neon_green"]
 
 
 # ---------------------------------------------------------------- helpers ---
+def lift(col, k):
+    return tuple(max(0, min(255, ch + k)) for ch in col[:3]) + (255,)
+
+
 def shade(c, x, y, w, h, col, amount=18):
     """Cast shadow: a darker band offset down-right from a building."""
     for i in range(h):
@@ -91,32 +95,123 @@ def tone(c, x, y, w, h, base, step=6):
         c.rect(x, y + i, w, 1, (min(255, base[0] + k), min(255, base[1] + k), min(255, base[2] + k), 255))
 
 
-def window_row(c, x, y, w, rng, lit=0.42, glass=GLASS, frame=None):
+CURTAINS = ((214, 120, 128, 255), (120, 168, 120, 255), (226, 206, 140, 255), (140, 150, 210, 255))
+TV = (122, 200, 240, 255)
+CLOTHES = ((236, 236, 240, 255), (214, 92, 108, 255), (92, 126, 172, 255), (226, 196, 92, 255),
+           (120, 168, 120, 255), (58, 62, 80, 255))
+
+
+def window(c, wx, y, r, frame):
+    """One 10x10 window: what is behind the glass says someone lives here."""
+    c.rect(wx - 1, y - 1, 12, 12, frame)
+    k = r.random()
+    if k < 0.34:                                      # lamp on, curtain half drawn
+        c.rect(wx, y, 10, 10, LIT)
+        c.rect(wx, y, 3 + r.randrange(0, 3), 10, r.choice(CURTAINS))
+        c.alpha_rect(wx + 5, y + 6, 4, 4, (120, 80, 50), 90)      # someone's shelf
+    elif k < 0.46:                                    # a television in the dark
+        c.rect(wx, y, 10, 10, GLASS2)
+        c.alpha_rect(wx, y, 10, 10, TV, 110)
+        c.rect(wx + 3, y + 5, 4, 3, lift(TV, 30))
+    elif k < 0.74:
+        c.rect(wx, y, 10, 10, GLASS)
+        c.set(wx + 1, y + 1, lift(GLASS, 50))         # sky in the glass
+        c.set(wx + 2, y + 1, lift(GLASS, 30))
+    else:
+        c.rect(wx, y, 10, 10, GLASS2)
+    c.hline(wx, y + 5, 10, frame)
+    c.vline(wx + 5, y, 10, frame)
+    if r.random() < 0.3:                              # iron grille, a Hong Kong default
+        for gx in range(wx, wx + 10, 2):
+            c.vline(gx, y - 1, 12, (52, 54, 62, 255))
+        c.hline(wx - 1, y - 1, 12, (52, 54, 62, 255))
+        c.hline(wx - 1, y + 10, 12, (52, 54, 62, 255))
+    if r.random() < 0.18:                             # pot plant on the sill
+        c.rect(wx + 1, y + 9, 3, 2, (150, 84, 60, 255))
+        c.rect(wx, y + 7, 5, 2, (70, 132, 76, 255))
+
+
+def window_row(c, x, y, w, rng, frame=None):
     frame = frame or (70, 74, 88, 255)
     for wx in range(x + 5, x + w - 6, 14):
-        c.rect(wx - 1, y - 1, 12, 12, frame)
-        r = rng.random()
-        inner = LIT if r < lit else (glass if r < lit + 0.35 else GLASS2)
-        c.rect(wx, y, 10, 10, inner)
-        c.hline(wx, y + 5, 10, frame)
-        c.vline(wx + 5, y, 10, frame)
+        window(c, wx, y, rng, frame)
+
+
+def laundry(c, x, y, w, r):
+    """A pole out of a window with the week's washing on it."""
+    c.hline(x, y, w, (150, 150, 160, 255))
+    c.set(x, y + 1, (110, 110, 120, 255))
+    cx = x + 2
+    while cx < x + w - 3:
+        col = r.choice(CLOTHES)
+        if r.random() < 0.5:                          # shirt
+            c.rect(cx, y + 1, 5, 2, col)
+            c.rect(cx + 1, y + 3, 3, 4, col)
+            cx += 7
+        else:                                         # towel / trousers
+            hgt = r.randrange(4, 8)
+            c.rect(cx, y + 1, 3, hgt, col)
+            c.vline(cx + 2, y + 1, hgt, lift(col, -30))
+            cx += 5
 
 
 def ac_unit(c, x, y):
     c.rect(x, y, 9, 7, (168, 168, 176, 255))
-    c.rect(x + 1, y + 1, 7, 3, (120, 122, 132, 255))
-    c.vline(x + 4, y + 4, 3, (120, 122, 132, 255))
+    c.hline(x, y, 9, (196, 196, 204, 255))
+    c.rect(x + 1, y + 2, 7, 3, (120, 122, 132, 255))
+    for i in range(3):
+        c.hline(x + 1, y + 2 + i, 7, (120, 122, 132, 255) if i % 2 else (104, 106, 116, 255))
     c.vline(x + 4, y + 7, 4, (96, 98, 108, 255))
+    for i in range(10):                               # the drip stain every unit leaves
+        c.alpha_rect(x + 4, y + 11 + i, 1, 1, (24, 22, 28), max(8, 70 - i * 6))
+
+
+def streaks(c, x, y, w, h, r):
+    """Rain stains running down from the ledges."""
+    for _ in range(max(1, w // 16)):
+        sx = x + r.randrange(2, max(3, w - 2))
+        sy = y + r.randrange(0, max(1, h // 2))
+        for i in range(r.randrange(8, 22)):
+            c.alpha_rect(sx, sy + i, 1, 1, (20, 18, 26), max(6, 46 - i * 2))
+
+
+def roof_kit(c, x, y, w, r):
+    """Water tank and an aerial: every walk-up roof has both."""
+    tx = x + r.randrange(4, max(5, w // 2))
+    c.rect(tx, y - 20, 12, 14, (120, 124, 136, 255))
+    c.vline(tx, y - 20, 14, (150, 154, 166, 255))
+    c.vline(tx + 11, y - 20, 14, (92, 96, 108, 255))
+    c.hline(tx, y - 16, 12, (98, 102, 114, 255))
+    c.hline(tx, y - 11, 12, (98, 102, 114, 255))
+    ax = x + w - 8
+    c.vline(ax, y - 28, 22, (120, 120, 130, 255))
+    for i, span in enumerate((10, 7, 4)):
+        c.hline(ax - span // 2, y - 26 + i * 4, span, (120, 120, 130, 255))
+
+
+def lightbox(c, x, y, h, colour, r):
+    """Projecting signbox. Lines, not letters: no invented shop names on a real road."""
+    c.rect(x - 1, y - 1, 10, h + 2, INK)
+    c.rect(x, y, 8, h, lift(colour, -150))
+    c.frame(x, y, 8, h, colour)
+    for ly in range(y + 3, y + h - 3, 4):
+        c.hline(x + 2, ly, 4 if r.random() < 0.5 else 3, colour)
+    c.hline(x - 4, y + 2, 4, (110, 110, 120, 255))    # bracket back to the wall
+    c.hline(x - 4, y + h - 3, 4, (110, 110, 120, 255))
 
 
 def awning(c, x, y, w, col, col2, h=12):
     c.rect(x, y, w, h, col)
     for i in range(0, w, 10):
         c.rect(x + i, y, 5, h, col2)
-    c.hline(x, y, w, tuple(min(255, ch + 30) for ch in col[:3]) + (255,))
-    for i in range(0, w, 5):
+    c.hline(x, y, w, lift(col, 30))
+    c.hline(x, y + 1, w, lift(col, 14))
+    c.alpha_rect(x, y + h - 3, w, 3, (0, 0, 0), 50)   # canvas curves away from the light
+    for i in range(0, w, 5):                          # scalloped edge
         c.vline(x + i, y + h, 3, col2)
-    c.alpha_rect(x, y + h, w, 4, (0, 0, 0), 60)
+        c.vline(x + i + 1, y + h, 2, col2)
+        c.set(x + i + 2, y + h, col2)
+    c.alpha_rect(x, y + h + 3, w, 4, (0, 0, 0), 60)
 
 
 def sign_plate(c, x, y, text, colour, w=None, h=16, size=8):
@@ -143,19 +238,45 @@ def sign_cjk(c, x, y, chars, colour, size=14, vertical=False):
     return w, size + 6
 
 
-def shopfront(c, x, y, w, h, rng, glow=(255, 214, 150)):
+GOODS = ((214, 92, 108, 255), (92, 160, 210, 255), (226, 196, 92, 255), (120, 180, 120, 255),
+         (236, 236, 240, 255))
+BREAD = ((214, 160, 84, 255), (190, 126, 64, 255), (236, 196, 120, 255))
+
+
+def shop_unit(c, ux, y, uw, uh, r, glow, goods):
+    """One bay of a shopfront: lit inside with shelves, a counter, a lamp, maybe a person."""
+    c.rect(ux, y, uw, uh, (34, 30, 34, 255))
+    c.alpha_rect(ux, y, uw, uh, glow, 120)
+    c.alpha_rect(ux, y, uw, 3, (255, 240, 210), 90)               # strip light
+    for sy in (y + 6, y + 13):                                    # shelves of stock
+        c.hline(ux + 1, sy, uw - 2, (110, 84, 64, 255))
+        for gx in range(ux + 2, ux + uw - 2, 3):
+            if r.random() < 0.8:
+                c.rect(gx, sy - 2, 2, 2, r.choice(goods))
+    if r.random() < 0.45:                                         # someone minding the shop
+        px = ux + r.randrange(3, max(4, uw - 7))
+        c.rect(px + 1, y + uh - 13, 3, 3, (60, 46, 40, 255))
+        c.rect(px, y + uh - 10, 5, 6, lift(r.choice(GOODS), -70))
+    c.rect(ux, y + uh - 5, uw, 5, (126, 96, 70, 255))             # counter
+    c.hline(ux, y + uh - 5, uw, (170, 134, 98, 255))
+    c.vline(ux, y, uh, (20, 18, 22, 255))                         # mullion
+
+
+def shopfront(c, x, y, w, h, rng, glow=(255, 214, 150), goods=GOODS, shut=0.28, unit=26):
     c.rect(x, y, w, h, (44, 40, 44, 255))
-    unit = 26
     for ux in range(x + 3, x + w - unit, unit):
         c.rect(ux, y + 2, unit - 4, h - 6, (26, 24, 30, 255))
-        if rng.random() < 0.72:
-            c.alpha_rect(ux + 1, y + 3, unit - 6, h - 8, glow, 120)
-            for i in range(3):
-                c.vline(ux + 4 + i * 6, y + 3, h - 8, (120, 96, 74, 255))
-            c.rect(ux + 1, y + h - 5, unit - 6, 2, (150, 120, 92, 255))
+        if rng.random() >= shut:
+            shop_unit(c, ux + 1, y + 3, unit - 6, h - 8, rng, glow, goods)
         else:
-            for i in range(h // 4):
-                c.hline(ux + 1, y + 4 + i * 4, unit - 6, (62, 60, 72, 255))
+            # roller shutter, sometimes left half up with the light spilling under it
+            drop = h - 8 if rng.random() < 0.5 else (h - 8) // 2
+            if drop < h - 8:
+                shop_unit(c, ux + 1, y + 3, unit - 6, h - 8, rng, glow, goods)
+            c.rect(ux + 1, y + 3, unit - 6, drop, (70, 70, 80, 255))
+            for i in range(drop // 3):
+                c.hline(ux + 1, y + 4 + i * 3, unit - 6, (54, 54, 64, 255))
+            c.hline(ux + 1, y + 3 + drop - 1, unit - 6, (110, 110, 120, 255))
 
 
 def tree(c, x, y, r=9, rng=None):
@@ -169,6 +290,13 @@ def tree(c, x, y, r=9, rng=None):
 
 
 # ---------------------------------------------------------------- ground ---
+def hill_span(c, cx, span, y, col):
+    """One row of a mound, clipped to the frame: the hills run off both edges."""
+    x0, x1 = max(0, cx - span), min(W, cx + span)
+    if 0 <= y < H and x1 > x0:
+        c.hline(x0, y, x1 - x0, col)
+
+
 def ground(c, rng):
     # distant hills: overlapping mounds with a lit rim, so the top reads as a ridge
     c.rect(0, 0, W, BLD_Y + 4, HAZE)
@@ -177,10 +305,10 @@ def ground(c, rng):
         r = 34 + (i % 3) * 10
         for dy in range(-r, 6):
             span = int((r * r - dy * dy) ** 0.5) if dy < r else 0
-            c.rect(cx - span, BLD_Y - r + dy + 8, span * 2, 1, HILL2)
+            hill_span(c, cx, span, BLD_Y - r + dy + 8, HILL2)
         for dy in range(-r + 8, 4):
             span = int((r * r - dy * dy) ** 0.5)
-            c.hline(cx - span, BLD_Y - r + dy + 8, span * 2, HILL)
+            hill_span(c, cx, span, BLD_Y - r + dy + 8, HILL)
     c.dither(0, 0, W, BLD_Y, HAZE, 3)
 
 
@@ -205,8 +333,8 @@ def road(c, rng):
         c.set(x, y, ROAD2 if rng.random() < 0.6 else ROAD3)
     # double yellow along the college frontage, dashes elsewhere
     for tx in range(0, W, 22):
-        c.rect(tx, ROAD_Y + 20, 12, 2, LANE)
-        c.rect(tx, ROAD_Y + 30, 12, 2, LANE)
+        c.rect(tx, ROAD_Y + 20, min(12, W - tx), 2, LANE)
+        c.rect(tx, ROAD_Y + 30, min(12, W - tx), 2, LANE)
     c.hline(0, ROAD_Y, W, KERB2)
     c.hline(0, SPAV_Y - 1, W, KERB2)
     # drain grates and patches
@@ -232,31 +360,42 @@ def wet(c, rng, lights):
 
 # ------------------------------------------------------------ buildings ---
 def tenement(c, rng, x, y, w, h, base, roof, sign=None, sign_colour=None,
-             cjk=None, awning_cols=None, shop_h=44):
-    """Block with roof, cast shadow, lit windows, shopfront and a sign."""
+             cjk=None, awning_cols=None, shop_h=44, box=None, goods=GOODS, shut=0.28, unit=26, glow=(255, 214, 150)):
+    """Walk-up: roof kit, lived-in windows, AC, washing, stains, a lit shop and its sign."""
+    d = random.Random(x * 131 + y)        # own seed: detail here never reshuffles the street
     shade(c, x + w - 4, y + 6, w - 8, h - 6, base)
     tone(c, x, y, w, h - shop_h, base)
-    # roof line
+    # light from the left: lit edge, shadowed right side
+    c.vline(x, y, h - shop_h, lift(base, 22))
+    c.alpha_rect(x + w - 5, y, 5, h - shop_h, (10, 10, 20), 70)
+    c.alpha_rect(x + w - 2, y, 2, h - shop_h, (10, 10, 20), 70)
+    # roof line + kit
+    roof_kit(c, x, y, w, d)
     c.rect(x - 3, y - 6, w + 6, 8, roof)
-    c.hline(x - 3, y - 6, w + 6, tuple(min(255, ch + 26) for ch in roof[:3]) + (255,))
-    # roof clutter
-    for _ in range(w // 26):
-        c.rect(x + rng.randrange(6, max(7, w - 20)), y - 12, rng.randrange(8, 14), 7, (74, 76, 88, 255))
-    c.rect(x + w - 26, y - 16, 14, 11, (86, 88, 100, 255))     # stair hut
-    # windows + AC
+    c.hline(x - 3, y - 6, w + 6, lift(roof, 26))
+    c.alpha_rect(x - 3, y + 2, w + 6, 2, (0, 0, 0), 70)
     rows = max(1, (h - shop_h - 18) // 22)
     for r in range(rows):
-        window_row(c, x, y + 6 + r * 22, w, rng)
-        if rng.random() < 0.8:
-            ac_unit(c, x + rng.randrange(4, max(5, w - 14)), y + 14 + r * 22)
-    # floor ledges
-    for r in range(1, rows):
-        c.hline(x, y + 3 + r * 22, w, tuple(max(0, ch - 16) for ch in base[:3]) + (255,))
-    # shopfront + awning
+        window_row(c, x, y + 6 + r * 22, w, d)
+    for r in range(1, rows):                                   # floor ledges catch the light
+        c.hline(x, y + 3 + r * 22, w, lift(base, -16))
+        c.hline(x, y + 2 + r * 22, w, lift(base, 14))
+    streaks(c, x, y + 4, w, h - shop_h - 4, d)
+    for r in range(rows):
+        for _ in range(1 + (w > 70)):
+            if d.random() < 0.8:
+                ac_unit(c, x + d.randrange(4, max(5, w - 14)), y + 15 + r * 22)
+        if d.random() < 0.6:
+            lx = x + d.randrange(2, max(3, w - 34))
+            laundry(c, lx, y + 17 + r * 22, min(30, w - 6), d)
+    # shopfront, awning, sign
     sy = y + h - shop_h
-    shopfront(c, x + 2, sy + 10, w - 4, shop_h - 12, rng)
+    shopfront(c, x + 2, sy + 10, w - 4, shop_h - 12, d, glow=glow, goods=goods, shut=shut, unit=unit)
+    c.alpha_rect(x + 2, sy + shop_h - 4, w - 4, 2, (255, 214, 150), 60)   # light on the step
     if awning_cols:
         awning(c, x + 1, sy, w - 2, awning_cols[0], awning_cols[1])
+    if box:
+        lightbox(c, x + w - 12, y + 10, min(40, h - shop_h - 14), box, d)
     if sign:
         sign_plate(c, x + 6, sy - 20, sign, sign_colour or NEON_C, h=15)
     return sy
@@ -264,28 +403,37 @@ def tenement(c, rng, x, y, w, h, base, roof, sign=None, sign_colour=None,
 
 # ---------------------------------------------------------------- street ---
 def college(c, rng):
-    x0 = 384
+    x0 = 432
+    # brick block behind the wall
+    shade(c, 484, 64, 6, 48, BRICK)
+    c.rect(438, 58, 46, 54, BRICK)
+    for ty in range(58, 112, 5):
+        c.hline(438, ty, 46, BRICK2)
+        for bx in range(438 + (ty // 5 % 2) * 4, 484, 8):
+            c.set(bx, ty + 2, BRICK2)
+    c.vline(438, 58, 54, BRICK3)
+    c.alpha_rect(480, 58, 4, 54, (10, 10, 20), 60)
+    for wx in range(443, 478, 12):
+        c.rect(wx, 66, 8, 10, LIT if rng.random() < 0.4 else GLASS2)
+        c.rect(wx, 84, 8, 10, LIT if rng.random() < 0.3 else GLASS2)
+        c.hline(wx, 76, 8, STONE3)
+        c.hline(wx, 94, 8, STONE3)
+    c.rect(432, 50, 58, 10, (86, 58, 54, 255))
+    c.hline(432, 50, 58, (112, 76, 70, 255))
     # wall with pillars
-    c.rect(x0, 118, 176, 30, STONE)
-    tone(c, x0, 118, 176, 30, STONE)
-    for px in range(x0, x0 + 176, 20):
+    c.rect(x0, 118, 128, 30, STONE)
+    tone(c, x0, 118, 128, 30, STONE)
+    for px in range(x0, x0 + 128, 20):
         c.rect(px, 114, 5, 34, STONE2)
         c.hline(px, 114, 5, STONE3)
+        c.vline(px + 4, 115, 33, lift(STONE2, -20))
+    streaks(c, x0, 118, 128, 30, random.Random(5))
     # gate opening
     c.rect(464, 112, 40, 36, (52, 54, 48, 255))
     c.rect(462, 108, 6, 40, STONE2)
     c.rect(500, 108, 6, 40, STONE2)
     c.rect(470, 104, 28, 10, (232, 230, 218, 255))
     c.text_c(484, 105, "ssc 22", (58, 62, 50, 255))
-    # brick block behind the wall
-    c.rect(400, 58, 58, 54, BRICK)
-    for ty in range(58, 112, 5):
-        c.hline(400, ty, 58, BRICK2)
-    for wx in range(406, 452, 12):
-        c.rect(wx, 66, 8, 10, LIT if rng.random() < 0.4 else GLASS2)
-        c.rect(wx, 84, 8, 10, LIT if rng.random() < 0.3 else GLASS2)
-    c.rect(394, 50, 70, 10, (86, 58, 54, 255))
-    c.hline(394, 50, 70, (112, 76, 70, 255))
     # sports field
     c.rect(506, 116, 50, 32, (66, 106, 74, 255))
     c.dither(506, 116, 50, 32, (58, 96, 66, 255), 2)
@@ -495,16 +643,20 @@ def render(with_people=True) -> Canvas:
 
     # ---- north: the village shops
     tenement(c, rng, 8, 60, 88, 108, PLASTER, (120, 92, 78, 255),
-             awning_cols=((150, 62, 70, 255), (196, 96, 100, 255)))
+             awning_cols=((150, 62, 70, 255), (196, 96, 100, 255)), box=NEON_A)
     sign_cjk(c, 22, 106, "茶餐廳", NEON_P, size=16)
     tenement(c, rng, 104, 52, 96, 116, (196, 176, 156, 255), (104, 84, 74, 255),
-             awning_cols=((62, 130, 140, 255), (104, 186, 196, 255)))
+             awning_cols=((62, 130, 140, 255), (104, 186, 196, 255)), box=NEON_P)
     sign_cjk(c, 118, 100, "赤柱餐廳", NEON_C, size=16)
     tenement(c, rng, 208, 66, 60, 102, (188, 170, 154, 255), (110, 88, 78, 255),
-             sign="store", sign_colour=NEON_G)
+             awning_cols=((52, 120, 76, 255), (226, 226, 214, 255)),
+             sign="store", sign_colour=NEON_G, glow=(220, 240, 255))
     tenement(c, rng, 276, 58, 96, 110, (176, 164, 148, 255), (98, 80, 70, 255),
-             awning_cols=((176, 66, 62, 255), (222, 214, 190, 255)))
+             awning_cols=((176, 66, 62, 255), (222, 214, 190, 255)), box=NEON_C)
     sign_cjk(c, 288, 104, "赤柱市場", GOLD, size=15)
+    tenement(c, rng, 378, 88, 52, 80, (214, 196, 168, 255), (126, 96, 74, 255),
+             awning_cols=((196, 132, 66, 255), (240, 222, 180, 255)),
+             sign="bakery", sign_colour=NEON_A, goods=BREAD, shut=0, unit=22)
     # market stalls on the pavement
     for i, col in enumerate(((176, 66, 62, 255), (62, 130, 140, 255), (196, 160, 74, 255))):
         sx = 286 + i * 28
@@ -518,7 +670,7 @@ def render(with_people=True) -> Canvas:
     fort(c)
 
     # trees and lamps along the north pavement
-    for tx in (100, 200, 268, 372, 550):
+    for tx in (100, 200, 268, 436, 550):
         tree(c, tx, NPAV_Y - 18, 8, rng)
     for lx in (140, 246, 348, 452, 556):
         c.alpha_rect(lx - 16, NPAV_Y + 2, 34, 22, (255, 210, 150), 18)
@@ -537,7 +689,7 @@ def render(with_people=True) -> Canvas:
         person(c, 330, NPAV_Y + 12, 3, shirt=(158, 138, 96, 255))
         person(c, 430, SPAV_Y + 4, 2, shirt=(132, 96, 148, 255))
 
-    wet(c, rng, [(52, NEON_P, 8), (140, NEON_C, 10), (300, GOLD, 7), (620, (200, 70, 70), 6)])
+    wet(c, rng, [(52, NEON_P, 8), (140, NEON_C, 10), (300, GOLD, 7), (404, NEON_A, 6), (620, (200, 70, 70), 6)])
 
     # rain
     for _ in range(220):

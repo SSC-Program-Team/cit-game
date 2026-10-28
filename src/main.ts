@@ -36,8 +36,8 @@ function img(src: string): HTMLImageElement {
   i.src = src;
   return i;
 }
-const mapImg = img('img/map.png');
-const fontImg = img('img/font.png');
+const mapImg = img('img/map.png?v=4');
+const fontImg = img('img/font.png?v=4');
 
 // ------------------------------------------------------------------ text ---
 const CELL_W = 6;
