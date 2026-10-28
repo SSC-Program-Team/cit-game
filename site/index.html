@@ -71,26 +71,28 @@
 
   <header>
     <h1>Net<span>life</span>: Hong Kong</h1>
-    <p class="tag">A pixel-art life sim where the job <em>is</em> the lesson: you take networking work
-    across a walkable Hong Kong, get paid, get burned, and wire your own flat. Played in free time,
-    in a browser, on a laptop or an iPad.</p>
+    <p class="tag">A pixel-art life sim set on <strong>Tung Tau Wan Road, Stanley</strong> — where the
+    job <em>is</em> the lesson. You take networking work up and down the road, get paid, get burned,
+    wire your own flat, and if you get careless with someone else's network, you end up at number 99.
+    Played in free time, in a browser, on a laptop or an iPad.</p>
     <div class="chips">
       <span class="chip on">concept v0.3</span>
       <span class="chip">no build yet</span>
       <span class="chip">laptop + iPad</span>
+      <span class="chip">stanley</span>
       <span class="chip">open world</span>
       <span class="chip">live board</span>
     </div>
   </header>
 
   <h2>Try it</h2>
-  <p class="muted">This is a clickable mockup, not the game — three screens wired together so you can
-  feel the interaction. Tap the woman outside the tea shop.</p>
+  <p class="muted">This is a clickable mockup, not the game — two screens wired together so you can
+  feel the interaction. Tap 陳太 outside the village tea shop.</p>
 
   <div class="stage" id="stage">
     <img id="shot" src="img/01-city-night.png" alt="Top-down Hong Kong street at night">
     <button class="hot" id="hot-chan" aria-label="Talk to Chan Tai outside the tea shop"
-            style="left:13.5%;top:22%;width:8%;height:24%"></button>
+            style="left:8%;top:41%;width:8%;height:16%"></button>
     <button class="answer hidden" data-opt="1" aria-label="Answer 1: wrong subnet mask"
             style="left:0;top:89%;width:33%;height:11%"></button>
     <button class="answer hidden" data-opt="2" aria-label="Answer 2: router not forwarding"
@@ -103,9 +105,12 @@
 
   <h2>The overworld</h2>
   <figure>
-    <img src="img/01-city-night.png" alt="Sham Shui Po street, top-down">
-    <figcaption>Sham Shui Po, 18:40. Jobs live at addresses: 陳太 is on the pavement, the 網吧 has a
-    note on its door, and the wire is calling out a POS outage. No quest log, no level gate.</figcaption>
+    <img src="img/01-city-night.png" alt="Tung Tau Wan Road, Stanley, top-down at night">
+    <figcaption><b>Tung Tau Wan Road, 18:40.</b> Village shops at the west end — 陳太's tea shop, the
+    PP restaurant, the store, the minibus stop and the Old Police Station. Then the college wall and
+    gate at 22, a path down to the beach, the prison wall with its watchtower and the mosque at 53,
+    the vehicle gate at 99, and the fort gate that closes the map. Jobs live at addresses; there is no
+    quest log and no level gate.</figcaption>
   </figure>
 
   <h2>The work</h2>
@@ -122,6 +127,25 @@
       prompt, or it gets deleted.</p></div>
     <div class="card"><h3>No OS keyboard</h3><p>Steppers and an in-game keypad, because an iPad
       keyboard covers half the screen.</p></div>
+  </div>
+
+  <h2>Getting it wrong</h2>
+  <figure>
+    <img src="img/08-prison.png" alt="Case sheet in a Stanley Prison interview room">
+    <figcaption><b>Number 99.</b> Use a credential you were not given, copy customer data, or leave an
+    admin session open, and the audit trail is evidence. Old Police Station → magistrate → Stanley
+    Prison: two blocks detained, a fine, and a 30-day record that bars bank work. No violence and no
+    game over — a case sheet that names the ordinance, the line of carelessness, and the one piece of
+    paperwork that would have stopped it.</figcaption>
+  </figure>
+
+  <div class="grid" style="margin-top:18px">
+    <div class="card"><h3>Evidence, not dice</h3><p>Nothing is random. Careless players generate
+      evidence; careful ones leave a trail that clears them.</p></div>
+    <div class="card"><h3>Real law</h3><p>Crimes Ordinance s.161, PDPO, Copyright Ordinance — cited on
+      the sheet so the teacher can check it.</p></div>
+    <div class="card"><h3>Boring on purpose</h3><p>Procedural, dull, expensive. Punishment is not the
+      fun part; the fix is.</p></div>
   </div>
 
   <h2>The wire</h2>

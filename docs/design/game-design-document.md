@@ -232,10 +232,33 @@ An open world at 384×216 is a budget question first and a design question secon
 - **Top-down overworld.** Streets, crossings, market stalls, MTR entrances, shuttered units and lit shopfronts. You walk; you do not pick from a list. Interiors (a shop, a server room, your flat) are separate screens entered through a door.
 - **The work zooms in.** Walk up to a client and the camera goes to the desk: the first-person job screen from mockup 02. Exploration is top-down, work is over your shoulder. That contrast is the whole visual identity.
 - **Jobs live at addresses.** A shopkeeper waves you over, a router is blinking in a window, a notice board outside the MTR has three cards. There is no mission menu — the wire and the board are *places*, and the prompt line is the only menu.
-- **Six districts, all reachable early.** Sham Shui Po (home, parts, cheap work), Mong Kok (網吧, phone shops, late-night crises), Central (banks, SLAs, real money), Causeway Bay (retail Wi-Fi, crowds), Kwai Chung (data centre trips), and a village-house edge for the endgame rack room. Each is 2–3 exterior screens plus interiors.
+- **Start with the road you are on.** Tung Tau Wan Road in Stanley: village shops, the college, the beach path, the prison, the fort gate. Six districts arrive later by bus from the village stop — Mong Kok (網吧, phone shops, late-night crises), Central (banks, SLAs, real money), Causeway Bay (retail Wi-Fi, crowds), Kwai Chung (data centre trips) — each 2–3 exterior screens plus interiors.
 - **Traversal costs something.** Walking is free and reveals things; the MTR costs money and a block. Night changes what is open, what pays, and who is on the street.
 - **No quest log.** Threads live where they happen: a client's door, a notice board, the wire. The hub (§4.9) exists only as the front door when you come back after a break.
 - **The world does not wait for you.** Jobs expire, clients go elsewhere, prices move, a district's reputation drifts. That is what makes free-time play feel alive instead of paused.
+
+### 4.11 Crime, evidence and Stanley Prison
+
+You can do the wrong thing, and the game does not stop you. It just keeps a record.
+
+| Act | Law | What it costs you |
+|---|---|---|
+| **Unauthorised access** — a credential you were not given, a network you do not own, an admin session left open | Crimes Ordinance (Cap. 200) s.161 | fine, then detention at Stanley |
+| **Data misuse** — copying a customer's records, posting them, keeping them after the job | Personal Data (Privacy) Ordinance (Cap. 486) | complaint, fine, the client is gone |
+| **Piracy and licensing** — cracked tools, fake keys, reselling OEM licences | Copyright Ordinance (Cap. 528) | fine, the tool is confiscated |
+| **Carelessness** — reused passwords, no 2FA, a "free key" download, default admin left on client kit | nothing, until it is something | ransomware takes your money; your leaked credentials are used on a client, and it is *your* name on the session |
+
+**Evidence, not dice.** Every act writes to an audit trail: what you touched, with which credential, and whether the client granted it in writing. Nothing here is random — a player who leaves sessions open and skips the permission form generates evidence; a careful one does not. The trail is what the case sheet shows you at the end.
+
+**The arrest is procedural.** Old Police Station (one block, a statement) → magistrate (fine, detention, a record) → **Stanley Prison** (time skip, the case sheet, and a conversation with 黃師傅 about what you should have done) → release. No handcuffs, no chase, no violence; the tone is bureaucratic and deliberately dull.
+
+![The case sheet](../mockups/08-prison.png)
+
+**Costs:** two blocks detained, a fine, and a **record for 30 in-game days** that bars bank and enterprise work. The career continues; no save is deleted, no progress lost, and release always happens.
+
+**What the cell teaches, explicitly:** the ordinance, the exact piece of carelessness that produced the evidence, and the one line of paperwork that would have prevented it. Being caught is a lesson with a bill, not a game over.
+
+**School constraints:** no weapons, no violence, no glamour; every detention cites the law so a teacher can check the citation; a teacher switch can disable law consequences entirely for younger classes; and nothing about a student's own data leaves the save.
 
 ---
 
@@ -288,7 +311,9 @@ The game is not a classroom tool with a story attached; it is a game a teacher i
 
 ## 6. Setting and cast
 
-A compressed Hong Kong: **Sham Shui Po** (home, parts market, cheap food), **Mong Kok** (the clients — 茶餐廳, phone shop, 網吧), **Central** (bank towers, ISP HQ, the jobs that pay), **Tsuen Wan / Kwai Chung** (data centre field trip), connected by MTR fast travel.
+**Tung Tau Wan Road, Stanley** — the real road, compressed to a walkable strip. West end: Stanley Village's shops (陳太's tea shop, a PP restaurant, the store, the minibus stop) and the Old Police Station. The middle is the college: wall, gate, the 1930s brick block, the sports field. A path drops south to the beach. East of that sits the prison wall — watchtower, barbed wire, the mosque at 53 inside it, the vehicle gate at 99 — and the road ends at the Stanley Fort gate, which is the edge of the map.
+
+Everything is walkable and nothing is level-gated. Later districts (Mong Kok, Central, the data centre in Kwai Chung) arrive by bus from the village stop, not by unlocking a chapter.
 
 | Character | Role | Teaches |
 |---|---|---|
@@ -458,7 +483,7 @@ Also enforced server-side: fee caps (`≤ job.fee × 1.2`), one event per job id
 
 ## 9. v1 demo — the first shift
 
-**Scope:** one walkable district (two exterior screens of Sham Shui Po) plus two interiors — your flat and 陳太's 茶餐廳. Three encounters, **20 graded tasks**, 12–15 minutes, and built to be interrupted: every task autosaves and every job is a clean stopping point.
+**Scope:** **Tung Tau Wan Road, Stanley** — one walkable strip (two exterior screens) plus two interiors: the college's IT room and 陳太's tea shop at the village end. Three encounters, **20 graded tasks**, 12–15 minutes, and built to be interrupted: every task autosaves and every job is a clean stopping point.
 
 The player is dropped on the street with no tutorial modal and no mission list. 陳太 is outside her shop waving; the 網吧 next door has a note on the door; the wire is calling out a POS outage. Any of the three can be taken first, ignored, or failed. The demo is done when a student who was told nothing walks, finds a client, and comes back for a second session.
 
@@ -521,6 +546,8 @@ The player is dropped on the street with no tutorial modal and no mission list. 
 | **Leaderboard inflation** | any client-trusted money figure is a cheat magnet, and a fake rich list kills trust in the whole scoreboard | server-side replay of the task log; fee caps; standings only from validated events |
 | **Comparison pressure** | a public ranking of money makes a slow learner feel ranked, not taught | class-scoped, handles only, off by default for S4, teacher switch, and the strip never sorts by mastery |
 | **Wire as noise** | a moving strip above a diagnostic console steals attention from the assessed task | strip collapses to 0 px during a job; `LIVE` only; pause on focus; reduced-motion mode |
+| **Legal accuracy** | citing the wrong section — or an offence that has been amended — teaches the wrong thing | every ordinance reference is checked by the ICT teacher before a pack ships, and the case sheet prints the citation precisely so it can be checked |
+| **Prison glamour** | a prison in a school game can read as exciting | procedural tone, no violence, the cost is time and money, and the scene ends on the fix rather than the punishment |
 | **Open-world art cost** | a walkable city is the single biggest asset bill in the project — bigger than the housing ladder, bigger than all the task types | 12 px tiles, modular facades and procedural signage (proved in `scene_world.py`); six districts is the ceiling, and districts are cut before task content is |
 | **No direction** | remove the ladder and a player can wander, find a job they cannot do, and conclude the game is broken | encounters are never silver: a client states the problem, the game warns once before an over-your-weight job, and every district has one job that is always winnable |
 | **Dashboard creep** | the first draft had eleven bordered panels, and every new system will want one | §7.1 is a spec with a test: three numbers, one prompt, edges only on objects. A screen that fails the 5-second test does not ship |
@@ -533,15 +560,16 @@ The player is dropped on the street with no tutorial modal and no mission list. 
 ## 12. Open questions for Ryan
 
 1. **Syllabus binding** — is "CIT" the DSE ICT line (Unit 3 + DCN elective) as assumed in §3.2, or the junior-secondary CIT syllabus? This decides whether v0.1 is subnetting-first or devices-and-safety-first. *Recommendation: DSE ICT, subnetting in the demo.*
-2. **How big is the world** — six districts (a term of exploration) or two (a tight demo), given that map art is the biggest cost? *Recommendation: two districts for v0.2, six by v1.0, and cut districts before cutting tasks.*
-3. **Session length** — should one job aim at a 5-minute burst or a 15-minute sitting? *Recommendation: the job is atomic at 5–10 minutes, three in a row is a session, and the hub never asks for more than one.*
-4. **Who is on the live board** — whole school, or class only, and do you want 8-week seasons? *Recommendation: whole school with a class filter and seasons, because a student playing at 11 p.m. is competing with the school, not with 4B.*
-5. **Business sim** — is "run your own shop" essential to the story or a late optional branch? It is the most expensive system in the design. *Recommendation: v0.3 optional branch, employed track is the main line.*
-6. **Who authors content** — you writing JSON by hand, or an in-game authoring tool for you and other ICT teachers? *Recommendation: JSON + generators for v1, authoring tool only if a second school adopts it.*
-7. **Does the live board get built now?** You said live, so it is specified in §8.3 — one unit and one SQLite file. *Recommendation: build it in v1.0 behind a flag, so the game can ship and be played offline first.* A shared class leaderboard needs accounts, a Postgres table and replay validation — a week of work that teaches nothing. *Recommendation: v0.1 ships the wire on the simulated NPC cast with no backend at all; the real feed lands in v1.0 when there is a class actually playing.*
-8. **Handles** — generated school-safe names, or do students pick their own (filtered)? *Recommendation: generated by default, custom opt-in and teacher-visible.*
-9. **Which iPads, and are they managed?** Model and generation set the performance floor; MDM decides whether we can rely on a home-screen install or must live in a Safari tab, and whether a Bluetooth keyboard is ever present (which would let typing tasks exist). *Recommendation: target iPad 9th gen, Safari tab, touch-only, no keyboard assumption.*
-10. **Should mastery ever be visible to you by default?** With no lessons attached, a report-card view risks turning a game into surveillance of a student's free time. *Recommendation: off by default, opt-in per student, and never surfaced to students as a grade.*
+2. **How hard should the law bite** — is a 30-day record that blocks bank work too punishing for something students play for fun, and should detention be 2 blocks or a whole in-game day? *Recommendation: record for 30 days but only bars enterprise clients, so the early game is unaffected.*
+3. **How big is the world** — six districts (a term of exploration) or two (a tight demo), given that map art is the biggest cost? *Recommendation: two districts for v0.2, six by v1.0, and cut districts before cutting tasks.*
+4. **Session length** — should one job aim at a 5-minute burst or a 15-minute sitting? *Recommendation: the job is atomic at 5–10 minutes, three in a row is a session, and the hub never asks for more than one.*
+5. **Who is on the live board** — whole school, or class only, and do you want 8-week seasons? *Recommendation: whole school with a class filter and seasons, because a student playing at 11 p.m. is competing with the school, not with 4B.*
+6. **Business sim** — is "run your own shop" essential to the story or a late optional branch? It is the most expensive system in the design. *Recommendation: v0.3 optional branch, employed track is the main line.*
+7. **Who authors content** — you writing JSON by hand, or an in-game authoring tool for you and other ICT teachers? *Recommendation: JSON + generators for v1, authoring tool only if a second school adopts it.*
+8. **Does the live board get built now?** You said live, so it is specified in §8.3 — one unit and one SQLite file. *Recommendation: build it in v1.0 behind a flag, so the game can ship and be played offline first.* A shared class leaderboard needs accounts, a Postgres table and replay validation — a week of work that teaches nothing. *Recommendation: v0.1 ships the wire on the simulated NPC cast with no backend at all; the real feed lands in v1.0 when there is a class actually playing.*
+9. **Handles** — generated school-safe names, or do students pick their own (filtered)? *Recommendation: generated by default, custom opt-in and teacher-visible.*
+10. **Which iPads, and are they managed?** Model and generation set the performance floor; MDM decides whether we can rely on a home-screen install or must live in a Safari tab, and whether a Bluetooth keyboard is ever present (which would let typing tasks exist). *Recommendation: target iPad 9th gen, Safari tab, touch-only, no keyboard assumption.*
+11. **Should mastery ever be visible to you by default?** With no lessons attached, a report-card view risks turning a game into surveillance of a student's free time. *Recommendation: off by default, opt-in per student, and never surfaced to students as a grade.*
 
 ---
 

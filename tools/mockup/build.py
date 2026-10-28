@@ -12,9 +12,11 @@ import scene_progress  # noqa: E402
 import scene_wire      # noqa: E402
 import scene_ipad      # noqa: E402
 import scene_hub       # noqa: E402
+import scene_prison    # noqa: E402
 
 from pixelart import audit_report  # noqa: E402
 
-for mod in (scene_world, scene_console, scene_home, scene_progress, scene_wire, scene_ipad, scene_hub):
+for mod in (scene_world, scene_console, scene_home, scene_progress, scene_wire,
+            scene_ipad, scene_hub, scene_prison):
     mod.main()
     audit_report()
