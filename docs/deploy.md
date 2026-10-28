@@ -21,8 +21,15 @@ cp docs/mockups/*.png site/img/
 git add -A && git commit -m "site: refresh mockups" && git push
 ```
 
-No restart needed: the server reads the folder on every request. Cloudflare may cache images for a
-few minutes — append `?v=2` to a URL when checking a fresh render.
+No restart needed: the server reads the folder on every request.
+
+**Bump the image version when you redraw.** Every `<img>` in `site/index.html` carries `?v=N`
+because Cloudflare and Safari will happily serve a day-old mockup otherwise — the page looked
+correct while the art underneath it was the previous map. Redraw → `cp` → bump `N` in one pass:
+
+```bash
+sed -i 's/?v=[0-9]*/?v=6/g' site/index.html   # next version number
+```
 
 ## Rebuild the hosting from scratch
 
