@@ -594,7 +594,7 @@ function drawJob(): void {
   ctx.fillStyle = '#d9d2c0'; ctx.fillRect(150, 258, 18, 20);
   ctx.fillStyle = '#b3ab98'; ctx.fillRect(150, 274, 18, 4);
   ctx.fillStyle = '#d9d2c0'; ctx.fillRect(168, 263, 4, 8);
-  text('tea', 153, 265, '#6b6355');
+  ctx.fillStyle = '#8a7f6a'; ctx.fillRect(154, 262, 10, 1);
 
   ctx.fillStyle = '#c9c3b2'; ctx.fillRect(36, 46, 204, 140);
   ctx.fillStyle = '#efe9d8'; ctx.fillRect(36, 46, 204, 2);
@@ -616,12 +616,12 @@ function drawJob(): void {
     const colour = line.includes('timed out') ? '#ff6a6a'
       : line.includes('reply') ? '#7be08a'
       : line.startsWith('C:') ? '#ffffff' : '#a8aec8';
-    text(line, 278, 46 + i * 18, colour);
+    text(line, 278, 42 + i * 16, colour);
   }
 
   if (job.step === 'typing' && Math.floor(performance.now() / 400) % 2 === 0) {
     ctx.fillStyle = '#7be08a';
-    ctx.fillRect(278, 52 + Math.max(0, job.shown - 1) * 18, 5, 1);
+    ctx.fillRect(278, 48 + Math.max(0, job.shown - 1) * 16, 5, 1);
   }
 
   text(job.hint, 36, 200, '#9aa0b8');
