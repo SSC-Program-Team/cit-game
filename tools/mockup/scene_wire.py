@@ -7,7 +7,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pixelart import Canvas, P  # noqa: E402
 import wire  # noqa: E402
-import scene_city  # noqa: E402
+import scene_world  # noqa: E402
 
 W, H = 384, 216
 
@@ -20,7 +20,7 @@ def main():
     c = Canvas(W, H, (16, 17, 26, 255))
 
     # --- in context: the top of the city screen, wire live
-    city = scene_city.render(with_wire=True)
+    city = scene_world.render(with_wire=True)
     c.paste(city.img.crop((0, 0, W, 92)), 0, 0)
     c.alpha_rect(0, 86, W, 6, P["ink"], 200)
     c.hline(0, 92, W, P["grey_dk"])

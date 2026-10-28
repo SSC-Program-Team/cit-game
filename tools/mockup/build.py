@@ -5,7 +5,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-import scene_city      # noqa: E402
+import scene_world     # noqa: E402
 import scene_console   # noqa: E402
 import scene_home      # noqa: E402
 import scene_progress  # noqa: E402
@@ -13,5 +13,5 @@ import scene_wire      # noqa: E402
 import scene_ipad      # noqa: E402
 import scene_hub       # noqa: E402
 
-for mod in (scene_city, scene_console, scene_home, scene_progress, scene_wire, scene_ipad, scene_hub):
+for mod in (scene_world, scene_console, scene_home, scene_progress, scene_wire, scene_ipad, scene_hub):
     mod.main()

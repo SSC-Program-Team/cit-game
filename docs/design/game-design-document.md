@@ -138,9 +138,9 @@ Currency is HKD. First-pass tuning (flagged for a balance spreadsheet before it 
 
 Tools gate job tiers as hard as XP does — a subnetting prodigy with no cable tester still cannot take the structured-cabling contract.
 
-### 4.4 Career fork
+### 4.4 Two ways to earn (not a fork)
 
-From week ~6 the player chooses how to earn, and can mix:
+Both run in parallel from the start: hold a job for the steady money and take freelance work on the side. The world never asks you to pick a side, and switching costs only the hours.
 
 - **Employed** — fixed hours, fixed salary, employer pays for courses and certs, promotions gated by rank *and* client-free mastery. Lower ceiling, no downside risk.
 - **Own business** — register a BR, take the same tickets at higher margin, buy stock, hire staff, rent a shopfront (黃金商場-style), eventually run a rack room. Staff multiply income and multiply the failure modes: an untrained hire botches jobs you never see, and *you* pay the reputation.
@@ -187,11 +187,16 @@ Two clocks: the **job clock** (the timed ticket) and the **city clock** (the wor
 | Rival tech undercuts you | reputation vs price war; EXPLAIN tasks become the differentiator |
 | Phone scam targeting a client | social/legal task, unlocks the PDPO content |
 
-### 4.7 Progression
+### 4.7 Progression without levels
 
-- **Rank:** Trainee → Technician → Engineer → Architect → Owner. Rank gates jobs; mastery gates rank.
-- **Certs** (in-game, modelled on real ones): "CIT Certified Technician I/II", "Network Specialist", "Security Fundamentals". Each requires a mastery threshold and a practical exam job — never a multiple-choice test.
-- **Skill tree:** Diagnostics (faster checks), Configuration (fewer rework ticks), Security (audit reveals), Business (better quotes, staff quality).
+There is no level, no XP bar, and no "requires level 5" sign anywhere in the world. You can walk into the bank tower on day one and take the job; it will simply eat you alive, and the game will tell you honestly why.
+
+- **Titles are history, not keys.** The word under your name ("trainee", "field tech", "engineer", "owner") is derived from what you have actually done and changes nothing about what is open to you. It is a CV, not a lock.
+- **Capability is the gate, and it is diegetic.** What opens hard work is tools you own (a cable tester, a Fluke, a better laptop that reads PoE), skills you have practised (you can now read a routing table), and people who vouch for you. Nobody in the game says "you are not allowed"; the bank manager says "who has seen you work?"
+- **Reputation is per client and per district.** 陳太 in Sham Shui Po will hire a stranger; the NOC in Central will not. Referrals are the real progression currency, and they are earned in the world, not by filling a bar.
+- **Difficulty is not scaled to you.** A /24 into seven departments is as hard for a beginner as it is for anyone. The game warns you once ("this needs a subnet plan — you have never designed one"), then lets you try, subcontract it to an NPC at a loss, or walk away.
+- **Failure is content, not a block.** Botch it and you get the rework scene and a hit to that district's reputation; bail halfway and the client remembers; pull off something above your weight and word travels fast. That is where open-world stories come from.
+- **Mastery still exists — for *you*, not for the game.** Per-topic accuracy drives what the generators throw at you next (weak topics resurface), and the skill tree unlocks *tools* (faster diagnostics, extra audit reveals, better quotes), never permission.
 
 ### 4.8 The wire — the headline strip
 
@@ -219,6 +224,18 @@ Ten pixels at the top of every screen carry the world: who just landed a job, wh
 **Flip, not crawl.** A Bloomberg crawl at this font scrolls ~9 characters per second; a second-language reader loses the start of the sentence before it finishes. Default is a snap-flip with a dwell bar and queue pips; continuous crawl is a settings toggle for teachers who want atmosphere on a projector. `P` pauses the strip, and it pauses on keyboard focus.
 
 **During a job the strip shrinks to 0 px** except for `LIVE` — a ticker above a diagnostic console is a distraction tax on the exact task being assessed.
+
+### 4.10 The world is open
+
+An open world at 384×216 is a budget question first and a design question second, so the shape is: **districts you walk, interiors you enter, and one screen of city per district block.**
+
+- **Top-down overworld.** Streets, crossings, market stalls, MTR entrances, shuttered units and lit shopfronts. You walk; you do not pick from a list. Interiors (a shop, a server room, your flat) are separate screens entered through a door.
+- **The work zooms in.** Walk up to a client and the camera goes to the desk: the first-person job screen from mockup 02. Exploration is top-down, work is over your shoulder. That contrast is the whole visual identity.
+- **Jobs live at addresses.** A shopkeeper waves you over, a router is blinking in a window, a notice board outside the MTR has three cards. There is no mission menu — the wire and the board are *places*, and the prompt line is the only menu.
+- **Six districts, all reachable early.** Sham Shui Po (home, parts, cheap work), Mong Kok (網吧, phone shops, late-night crises), Central (banks, SLAs, real money), Causeway Bay (retail Wi-Fi, crowds), Kwai Chung (data centre trips), and a village-house edge for the endgame rack room. Each is 2–3 exterior screens plus interiors.
+- **Traversal costs something.** Walking is free and reveals things; the MTR costs money and a block. Night changes what is open, what pays, and who is on the street.
+- **No quest log.** Threads live where they happen: a client's door, a notice board, the wire. The hub (§4.9) exists only as the front door when you come back after a break.
+- **The world does not wait for you.** Jobs expire, clients go elsewhere, prices move, a district's reputation drifts. That is what makes free-time play feel alive instead of paused.
 
 ---
 
@@ -289,7 +306,8 @@ Tone: warm, specific, occasionally funny. Nobody explains a subnet to the player
 
 - **Native resolution 384×216**, integer-scaled (3× / 4×) to 1080p. `pixelArt: true`, no smoothing, ever.
 - **Palette:** 32 colours, HK night — sodium amber, neon magenta, rain teal, wet asphalt, concrete grey; plus a daylight set for outdoor scenes.
-- **Characters:** 16×20, two-frame walk, one idle; the player sprite must read at 1× on a 384-wide screen.
+- **Two cameras, one game.** The overworld is **top-down at a 12 px tile** (32×18 tiles on screen); the work is **first-person at the desk** (mockup 02). Walk the city top-down, sit down and zoom in. Doors, stairs and the MTR are the only transitions.
+- **Characters:** 12×14 top-down (head, shoulders, two legs) with a 2-frame walk and a 1 px shadow; 16×20 for the desk scenes. The player must still read as a person at 1× on a 384-wide screen.
 - **Signage is real 繁體** (茶餐廳, 電腦, 網吧, 黃金商場) — thresholded to 1-bit at 9–13 px so it reads as pixel art, not as a font. The UI font is a hand-made 5×7 bitmap face.
 - **Screen grammar:** see §7.1. No panel borders except on physical objects (paper, your laptop screen). The diagnostic console is monospaced and looks like a terminal because it *is* a terminal, not a menu.
 - **Sound:** lo-fi city bed (rain, MTR rumble, mahjong from the next unit), one 3-note confirm, one 2-note error, cash-register sting on payment. Everything subtitle-able; no audio-only information.
@@ -438,7 +456,9 @@ Also enforced server-side: fee caps (`≤ job.fee × 1.2`), one event per job id
 
 ## 9. v1 demo — the first shift
 
-**Scope:** your bedroom (start/save) and 陳太's 茶餐廳 (job site). Three jobs, **20 graded tasks**, 12–15 minutes — and built to be interrupted: every task autosaves and every job is a clean stopping point.
+**Scope:** one walkable district (two exterior screens of Sham Shui Po) plus two interiors — your flat and 陳太's 茶餐廳. Three encounters, **20 graded tasks**, 12–15 minutes, and built to be interrupted: every task autosaves and every job is a clean stopping point.
+
+The player is dropped on the street with no tutorial modal and no mission list. 陳太 is outside her shop waving; the 網吧 next door has a note on the door; the wire is calling out a POS outage. Any of the three can be taken first, ignored, or failed. The demo is done when a student who was told nothing walks, finds a client, and comes back for a second session.
 
 **The question this build answers:** if a student is handed a link with no explanation, do they come back for a second session tomorrow? Nothing else about this build matters if the answer is no.
 
@@ -474,7 +494,7 @@ Also enforced server-side: fee caps (`≤ job.fee × 1.2`), one event per job id
 | Version | Contents | Exit criteria |
 |---|---|---|
 | **v0.1** demo | §9 scope | All 7 acceptance criteria; playtested with one class |
-| **v0.2** city | Sham Shui Po + Mong Kok maps, MTR, 12 jobs, week loop, employment track, 4 districts of content, mastery screen | A student plays 4 weeks without a dead end |
+| **v0.2** open world | top-down overworld for Sham Shui Po + Mong Kok, doors and interiors, MTR, 12 encounters placed by address, day/night | A student explores for 20 minutes without being told where to go, and never hits a locked door |
 | **v0.3** the ladder | business registration, staff, shopfront, all five housing builds, typhoon + outage events | Money curve verified by `sim:balance` |
 | **v1.0** open play | live service (standings, wire, seasons), hub, achievements, 13-topic content (~300 tasks) | A student plays a full in-game week unaided and the board updates live |
 | **v1.1** 中文 | 繁中 content + UI, bilingual toggle | Reviewed by a Chinese panel |
@@ -499,6 +519,8 @@ Also enforced server-side: fee caps (`≤ job.fee × 1.2`), one event per job id
 | **Leaderboard inflation** | any client-trusted money figure is a cheat magnet, and a fake rich list kills trust in the whole scoreboard | server-side replay of the task log; fee caps; standings only from validated events |
 | **Comparison pressure** | a public ranking of money makes a slow learner feel ranked, not taught | class-scoped, handles only, off by default for S4, teacher switch, and the strip never sorts by mastery |
 | **Wire as noise** | a moving strip above a diagnostic console steals attention from the assessed task | strip collapses to 0 px during a job; `LIVE` only; pause on focus; reduced-motion mode |
+| **Open-world art cost** | a walkable city is the single biggest asset bill in the project — bigger than the housing ladder, bigger than all the task types | 12 px tiles, modular facades and procedural signage (proved in `scene_world.py`); six districts is the ceiling, and districts are cut before task content is |
+| **No direction** | remove the ladder and a player can wander, find a job they cannot do, and conclude the game is broken | encounters are never silver: a client states the problem, the game warns once before an over-your-weight job, and every district has one job that is always winnable |
 | **Dashboard creep** | the first draft had eleven bordered panels, and every new system will want one | §7.1 is a spec with a test: three numbers, one prompt, edges only on objects. A screen that fails the 5-second test does not ship |
 | **iPad-specific breakage** | Safari clears storage, refuses audio before a tap, silences everything under the silent switch, and re-lays out in split view | IndexedDB + save code; audio unlocked on first tap and never load-bearing; fluid-height layout tested at 50/50 split |
 | **Touch targets too small** | a 6 px prompt line is a beautiful mouse target and an impossible finger target | 24 px action-bar segments (≈70 pt), 6 px hit slop, no control under 20 px on touch |
@@ -509,14 +531,15 @@ Also enforced server-side: fee caps (`≤ job.fee × 1.2`), one event per job id
 ## 12. Open questions for Ryan
 
 1. **Syllabus binding** — is "CIT" the DSE ICT line (Unit 3 + DCN elective) as assumed in §3.2, or the junior-secondary CIT syllabus? This decides whether v0.1 is subnetting-first or devices-and-safety-first. *Recommendation: DSE ICT, subnetting in the demo.*
-2. **Session length** — should one job aim at a 5-minute burst or a 15-minute sitting? *Recommendation: the job is atomic at 5–10 minutes, three in a row is a session, and the hub never asks for more than one.*
-3. **Who is on the live board** — whole school, or class only, and do you want 8-week seasons? *Recommendation: whole school with a class filter and seasons, because a student playing at 11 p.m. is competing with the school, not with 4B.*
-4. **Business sim** — is "run your own shop" essential to the story or a late optional branch? It is the most expensive system in the design. *Recommendation: v0.3 optional branch, employed track is the main line.*
-5. **Who authors content** — you writing JSON by hand, or an in-game authoring tool for you and other ICT teachers? *Recommendation: JSON + generators for v1, authoring tool only if a second school adopts it.*
-6. **Does "the server" mean a real backend at launch?** A shared class leaderboard needs accounts, a Postgres table and replay validation — a week of work that teaches nothing. *Recommendation: v0.1 ships the wire on the simulated NPC cast with no backend at all; the real feed lands in v1.0 when there is a class actually playing.*
-7. **Handles** — generated school-safe names, or do students pick their own (filtered)? *Recommendation: generated by default, custom opt-in and teacher-visible.*
-8. **Which iPads, and are they managed?** Model and generation set the performance floor; MDM decides whether we can rely on a home-screen install or must live in a Safari tab, and whether a Bluetooth keyboard is ever present (which would let typing tasks exist). *Recommendation: target iPad 9th gen, Safari tab, touch-only, no keyboard assumption.*
-9. **Should mastery ever be visible to you by default?** With no lessons attached, a report-card view risks turning a game into surveillance of a student's free time. *Recommendation: off by default, opt-in per student, and never surfaced to students as a grade.*
+2. **How big is the world** — six districts (a term of exploration) or two (a tight demo), given that map art is the biggest cost? *Recommendation: two districts for v0.2, six by v1.0, and cut districts before cutting tasks.*
+3. **Session length** — should one job aim at a 5-minute burst or a 15-minute sitting? *Recommendation: the job is atomic at 5–10 minutes, three in a row is a session, and the hub never asks for more than one.*
+4. **Who is on the live board** — whole school, or class only, and do you want 8-week seasons? *Recommendation: whole school with a class filter and seasons, because a student playing at 11 p.m. is competing with the school, not with 4B.*
+5. **Business sim** — is "run your own shop" essential to the story or a late optional branch? It is the most expensive system in the design. *Recommendation: v0.3 optional branch, employed track is the main line.*
+6. **Who authors content** — you writing JSON by hand, or an in-game authoring tool for you and other ICT teachers? *Recommendation: JSON + generators for v1, authoring tool only if a second school adopts it.*
+7. **Does the live board get built now?** You said live, so it is specified in §8.3 — one unit and one SQLite file. *Recommendation: build it in v1.0 behind a flag, so the game can ship and be played offline first.* A shared class leaderboard needs accounts, a Postgres table and replay validation — a week of work that teaches nothing. *Recommendation: v0.1 ships the wire on the simulated NPC cast with no backend at all; the real feed lands in v1.0 when there is a class actually playing.*
+8. **Handles** — generated school-safe names, or do students pick their own (filtered)? *Recommendation: generated by default, custom opt-in and teacher-visible.*
+9. **Which iPads, and are they managed?** Model and generation set the performance floor; MDM decides whether we can rely on a home-screen install or must live in a Safari tab, and whether a Bluetooth keyboard is ever present (which would let typing tasks exist). *Recommendation: target iPad 9th gen, Safari tab, touch-only, no keyboard assumption.*
+10. **Should mastery ever be visible to you by default?** With no lessons attached, a report-card view risks turning a game into surveillance of a student's free time. *Recommendation: off by default, opt-in per student, and never surfaced to students as a grade.*
 
 ---
 
