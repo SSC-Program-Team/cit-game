@@ -7,7 +7,7 @@
 | **Status** | Concept v0.3 — direction agreed, systems drafted, UI decluttered to a spec, demo not yet built |
 | **Owner** | Ryan (ICT) · SSC-Program-Team |
 | **Repo** | `SSC-Program-Team/cit-game` |
-| **Platform** | Browser, desktop-first, keyboard-playable, offline-capable |
+| **Platform** | Browser: laptop (keyboard + mouse) and iPad (touch, landscape), offline-capable |
 | **Audience** | S4–S6 ICT (DSE), real subnetting and OSI rigour |
 | **Language** | English at launch, 繁中 in v1.1 |
 | **First milestone** | One-lesson demo: 1 room, 3 jobs, 20 graded tasks |
@@ -54,7 +54,7 @@ The work *is* the game. There is no separate quiz screen bolted onto a story: ev
 
 ### 3.1 Players
 
-- **Primary:** S4–S6 ICT students, in class, 35–40 minute lessons, on school laptops, one student per machine.
+- **Primary:** S4–S6 ICT students, in class, 35–40 minute lessons, one student per machine — school laptops *and* iPads, same build, same save format.
 - **Secondary:** S5–S6 revision at home, and juniors (S1–S3) playing the same build on an easier job tier.
 - **Tertiary:** the teacher, who needs to see *which topic* a class is weak on without reading 30 save files.
 
@@ -344,6 +344,49 @@ Additional guards: fee caps (a job can never pay more than its `fee × 1.2`), ra
 
 **Privacy (PDPO).** The feed stores a handle, a money figure and a rank — no real names, no classes visible outside the class, no per-student event history retained past the term. Export and delete on request, and the whole feature can be switched off per class: some classes should not have a money ranking, and that is the teacher's call, not the design's.
 
+### 8.2 Platforms: laptop and iPad
+
+Same build, same content, two input models. Nothing is desktop-only and nothing is touch-only.
+
+| | Laptop (school) | iPad (landscape) |
+|---|---|---|
+| Target | Chrome / Edge, 1366×768 and up | Safari, iPad 9th gen and up, iPadOS 16+ |
+| Input | keyboard + mouse, both live | touch, no hardware keyboard assumed |
+| Viewport | 16:9 → 216 design height | 4:3 → ~267 design height |
+| Device pixel ratio | 1–2 | 2 |
+| Scale factor | ~3.5× | ~3× |
+
+**Fixed width, fluid height.** Design width is 384 native px. Height runs **216–272** and the layout anchors: wire to the top edge, HUD row beneath it, action bar to the bottom edge, and the *world* absorbs whatever height is left. Letterbox the world if you must; never letterbox the UI.
+
+**Touch arithmetic.** On a 10.9-inch iPad in landscape (1180 pt wide) one native pixel is ~3.07 pt, so Apple's 44 pt minimum target is ~14 native px. Rule: **every tappable row is ≥24 native px (≈70 pt) and every small control gets 6 px of hit slop.** The action bar splits the full width into three segments, so nothing needs aiming.
+
+**Three UI differences on touch, and no others:**
+
+1. The prompt line becomes the **bottom action bar** — three full-width tap segments instead of keys 1–3.
+2. Key hints become **two icon buttons** in the thumb zone above the bar (`?` hint, `x` leave). Keys still work on a laptop; only one affordance is visible at a time.
+3. Anything a key opens on the laptop is opened by **tapping the object**: the wire item, the MTR sign, the shop door, the client.
+
+**No OS keyboard, ever.** iOS's keyboard is a system modal that covers half the screen and destroys the pixel look. Numeric tasks (IP / mask / gateway, subnet bits, channel numbers) use steppers and an in-game 4×3 keypad; no task requires free text. This is a content constraint, not a UI preference — task types in §5.1 are already chosen so it holds.
+
+**Saves live in IndexedDB, not localStorage.** Safari wipes localStorage under "Clear Website Data", Private Browsing and storage pressure, and an iPad student has no convenient way to rescue a file. On top of IndexedDB, a **save code** (base64, ~600 bytes, copy-paste) carries state between an iPad and a lab machine without a file picker.
+
+**Orientation and chrome.** Landscape-locked; `viewport-fit=cover` with safe-area insets honoured (nothing tappable in the top or bottom 8 px); portrait shows a rotate overlay and freezes the clock rather than losing the job. A PWA manifest (`display: standalone`) makes "Add to Home Screen" fullscreen — but the game must be fully playable in a plain tab, because a managed school iPad may not let students install anything.
+
+**Audio is optional.** iOS refuses audio before a user gesture, so it unlocks on the first tap; the hardware silent switch silences WebAudio entirely, so no information may be audio-only. Everything has a subtitle or a visible cue.
+
+**Performance budget on an iPad 9th gen:** 60 fps, no post-processing, no runtime shader compile, atlas-packed sprites, `resolution = min(devicePixelRatio, 2)`, assets < 5 MB, first playable < 3 s on school Wi-Fi.
+
+| Test device | Input | What it proves |
+|---|---|---|
+| iPad 9th gen, Safari, landscape | touch | tap-only completion, safe insets, 60 fps |
+| iPad, portrait | touch | rotate overlay, nothing lost |
+| iPad, split view 50/50 mid-job | touch | fluid height and resize without losing state |
+| 1366×768 laptop, Chrome | keyboard + mouse | keyboard path at DPR 1 |
+| 1440×900 laptop, Safari | trackpad | DPR 2 path |
+| either, offline after first load | both | service-worker cache |
+
+Playwright plays all three demo jobs **twice** — once with keyboard events, once with touch emulation on the iPad Pro descriptor — and both runs must reach the summary screen with the same score.
+
 ---
 
 ## 9. v1 demo — one lesson
@@ -367,6 +410,9 @@ Additional guards: fee caps (a job can never pay more than its `fee × 1.2`), ra
 7. Editing one JSON file (e.g. the subnet requirement in job 2) changes the game with no code change, and CI rejects a malformed edit.
 8. The wire runs on the simulated NPC cast with at least 8 headline templates, falls back to `RICH` after six empty hours, and never shows an empty strip.
 9. Every screen passes the §7.1 layout budget: at most three permanent numbers, one prompt line, and no bordered panel that is not a physical object.
+10. All three jobs are completable with **touch only** on iPad Safari, with no hardware keyboard, and the save then opens on a laptop.
+11. Rotating the device mid-job loses nothing; portrait shows a rotate overlay and the clock does not advance.
+12. No task ever opens the OS keyboard — verified by using the demo on an iPad without one.
 
 **Explicitly out of scope for v1:** housing builds, business sim, MTR/districts, Chinese, accounts, leaderboards, mobile layout.
 
@@ -401,6 +447,9 @@ Additional guards: fee caps (a job can never pay more than its `fee × 1.2`), ra
 | **Comparison pressure** | a public ranking of money makes a slow learner feel ranked, not taught | class-scoped, handles only, off by default for S4, teacher switch, and the strip never sorts by mastery |
 | **Wire as noise** | a moving strip above a diagnostic console steals attention from the assessed task | strip collapses to 0 px during a job; `LIVE` only; pause on focus; reduced-motion mode |
 | **Dashboard creep** | the first draft had eleven bordered panels, and every new system will want one | §7.1 is a spec with a test: three numbers, one prompt, edges only on objects. A screen that fails the 5-second test does not ship |
+| **iPad-specific breakage** | Safari clears storage, refuses audio before a tap, silences everything under the silent switch, and re-lays out in split view | IndexedDB + save code; audio unlocked on first tap and never load-bearing; fluid-height layout tested at 50/50 split |
+| **Touch targets too small** | a 6 px prompt line is a beautiful mouse target and an impossible finger target | 24 px action-bar segments (≈70 pt), 6 px hit slop, no control under 20 px on touch |
+| **Install friction** | a managed iPad may not permit "Add to Home Screen" | the game is fully playable in a plain Safari tab; the PWA is a bonus, never a requirement |
 
 ---
 
@@ -413,6 +462,7 @@ Additional guards: fee caps (a job can never pay more than its `fee × 1.2`), ra
 5. **Who authors content** — you writing JSON by hand, or an in-game authoring tool for you and other ICT teachers? *Recommendation: JSON + generators for v1, authoring tool only if a second school adopts it.*
 6. **Does "the server" mean a real backend at launch?** A shared class leaderboard needs accounts, a Postgres table and replay validation — a week of work that teaches nothing. *Recommendation: v0.1 ships the wire on the simulated NPC cast with no backend at all; the real feed lands in v1.0 when there is a class actually playing.*
 7. **Handles** — generated school-safe names, or do students pick their own (filtered)? *Recommendation: generated by default, custom opt-in and teacher-visible.*
+8. **Which iPads, and are they managed?** Model and generation set the performance floor; MDM decides whether we can rely on a home-screen install or must live in a Safari tab, and whether a Bluetooth keyboard is ever present (which would let typing tasks exist). *Recommendation: target iPad 9th gen, Safari tab, touch-only, no keyboard assumption.*
 
 ---
 

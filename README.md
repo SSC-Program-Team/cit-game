@@ -25,6 +25,7 @@ All mockups are generated pixel art (native 384×216, 3× upscale), not AI image
 | [Home network build](docs/mockups/03-home-network.png) | the housing capstone: plan, cable, score coverage/cost/security |
 | [The ladder](docs/mockups/04-progression.png) | housing tiers and the employed / own-business fork |
 | [The wire](docs/mockups/05-wire.png) | the headline strip: live news, richest-player fallback, breaking push |
+| [iPad layout](docs/mockups/06-ipad.png) | the same job screen at 4:3 with a touch action bar |
 
 Regenerate them:
 
@@ -41,8 +42,12 @@ and edges only on things that are physical objects. See §7.1 of the design doc.
 
 ## Planned stack
 
-Phaser 3 + TypeScript + Vite, content in JSON, static deploy to GitHub Pages,
-local-first saves with export/import. See §8 of the design document.
+Phaser 3 + TypeScript + Vite, content in JSON, static deploy to GitHub Pages.
+
+Runs in a browser on **school laptops (keyboard + mouse) and iPads (touch, landscape)**:
+fixed 384 px design width with fluid height (216–272), every touch target ≥24 px
+(≈70 pt), no OS keyboard anywhere, IndexedDB saves plus a copy-paste save code.
+See §8.2 of the design document.
 
 ## Open decisions
 

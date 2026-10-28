@@ -10,6 +10,7 @@ import scene_console   # noqa: E402
 import scene_home      # noqa: E402
 import scene_progress  # noqa: E402
 import scene_wire      # noqa: E402
+import scene_ipad      # noqa: E402
 
-for mod in (scene_city, scene_console, scene_home, scene_progress, scene_wire):
+for mod in (scene_city, scene_console, scene_home, scene_progress, scene_wire, scene_ipad):
     mod.main()
