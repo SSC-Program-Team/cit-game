@@ -81,7 +81,7 @@
       <span class="muted" style="font-size:12px;margin-left:12px">one job, walkable road, real grading</span></p>
     <div class="chips">
       <span class="chip on">concept v0.3</span>
-      <span class="chip on">v0.1 playable</span>
+      <span class="chip on">v0.2 playable</span>
       <span class="chip">laptop + iPad</span>
       <span class="chip">stanley</span>
       <span class="chip">open world</span>
@@ -94,7 +94,7 @@
   Tap 陳太 outside the village tea shop.</p>
 
   <div class="stage" id="stage">
-    <img id="shot" src="img/01-city-night.png?v5" alt="Top-down Hong Kong street at night">
+    <img id="shot" src="img/01-v2-street.png?v=6" alt="Tung Tau Wan Road at night, 640x360">
     <button class="hot" id="hot-chan" aria-label="Talk to Chan Tai outside the tea shop"
             style="left:8%;top:41%;width:8%;height:16%"></button>
     <button class="answer hidden" data-opt="1" aria-label="Answer 1: wrong subnet mask"
@@ -109,7 +109,7 @@
 
   <h2>The overworld</h2>
   <figure>
-    <img src="img/01-city-night.png?v5" alt="Tung Tau Wan Road, Stanley, top-down at night">
+    <img src="img/01-v2-street.png?v=6" alt="Tung Tau Wan Road, Stanley, top-down at night">
     <figcaption><b>Tung Tau Wan Road, 18:40.</b> Village shops at the west end — 陳太's tea shop, Stanley
     Restaurant (赤柱餐廳), the store, the minibus stop and the Old Police Station. Then the college wall and
     gate at 22, a path down to the beach, the prison wall with its watchtower and the mosque at 53,
@@ -131,6 +131,16 @@
       prompt, or it gets deleted.</p></div>
     <div class="card"><h3>No OS keyboard</h3><p>Steppers and an in-game keypad, because an iPad
       keyboard covers half the screen.</p></div>
+  </div>
+
+  <h2>v0.2 — what changed</h2>
+  <div class="grid">
+    <div class="card"><h3>640 × 360, not 384 × 216</h3><p>Four times the pixels, integer-scaled: 2× to
+      720p, 3× to 1080p. Still pixel art, just a finer grid.</p></div>
+    <div class="card"><h3>A real bitmap font</h3><p>The hand-made 5×7 face is now in the game, not just
+      in the mockups, so text is crisp instead of antialiased.</p></div>
+    <div class="card"><h3>Sound, generated</h3><p>Music and effects are synthesised in the browser —
+      no audio files, nothing to license, nothing to load.</p></div>
   </div>
 
   <h2>Getting it wrong</h2>

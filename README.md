@@ -8,7 +8,11 @@ accept is a real networking task, scored.
 
 ![Sham Shui Po at night](docs/mockups/01-city-night.png)
 
-**Status:** playable slice (v0.1) — walkable Tung Tau Wan Road, one job with real grading, saves.
+**Status:** playable slice (v0.3) — walkable Tung Tau Wan Road at night, one graded job that pays,
+Stanley shopfronts that are shut for now, procedural music and SFX, saves.
+
+![Tung Tau Wan Road, v0.3](docs/mockups/v03-city.png)
+![The job screen, v0.3](docs/mockups/v03-job.png)
 
 **Play:** <https://ai.ssc.edu.hk/cit-game/> · **Design page:** <https://ai.ssc.edu.hk/cit-game/design/>
 
@@ -18,8 +22,26 @@ npm install && npm run build          # -> dist/
 rsync -rc --delete dist/ developer@172.100.0.211:/var/www/html/cit-game/
 ```
 
-WASD / arrows to walk, **E** to interact, tap works the same on an iPad. The first job is 陳太's
-tea shop: read the console, name the fault, get paid.
+WASD / arrows to walk, **E** to interact, tap works the same on an iPad, **M** mutes. The first job is
+陳太's tea shop: read the console, name the fault, get paid. The other Stanley shopfronts — the
+restaurant, the store, the market, the bakery, Stanley Plaza — are shut and only give you a line of
+flavour for now; they are the next place to hang real jobs.
+
+## What v0.3 changed
+
+- **No Phaser.** The game draws itself to one 640×360 canvas on a loop it owns. The bundle went from
+  1.5 MB to **19.7 kB (8 kB gzipped)**, which is the difference between a two-second iPad load and
+  an instant one. Phaser's scene manager was also silently dead in the test browser: transitions
+  queued and never ran, so a second scene rendered once and then froze. Scenes are now modes.
+- **The street is alive.** Rain, four pedestrians with umbrellas, a car with headlights, neon glow
+  above the night grade, wet-asphalt smears under the shop signs, flickering signage, and a light
+  pool per lamp — all drawn per frame, none baked into the map.
+- **Sound.** A procedural lo-fi loop (pad, bass, arpeggio, hat) plus SFX for keys, correct answers,
+  wrong answers, cash, doors and footsteps — synthesised at runtime, so no audio files and no
+  licensing.
+- **The road band is measured, not guessed.** `map.png` was sampled row by row to find the asphalt
+  (y 184–212) so the player walks on the road and pedestrians walk the pavement. Spots carry two
+  vertical anchors: one on the road for reach, one on the shopfront for the marker.
 
 ## Read this first
 

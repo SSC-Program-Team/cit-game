@@ -11,5 +11,9 @@
   canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
 </style>
 </head>
-<body><div id="app"></div><script type="module" src="/src/main.ts"></script></body>
+<body>
+<script>
+window.addEventListener('error', e => { document.title = 'ERR: ' + (e.message || 'unknown'); });
+window.addEventListener('unhandledrejection', e => { document.title = 'REJ: ' + (e.reason && e.reason.message || e.reason); });
+</script><div id="app"></div><script type="module" src="/src/main.ts"></script></body>
 </html>
