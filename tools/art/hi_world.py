@@ -14,7 +14,7 @@ import random
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "mockup"))
-from pixelart import Canvas, P  # noqa: E402
+from pixelart import Canvas, P, cjk_text  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUT = os.path.join(ROOT, "public", "img")
@@ -231,11 +231,18 @@ def sign_cjk(c, x, y, chars, colour, size=14, vertical=False):
             c.cjk(x + 2, y + 2 + i * (size - 1), ch, size=size, color=colour)
         return size + 8, h + 4
     w = len(chars) * size + 8
-    c.rect(x - 2, y - 2, w, size + 6, (20, 18, 22, 255))
-    c.frame(x - 2, y - 2, w, size + 6, colour)
-    for i, ch in enumerate(chars):
-        c.cjk(x + 2 + i * size, y + 1, ch, size=size, color=colour)
-    return w, size + 6
+    box_h = size + 6
+    c.rect(x - 2, y - 2, w, box_h, (20, 18, 22, 255))
+    c.frame(x - 2, y - 2, w, box_h, colour)
+    # Noto CJK carries a tall ascent above the ink: centre on the inked rows, not the em box
+    glyphs = [cjk_text(ch, size, colour) for ch in chars]
+    boxes = [g.getbbox() for g in glyphs if g.getbbox()]
+    top = min(b[1] for b in boxes)
+    ink_h = max(b[3] for b in boxes) - top
+    gy = y - 2 + (box_h - ink_h) // 2 - top
+    for i, g in enumerate(glyphs):
+        c.paste(g, x + 2 + i * size, gy)
+    return w, box_h
 
 
 GOODS = ((214, 92, 108, 255), (92, 160, 210, 255), (226, 196, 92, 255), (120, 180, 120, 255),

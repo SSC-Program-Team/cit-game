@@ -146,7 +146,8 @@ def cjk_text(text: str, size: int = 12, color=None, threshold: int = 96) -> Imag
     """Real 繁體 characters thresholded to 1-bit so they read as pixel glyphs."""
     color = color or P["white"]
     font = ImageFont.truetype(CJK_FONT, size)
-    tmp = Image.new("L", (size * len(text) + 6, size + 6), 0)
+    # Noto CJK draws its ink ~0.4em below the origin: size + 6 rows cut the bottom strokes off
+    tmp = Image.new("L", (size * len(text) + 6, size * 2 + 6), 0)
     ImageDraw.Draw(tmp).text((1, 1), text, font=font, fill=255)
     out = Image.new("RGBA", tmp.size, (0, 0, 0, 0))
     src = tmp.load()
