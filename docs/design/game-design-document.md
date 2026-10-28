@@ -311,7 +311,7 @@ The game is not a classroom tool with a story attached; it is a game a teacher i
 
 ## 6. Setting and cast
 
-**Tung Tau Wan Road, Stanley** — the real road, compressed to a walkable strip. West end: Stanley Village's shops (陳太's tea shop, a PP restaurant, the store, the minibus stop) and the Old Police Station. The middle is the college: wall, gate, the 1930s brick block, the sports field. A path drops south to the beach. East of that sits the prison wall — watchtower, barbed wire, the mosque at 53 inside it, the vehicle gate at 99 — and the road ends at the Stanley Fort gate, which is the edge of the map.
+**Tung Tau Wan Road, Stanley** — the real road, compressed to a walkable strip. West end: Stanley Village's shops (陳太's tea shop, Stanley Restaurant 赤柱餐廳, the store, the minibus stop) and the Old Police Station. The middle is the college: wall, gate, the 1930s brick block, the sports field. A path drops south to the beach. East of that sits the prison wall — watchtower, barbed wire, the mosque at 53 inside it, the vehicle gate at 99 — and the road ends at the Stanley Fort gate, which is the edge of the map.
 
 Everything is walkable and nothing is level-gated. Later districts (Mong Kok, Central, the data centre in Kwai Chung) arrive by bus from the village stop, not by unlocking a chapter.
 

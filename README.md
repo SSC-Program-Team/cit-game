@@ -8,10 +8,18 @@ accept is a real networking task, scored.
 
 ![Sham Shui Po at night](docs/mockups/01-city-night.png)
 
-**Status:** concept — design doc written, visual direction fixed, nothing playable yet.
+**Status:** playable slice (v0.1) — walkable Tung Tau Wan Road, one job with real grading, saves.
 
-**Live preview:** <https://cit-game.iengineer.cc.cd> — a clickable mockup (tap 陳太, then answer the
-ticket). Hosting notes in [docs/deploy.md](docs/deploy.md).
+**Play:** <https://ai.ssc.edu.hk/cit-game/> · **Design page:** <https://ai.ssc.edu.hk/cit-game/design/>
+
+```bash
+python3 tools/mockup/export_game.py   # 1:1 art from the mockups
+npm install && npm run build          # -> dist/
+rsync -rc --delete dist/ developer@172.100.0.211:/var/www/html/cit-game/
+```
+
+WASD / arrows to walk, **E** to interact, tap works the same on an iPad. The first job is 陳太's
+tea shop: read the console, name the fault, get paid.
 
 ## Read this first
 

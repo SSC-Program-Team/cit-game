@@ -128,18 +128,24 @@ def note(c: Canvas):
               title="objective", colour=P["win_lit"])
 
 
-def main():
+def render(chrome=True) -> Canvas:
+    """chrome=False draws the scene without prompt/hints, for the game to overlay its own."""
     rng = random.Random(5)
     c = cafe(rng)
     ui.scrim(c, 0, 0, W, H, 96)          # focus the work, not the room
     ticket(c)
     note(c)
     laptop(c)
-    ui.prompt(c, 196, ["[1] wrong mask", "[2] not forwarding", "[3] printer"],
-              active=1, gap=18)
-    ui.scrim(c, 0, 204, W, 12, 208)
-    c.text(8, 208, "h  call the master  -$80", P["grey"])
-    c.save("02-job-console.png", scale=3)
+    if chrome:
+        ui.prompt(c, 196, ["[1] wrong mask", "[2] not forwarding", "[3] printer"],
+                  active=1, gap=18)
+        ui.scrim(c, 0, 204, W, 12, 208)
+        c.text(8, 208, "h  call the master  -$80", P["grey"])
+    return c
+
+
+def main():
+    render(True).save("02-job-console.png", scale=3)
 
 
 if __name__ == "__main__":

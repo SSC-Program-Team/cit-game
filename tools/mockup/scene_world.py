@@ -144,6 +144,17 @@ def shop(c: Canvas, x, y, w, h, label, colour, awning, cjk=None, size=10):
         c.text(x + 4, y + 5, label, colour)
 
 
+def hanging_sign(c: Canvas, x, y, chars, colour, size=10):
+    """Projecting signboard above the pavement — the name does not have to fit the unit."""
+    w = len(chars) * size + 6
+    c.rect(x - 1, y - 1, w + 2, size + 5, P["ink"])
+    c.rect(x, y, w, size + 3, tuple(min(40, ch) for ch in colour[:3]) + (255,))
+    c.frame(x, y, w, size + 3, colour)
+    for i, ch in enumerate(chars):
+        c.cjk(x + 3 + i * size, y + 2, ch, size=size, color=colour)
+    c.hline(x + w // 2, y - 2, 1, P["grey_dk"])
+
+
 def police_post(c: Canvas, x, y, w, h):
     c.rect(x, y, w, h, (222, 220, 214, 255))
     c.hline(x, y, w, (240, 238, 232, 255))
@@ -211,9 +222,10 @@ def render(with_wire=True) -> Canvas:
 
     # ---- west end: Stanley Village
     shop(c, 0, 58, 32, 40, "", P["neon_pink"], (146, 58, 66, 255), cjk="茶餐廳")
-    shop(c, 34, 66, 30, 32, "pp", P["neon_cyan"], (58, 118, 128, 255))
+    shop(c, 34, 66, 30, 32, "", P["neon_cyan"], (58, 118, 128, 255))
     for i in range(5):
         c.rect(35 + i * 6, 84, 3, 12, (86, 160, 172, 255))
+    hanging_sign(c, 30, 44, "赤柱餐廳", P["neon_cyan"])
     shop(c, 66, 74, 24, 24, "shop", P["neon_green"], (60, 110, 90, 255))
     c.rect(92, 82, 12, 16, (92, 86, 96, 255))          # minibus shelter
     c.rect(92, 82, 12, 3, CURB)

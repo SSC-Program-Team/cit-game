@@ -1,4 +1,37 @@
-# Deploying the preview
+# Deploying
+
+## The game — ai.ssc.edu.hk/cit-game (canonical)
+
+Apache on the AI server serves `/var/www/html/cit-game/` directly. `developer` is in
+`www-data` and the docroot is group-writable, so this needs no sudo and no service.
+
+```bash
+cd ~/cit-game
+python3 tools/mockup/export_game.py     # 1:1 chrome-less art into public/img
+npm run build                           # dist/  (Vite, base './')
+rsync -rc --delete dist/ developer@172.100.0.211:/var/www/html/cit-game/
+```
+
+- Game: <https://ai.ssc.edu.hk/cit-game/>
+- Design page: <https://ai.ssc.edu.hk/cit-game/design/>
+
+**Two traps, already fixed in the tooling:**
+
+1. The design mockups are **3x** with their own HUD baked in. Loading them into a 384x216
+   canvas showed one corner of the map at triple size. `export_game.py` renders `map.png`
+   and `job.png` at 1:1 *without* chrome, so the game draws its own HUD.
+2. `base: './'` matters — without it the built asset paths resolve from the domain root and
+   `/cit-game/` serves a blank page.
+
+## Retired: the Cloudflare Tunnel preview
+
+`cloudflared-cit` and `cit-game-web` were disabled once the school server took over.
+`systemctl --user enable --now cit-game-web cloudflared-cit` brings the old
+<https://cit-game.iengineer.cc.cd> back if it is ever useful off the school network.
+
+---
+
+## Deploying the design preview (historic)
 
 The design preview is a static folder served from this machine through a **separate Cloudflare
 Tunnel** — deliberately not the `hermes` tunnel, so redeploying it can never drop the Hermes
