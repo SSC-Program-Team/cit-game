@@ -52,6 +52,230 @@ const hash = (x: number, y: number, salt = 0): number => {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 };
 
+// -------------------------------------------------------- tidy building outlines ---
+/**
+ * OSM outlines are traced by hand from aerial photos: every jog, bay and wobble is there, and at
+ * 16 px a metre they read as odd shapes. Each outline is redrawn as an architect would block it in:
+ *   1. find the building's main direction (the length-weighted average of its edge angles, mod 90°);
+ *      if that is within 20° of north it is snapped to square with the map, for clean pixel walls;
+ *   2. if the outline fills most of its rectangle in that direction, it simply becomes the rectangle;
+ *   3. otherwise it is drawn on a 1 m grid in that direction, notches and stubs under 2 m are filled
+ *      or trimmed, and the outside of what is left is traced back out: only right angles remain.
+ * Small sheds are left alone. Artistic, not surveyed: walls move by up to a metre or so.
+ */
+function regularize(p: number[]): number[] {
+  const n = p.length / 2 - (p[0] === p[p.length - 2] && p[1] === p[p.length - 1] ? 1 : 0);
+  if (n < 3) return p;
+  // 1. main direction
+  let sx = 0, sy = 0, area = 0;
+  for (let i = 0; i < n; i += 1) {
+    const ax = p[i * 2], ay = p[i * 2 + 1], bx = p[((i + 1) % n) * 2], by = p[((i + 1) % n) * 2 + 1];
+    const len = Math.hypot(bx - ax, by - ay), a = Math.atan2(by - ay, bx - ax) * 4;
+    sx += Math.cos(a) * len; sy += Math.sin(a) * len;
+    area += ax * by - bx * ay;
+  }
+  area = Math.abs(area) / 2;
+  if (area < 12) return p;
+  let th = Math.atan2(sy, sx) / 4; // in (-45°, 45°]
+  if (Math.abs(th) < (20 * Math.PI) / 180) th = 0;
+  const c = Math.cos(th), s = Math.sin(th);
+  const rot: number[] = [];
+  for (let i = 0; i < n; i += 1) { const x = p[i * 2], y = p[i * 2 + 1]; rot.push(x * c + y * s, -x * s + y * c); }
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (let i = 0; i < rot.length; i += 2) { x0 = Math.min(x0, rot[i]); x1 = Math.max(x1, rot[i]); y0 = Math.min(y0, rot[i + 1]); y1 = Math.max(y1, rot[i + 1]); }
+  const back = (pts: number[]): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < pts.length; i += 2) out.push(Math.round((pts[i] * c - pts[i + 1] * s) * 4) / 4, Math.round((pts[i] * s + pts[i + 1] * c) * 4) / 4);
+    out.push(out[0], out[1]);
+    return out;
+  };
+  // 2. near enough a rectangle
+  if (area / ((x1 - x0) * (y1 - y0)) > 0.84) return back([x0, y0, x1, y0, x1, y1, x0, y1]);
+  // walls that already run square to the main direction, as a share of the perimeter
+  let square = 0, perim = 0;
+  for (let i = 0; i < n; i += 1) {
+    const ex = rot[((i + 1) % n) * 2] - rot[i * 2], ey = rot[((i + 1) % n) * 2 + 1] - rot[i * 2 + 1], len = Math.hypot(ex, ey);
+    perim += len;
+    if (Math.min(Math.abs(ex), Math.abs(ey)) / (len || 1) < 0.2) square += len;
+  }
+  // a building with real diagonal or curved walls keeps them, just straightened
+  if (square / perim < 0.85) return straighten(p, th);
+  // 3. on a 1 m grid in the building's own direction
+  const ox = Math.round(x0), oy = Math.round(y0);
+  const W = Math.round(x1) - ox + 2, H = Math.round(y1) - oy + 2;
+  let m: Uint8Array = new Uint8Array(W * H);
+  for (let y = 0; y < H; y += 1) for (let x = 0; x < W; x += 1) {
+    const px = ox + x + 0.5, py = oy + y + 0.5;
+    let inside = false;
+    for (let i = 0, j = rot.length - 2; i < rot.length; j = i, i += 2) {
+      if ((rot[i + 1] > py) !== (rot[j + 1] > py) && px < ((rot[j] - rot[i]) * (py - rot[i + 1])) / (rot[j + 1] - rot[i + 1]) + rot[i]) inside = !inside;
+    }
+    m[y * W + x] = inside ? 1 : 0;
+  }
+  const get = (a: Uint8Array, x: number, y: number): number => (x < 0 || y < 0 || x >= W || y >= H ? 0 : a[y * W + x]);
+  /** grow (1) or shrink (0) by one cell, with a 3x3 cross */
+  const morph = (a: Uint8Array, grow: boolean): Uint8Array => {
+    const o = new Uint8Array(W * H);
+    for (let y = 0; y < H; y += 1) for (let x = 0; x < W; x += 1) {
+      const v = [get(a, x, y), get(a, x - 1, y), get(a, x + 1, y), get(a, x, y - 1), get(a, x, y + 1)];
+      o[y * W + x] = grow ? (v.some((q) => q) ? 1 : 0) : (v.every((q) => q) ? 1 : 0);
+    }
+    return o;
+  };
+  const count = (a: Uint8Array): number => a.reduce((t, v) => t + v, 0);
+  const before = count(m);
+  if (!before) return p;
+  // fill notches (close), then trim stubs (open) when that keeps the building whole
+  const closed = morph(morph(m, true), false);
+  m = closed;
+  const opened = morph(morph(m, false), true);
+  if (count(opened) > before * 0.85) m = opened;
+  // 4. trace the outside: boundary edges of filled cells, chained into loops; keep the longest
+  const next = new Map<string, [number, number]>();
+  const add = (ax: number, ay: number, bx: number, by: number): void => { next.set(`${ax},${ay}`, [bx, by]); };
+  for (let y = 0; y < H; y += 1) for (let x = 0; x < W; x += 1) {
+    if (!m[y * W + x]) continue;
+    if (!get(m, x, y - 1)) add(x, y, x + 1, y);
+    if (!get(m, x + 1, y)) add(x + 1, y, x + 1, y + 1);
+    if (!get(m, x, y + 1)) add(x + 1, y + 1, x, y + 1);
+    if (!get(m, x - 1, y)) add(x, y + 1, x, y);
+  }
+  let best: Array<[number, number]> = [];
+  const used = new Set<string>();
+  for (const start of next.keys()) {
+    if (used.has(start)) continue;
+    const loop: Array<[number, number]> = [];
+    let k = start;
+    while (!used.has(k) && next.has(k)) {
+      used.add(k);
+      const [x, y] = k.split(',').map(Number);
+      loop.push([x, y]);
+      const [nx, ny] = next.get(k)!;
+      k = `${nx},${ny}`;
+    }
+    if (loop.length > best.length) best = loop;
+  }
+  if (best.length < 4) return p;
+  // drop the points in the middle of straight runs
+  const corners: number[] = [];
+  for (let i = 0; i < best.length; i += 1) {
+    const a = best[(i + best.length - 1) % best.length], b = best[i], d = best[(i + 1) % best.length];
+    if ((a[0] === b[0] && b[0] === d[0]) || (a[1] === b[1] && b[1] === d[1])) continue;
+    corners.push(ox + b[0], oy + b[1]);
+  }
+  return corners.length >= 8 ? back(corners) : p;
+}
+/**
+ * Tidy an outline that has real diagonal walls: drop wobbles under 0.7 m, merge runs that point
+ * the same way, square up walls within 15° of the main direction, and put the corners back where
+ * the straightened walls meet. Falls back to the plain simplified outline if that goes wrong.
+ */
+function straighten(p: number[], th: number): number[] {
+  // Douglas-Peucker on the closed ring
+  const pts: Array<[number, number]> = [];
+  for (let i = 0; i + 1 < p.length; i += 2) pts.push([p[i], p[i + 1]]);
+  if (pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts.pop();
+  const dp = (a: number, b: number, keep: boolean[]): void => {
+    let far = -1, fd = 0.7;
+    const [ax, ay] = pts[a], [bx, by] = pts[b % pts.length];
+    const l = Math.hypot(bx - ax, by - ay) || 1;
+    for (let i = a + 1; i < b; i += 1) {
+      const d = Math.abs((pts[i][0] - ax) * (by - ay) - (pts[i][1] - ay) * (bx - ax)) / l;
+      if (d > fd) { fd = d; far = i; }
+    }
+    if (far >= 0) { keep[far] = true; dp(a, far, keep); dp(far, b, keep); }
+  };
+  // split the ring at the point farthest from the first, so a closed ring does not collapse
+  let split = 0, sd = -1;
+  for (let i = 0; i < pts.length; i += 1) { const d = Math.hypot(pts[i][0] - pts[0][0], pts[i][1] - pts[0][1]); if (d > sd) { sd = d; split = i; } }
+  const keep = pts.map((_, i) => i === 0 || i === split);
+  dp(0, split, keep); dp(split, pts.length, keep);
+  let ring = pts.filter((_, i) => keep[i]);
+  if (ring.length < 3) return p;
+  const flat = (r: Array<[number, number]>): number[] => { const o: number[] = []; for (const [x, y] of r) o.push(x, y); o.push(r[0][0], r[0][1]); return o; };
+  const simple = flat(ring);
+  // edges as lines: a point and a direction, with near-square ones snapped
+  type Line = { x: number; y: number; dx: number; dy: number; len: number };
+  let lines: Line[] = [];
+  const ux = Math.cos(th), uy = Math.sin(th);
+  for (let i = 0; i < ring.length; i += 1) {
+    const [ax, ay] = ring[i], [bx, by] = ring[(i + 1) % ring.length];
+    let dx = bx - ax, dy = by - ay;
+    const len = Math.hypot(dx, dy);
+    dx /= len; dy /= len;
+    const along = dx * ux + dy * uy, across = -dx * uy + dy * ux;
+    const tol = Math.sin((15 * Math.PI) / 180);
+    if (Math.abs(across) < tol) { const sg = Math.sign(along); dx = ux * sg; dy = uy * sg; }
+    else if (Math.abs(along) < tol) { const sg = Math.sign(across); dx = -uy * sg; dy = ux * sg; }
+    lines.push({ x: (ax + bx) / 2, y: (ay + by) / 2, dx, dy, len });
+  }
+  // merge neighbours that now point the same way (keep the longer one's line)
+  for (let changed = true; changed && lines.length > 3;) {
+    changed = false;
+    for (let i = 0; i < lines.length; i += 1) {
+      const a = lines[i], b = lines[(i + 1) % lines.length];
+      if (a.dx * b.dx + a.dy * b.dy > 0.985) {
+        const keepA = a.len >= b.len;
+        const m = keepA ? a : b;
+        lines[i] = { ...m, len: a.len + b.len };
+        lines.splice((i + 1) % lines.length, 1);
+        if ((i + 1) % lines.length === 0 && i !== 0) lines = [lines[lines.length - 1], ...lines.slice(0, -1)];
+        changed = true; break;
+      }
+    }
+  }
+  if (lines.length < 3) return simple;
+  const out: Array<[number, number]> = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const a = lines[(i + lines.length - 1) % lines.length], b = lines[i];
+    const cr = a.dx * b.dy - a.dy * b.dx;
+    if (Math.abs(cr) < 0.05) return simple;
+    const t = ((b.x - a.x) * b.dy - (b.y - a.y) * b.dx) / cr;
+    out.push([a.x + a.dx * t, a.y + a.dy * t]);
+  }
+  // sanity: corners near the original, area about the same
+  const areaOf = (r: Array<[number, number]>): number => { let A = 0; for (let i = 0; i < r.length; i += 1) { const [x0, y0] = r[i], [x1, y1] = r[(i + 1) % r.length]; A += x0 * y1 - x1 * y0; } return Math.abs(A) / 2; };
+  const a0 = areaOf(ring), a1 = areaOf(out);
+  const nearOrig = out.every(([x, y]) => pts.some(([qx, qy]) => Math.hypot(qx - x, qy - y) < 2.5));
+  if (!nearOrig || a1 < a0 * 0.85 || a1 > a0 * 1.15) return simple;
+  return flat(out.map(([x, y]) => [Math.round(x * 4) / 4, Math.round(y * 4) / 4]));
+}
+/**
+ * A terrace stepping along a diagonal street traces as a sawtooth of short walls. Any run of three
+ * or more walls each under 2.6 m becomes one straight wall from the run's first corner to its last.
+ */
+function destair(p: number[]): number[] {
+  const r: Array<[number, number]> = [];
+  for (let i = 0; i + 1 < p.length; i += 2) r.push([p[i], p[i + 1]]);
+  if (r.length > 1 && r[0][0] === r[r.length - 1][0] && r[0][1] === r[r.length - 1][1]) r.pop();
+  const n = r.length;
+  if (n < 6) return p;
+  const short = r.map((a, i) => Math.hypot(r[(i + 1) % n][0] - a[0], r[(i + 1) % n][1] - a[1]) < 2.6);
+  if (short.every(Boolean)) return p;
+  // start just after a long wall, so runs do not wrap
+  const s0 = (short.findIndex((v) => !v) + 1) % n;
+  const drop = new Array<boolean>(n).fill(false);
+  for (let k = 0; k < n;) {
+    const i = (s0 + k) % n;
+    if (!short[i]) { k += 1; continue; }
+    let len = 0;
+    while (k + len < n && short[(s0 + k + len) % n]) len += 1;
+    if (len >= 3) for (let j = 1; j < len; j += 1) drop[(s0 + k + j) % n] = true; // keep the run's ends
+    k += len;
+  }
+  const out = r.filter((_, i) => !drop[i]);
+  if (out.length < 3) return p;
+  const area = (q: Array<[number, number]>): number => { let A = 0; for (let i = 0; i < q.length; i += 1) A += q[i][0] * q[(i + 1) % q.length][1] - q[(i + 1) % q.length][0] * q[i][1]; return Math.abs(A) / 2; };
+  const a0 = area(r), a1 = area(out);
+  if (a1 < a0 * 0.85 || a1 > a0 * 1.15) return p;
+  const o: number[] = [];
+  for (const [x, y] of out) o.push(x, y);
+  o.push(out[0][0], out[0][1]);
+  return o;
+}
+/** every building's tidied outline, by OSM index */
+const SHAPES: number[][] = OSM.buildings.map(([p]) => destair(regularize(p)));
+
 const AREA_CODE: Record<string, Gr> = {
   beach: Gr.Beach, wood: Gr.Wood, cemetery: Gr.Cemetery, pitch: Gr.Pitch, park: Gr.Park, parking: Gr.Parking,
   plaza: Gr.Plaza, pier: Gr.Pier, prison: Gr.Yard, school: Gr.School, built: Gr.Built, water: Gr.Sea,
@@ -206,7 +430,7 @@ const ROAD: Record<string, [Gr, number]> = {
     }
   }
   // 4. buildings
-  OSM.buildings.forEach(([p], i) => fillPoly(p, (k) => { if (grid[k] !== Gr.Sea) { grid[k] = Gr.Building; bid[k] = i; } }));
+  SHAPES.forEach((p, i) => fillPoly(p, (k) => { if (grid[k] !== Gr.Sea) { grid[k] = Gr.Building; bid[k] = i; } }));
   // 5. walls and fences (retaining walls are only a change of level)
   for (const [p, kind] of OSM.walls) {
     if (kind === 'retaining_wall') continue;
@@ -299,7 +523,8 @@ function styleFor(kind: string, extra: string, cx: number, cy: number): Building
   return 'house';
 }
 
-export const BUILDINGS: Building[] = OSM.buildings.map(([p, kind, name, extra], i) => {
+export const BUILDINGS: Building[] = OSM.buildings.map(([, kind, name, extra], i) => {
+  const p = SHAPES[i];
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (let i = 0; i < p.length; i += 2) { x0 = Math.min(x0, p[i]); x1 = Math.max(x1, p[i]); y0 = Math.min(y0, p[i + 1]); y1 = Math.max(y1, p[i + 1]); }
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
