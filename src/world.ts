@@ -520,6 +520,26 @@ export type Building = {
   pitched: boolean;
   /** real height in metres, from the 3D model, when known */
   height: number;
+  /** how the front walls are drawn: rows of windows (default), open colonnades, or a glass curtain wall */
+  facade: 'windows' | 'colonnade' | 'glass';
+  /** a flat roof that people use: paving, planters and trees rather than plant rooms */
+  terrace: boolean;
+  /** chimney stacks on the roof */
+  chimneys: number;
+  /** a landmark's own wall colour, instead of its style's */
+  wallColour?: string;
+};
+
+/**
+ * Landmarks people know get their own look, so they read as themselves rather than as a generic
+ * block. Keyed by the OSM name; anything not given keeps the usual style. Add to this as you go.
+ */
+type Landmark = { wall?: string; roof?: string; pitched?: boolean; facade?: Building['facade']; terrace?: boolean; chimneys?: number; wallH?: number };
+const LANDMARKS: Record<string, Landmark> = {
+  // 1840s granite colonial block, rebuilt here in 2001: colonnades on every floor, grey hipped roof
+  'Murray House': { wall: '#ddd5c2', roof: '#5d6266', pitched: true, facade: 'colonnade', chimneys: 6, wallH: 6 },
+  // terraced mall stepping down to the waterfront: glass shopfronts, a public terrace on top
+  'Stanley Plaza': { wall: '#d9d3c6', roof: '#c9bfa8', pitched: false, facade: 'glass', terrace: true, wallH: 4 },
 };
 
 
@@ -564,9 +584,12 @@ export const BUILDINGS: Building[] = OSM.buildings.map(([, kind, name, extra], i
   if (real?.[1]) wall = Math.max(2, Math.min(10, Math.round(real[1] * 0.4), Math.round((y1 - y0) * 0.6)));
   const roofs = ROOFS[style];
   const pitched = real ? real[2] === 1 : style === 'house' || style === 'heritage' || style === 'school' || style === 'temple';
+  const lm = LANDMARKS[name] ?? {};
   return {
-    poly: p, name, style, x0: Math.floor(x0), y0: Math.floor(y0), x1: Math.ceil(x1), y1: Math.ceil(y1), wall, door: null,
-    roof: real?.[0] ?? roofs[Math.floor(hash(Math.round(x0), Math.round(y0), 5) * roofs.length)], pitched, height: real?.[1] ?? 0,
+    poly: p, name, style, x0: Math.floor(x0), y0: Math.floor(y0), x1: Math.ceil(x1), y1: Math.ceil(y1), wall: lm.wallH ?? wall, door: null,
+    roof: lm.roof ?? real?.[0] ?? roofs[Math.floor(hash(Math.round(x0), Math.round(y0), 5) * roofs.length)],
+    pitched: lm.pitched ?? pitched, height: real?.[1] ?? 0,
+    facade: lm.facade ?? 'windows', terrace: lm.terrace ?? false, chimneys: lm.chimneys ?? 0, wallColour: lm.wall,
   };
 });
 
@@ -1356,8 +1379,8 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
   path(p); g.clip();
 
   // ---- front walls
-  const wall = WALL_COLOUR[B.style];
-  const shopfront = B.style === 'shop' || B.style === 'mall';
+  const wall = B.wallColour ?? WALL_COLOUR[B.style];
+  const shopfront = (B.style === 'shop' || B.style === 'mall') && B.facade === 'windows';
   const floors = Math.max(1, Math.min(Math.floor(h / 0.95), B.height ? Math.round(B.height / 3.2) : Math.floor(h / 2.2)));
   type Face = { ax: number; ay: number; ex: number; ey: number; len: number; ony: number };
   const faces: Face[] = [];
@@ -1401,6 +1424,39 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
       for (let k = 1; k < floors; k += 1) { const z = (k * h) / floors; patch(f, 0, f.len, z, z + px); }
     }
     if (f.len < 1.2) continue; // a jog in the outline: plain wall
+    if (B.facade === 'colonnade') {
+      // open verandahs: a deep shadow behind a row of pale columns on every floor, with a
+      // cornice over each floor and a balustrade along the upper ones
+      const storeys = Math.max(2, Math.round(h / 2));
+      const sh = h / storeys;
+      for (let k = 0; k < storeys; k += 1) {
+        const z0 = k * sh;
+        g.fillStyle = shade(wall, 0.42); patch(f, 0.2, f.len - 0.2, z0 + 0.12, z0 + sh - 0.28); // verandah in shadow
+        g.fillStyle = shade(wall, 0.6); patch(f, 0.2, f.len - 0.2, z0 + sh - 0.5, z0 + sh - 0.28); // arch soffits
+        const n = Math.max(2, Math.round(f.len / 1.6));
+        for (let c = 0; c <= n; c += 1) {
+          const tc = 0.2 + ((f.len - 0.4) * c) / n;
+          g.fillStyle = shade(wall, 1.08); patch(f, tc - 0.17, tc + 0.17, z0 + 0.12, z0 + sh - 0.28);
+          g.fillStyle = shade(wall, 0.8); patch(f, tc + 0.1, tc + 0.17, z0 + 0.12, z0 + sh - 0.28);
+        }
+        g.fillStyle = shade(wall, 1.15); patch(f, 0, f.len, z0 + sh - 0.28, z0 + sh); // cornice
+        if (k > 0) { g.fillStyle = shade(wall, 0.95); patch(f, 0.2, f.len - 0.2, z0 + 0.12, z0 + 0.45); } // balustrade
+      }
+      continue;
+    }
+    if (B.facade === 'glass') {
+      // a glass curtain wall: tinted panes between slim mullions, a stone band at each floor
+      const storeys = Math.max(1, Math.round(h / 2));
+      const sh = h / storeys;
+      for (let k = 0; k < storeys; k += 1) {
+        const z0 = k * sh;
+        g.fillStyle = k === 0 ? '#86b4c8' : '#6f97ae'; patch(f, 0.15, f.len - 0.15, z0 + 0.2, z0 + sh - 0.15);
+        g.fillStyle = 'rgba(255,255,255,0.28)'; patch(f, 0.15, f.len - 0.15, z0 + sh - 0.45, z0 + sh - 0.3);
+        g.fillStyle = shade(wall, 0.9);
+        for (let tc = 0.15; tc < f.len; tc += 1.5) patch(f, tc - px, tc + px, z0 + 0.2, z0 + sh - 0.15);
+      }
+      continue;
+    }
     const step = B.style === 'apartments' || B.style === 'quarters' ? 1.5 : 2;
     const n = Math.max(1, Math.floor((f.len - 0.4) / step));
     const gap = f.len / n;
@@ -1466,6 +1522,30 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
     // eaves: a lit lip along the front
     g.strokeStyle = shade(B.roof, 1.12); g.lineWidth = 2 * px; path(p); g.stroke();
     if (B.style === 'temple') { g.lineWidth = 2 * px; g.strokeStyle = '#d8a83a'; path(p); g.stroke(); }
+    // chimney stacks, spaced along the ridge
+    for (let c = 0; c < B.chimneys; c += 1) {
+      const f2 = (c + 0.5) / B.chimneys;
+      const cx = wide ? B.x0 + (B.x1 - B.x0) * f2 : ridgeX + (c % 2 ? 1.2 : -2.2);
+      const cy = wide ? ridgeY + (c % 2 ? 1 : -2) : B.y0 + (B.y1 - B.y0) * f2;
+      g.fillStyle = 'rgba(0,0,0,0.3)'; g.fillRect(cx + 0.3, cy + 0.3, 1, 1.4);
+      g.fillStyle = shade(B.wallColour ?? '#cfc6b4', 1); g.fillRect(cx, cy - 0.6, 1, 1.4);
+      g.fillStyle = shade(B.wallColour ?? '#cfc6b4', 0.75); g.fillRect(cx, cy + 0.4, 1, 0.4);
+      g.fillStyle = '#3a3a3a'; g.fillRect(cx + 0.2, cy - 0.6, 0.6, 0.3);
+    }
+  } else if (B.terrace) {
+    // a public roof terrace: big stone slabs, planters with trees, a glass balustrade at the edge
+    g.fillStyle = shade(B.roof, 0.88);
+    for (let y = Math.floor(B.y0); y < B.y1; y += 2) g.fillRect(B.x0 - 1, y, B.x1 - B.x0 + 2, px);
+    for (let x = Math.floor(B.x0); x < B.x1; x += 2) g.fillRect(x, B.y0 - 1, px, B.y1 - B.y0 + 2);
+    for (let y = Math.floor(B.y0) + 3; y < B.y1 - 3; y += 9) for (let x = Math.floor(B.x0) + 3 + ((y / 9) % 2) * 4; x < B.x1 - 3; x += 9) {
+      if (!pipM(x - 1.5, y - 1.5, p) || !pipM(x + 1.5, y + 1.5, p) || !pipM(x + 1.5, y - 1.5, p) || !pipM(x - 1.5, y + 1.5, p)) continue;
+      g.fillStyle = '#8a7a66'; g.fillRect(x - 1.3, y - 1.3, 2.6, 2.6); // planter
+      g.fillStyle = '#5f8a44'; g.fillRect(x - 1.1, y - 1.1, 2.2, 2.2);
+      g.fillStyle = 'rgba(0,0,0,0.22)'; g.beginPath(); g.arc(x + 0.5, y + 0.5, 1.6, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#2e5a33'; g.beginPath(); g.arc(x, y - 0.4, 1.5, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#4f8a46'; g.beginPath(); g.arc(x - 0.4, y - 0.8, 0.9, 0, Math.PI * 2); g.fill();
+    }
+    g.strokeStyle = 'rgba(190,225,240,0.9)'; g.lineWidth = 3 * px; path(p); g.stroke();
   } else {
     // flat roof: parapet, then what sits on Hong Kong roofs: water tanks, air-con units, a stair
     // house, and solar panels on the big ones
