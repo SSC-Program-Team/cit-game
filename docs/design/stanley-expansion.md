@@ -39,7 +39,9 @@ Ma Hang Estate in the north-west to Stanley Prison in the south-east.
 | Scale | 1 m per tile. Walking Stanley Plaza → SSC back gate (≈600 m) takes **5 minutes**; running (Shift or the run button) is 2.4× faster |
 | SSC back gate | Where the campus meets Wong Ma Kok Road beside Wong Ma Kok Road Playground |
 | Drawing | The map is about 22,500 × 20,500 px, so it is drawn in 512 px chunks as you walk; only nearby chunks are kept (fine on an iPad) |
-| Buildings | Drawn from their exact outlines: roof, front wall a few storeys high, windows, a door in the middle of the front, shop awnings in the village, name plates on landmarks |
+| Ground | Drawn at 8 art pixels per metre (2 px each), blending the 1 m grid so coastlines, roads and paths curve instead of stepping; fine textures (grass grain, half-metre paving, speckled asphalt, kerbs, shallow water and wet sand at the shore). Pavements are added beside every road |
+| Buildings | Drawn from their exact outlines as polygons: roof (pitched or flat with plant boxes), a front wall on every south-facing edge at any angle, windows per storey, glass shopfronts and striped awnings in the village, a door at the real entrance, name plates on landmarks |
+| Detail | Street trees and lamps along roads, shrubs, flower beds, rocks, bins, benches, parked cars on side streets, market stalls, beach umbrellas, boats, about fifty people walking |
 | Places | Every shop, employer and job is pinned to the door of a real building near where it belongs; landmarks (Murray House, Stanley Plaza, Tin Hau Temple, the library, SSC buildings) use their real buildings by name |
 
 **How the data was made.** In a browser, the OpenStreetMap map API was queried for the box
@@ -48,7 +50,7 @@ simplified to 0.4–0.8 m. `npm run import-osm`-style regeneration: save that ex
 `node --experimental-strip-types scripts/import-osm.ts file.json`, which writes `src/stanley-osm.ts`.
 
 Known limits: OSM building outlines seal off a few courtyards (places are only put where you can
-walk); buildings set at an angle show a stepped front wall, as any tile-based 3/4 view does.
+walk). Collision still uses the 1 m grid, so you stop up to half a metre short of a slanted wall.
 
 ### 2.1 Green minibuses
 

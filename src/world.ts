@@ -143,6 +143,20 @@ const ROAD: Record<string, [Gr, number]> = {
       grid[k] = code;
     });
   }
+  // 3b. pavements: open ground beside a road becomes footway (OSM rarely maps them)
+  {
+    const side = new Uint8Array(N);
+    for (let y = 2; y < MAP_H - 2; y += 1) for (let x = 2; x < MAP_W - 2; x += 1) {
+      const g = grid[y * MAP_W + x];
+      if (g !== Gr.Road && g !== Gr.Lane) continue;
+      const r = g === Gr.Road ? 2 : 1;
+      for (let dy = -r; dy <= r; dy += 1) for (let dx = -r; dx <= r; dx += 1) side[(y + dy) * MAP_W + x + dx] = 1;
+    }
+    for (let k = 0; k < N; k += 1) {
+      const g = grid[k];
+      if (side[k] && (g === Gr.Hill || g === Gr.Park || g === Gr.Built || g === Gr.School || g === Gr.Yard)) grid[k] = Gr.Path;
+    }
+  }
   // 4. buildings
   OSM.buildings.forEach(([p], i) => fillPoly(p, (k) => { if (grid[k] !== Gr.Sea) { grid[k] = Gr.Building; bid[k] = i; } }));
   // 5. walls and fences (retaining walls are only a change of level)
@@ -173,6 +187,8 @@ export function solidAt(px: number, py: number): boolean {
 export type BuildingStyle = 'shop' | 'apartments' | 'house' | 'school' | 'temple' | 'civic' | 'mall' | 'heritage' | 'quarters';
 
 export type Building = {
+  /** outline in metres, flat [x0, y0, x1, y1, ...] */
+  poly: number[];
   name: string;
   style: BuildingStyle;
   x0: number; y0: number; x1: number; y1: number;
@@ -228,7 +244,7 @@ export const BUILDINGS: Building[] = OSM.buildings.map(([p, kind, name, extra]) 
   const wall = Math.max(2, Math.min(tall ? 7 : style === 'school' ? 3 : 4, Math.round(span * (tall ? 0.4 : style === 'school' ? 0.2 : 0.3))));
   const roofs = ROOFS[style];
   return {
-    name, style, x0: Math.floor(x0), y0: Math.floor(y0), x1: Math.ceil(x1), y1: Math.ceil(y1), wall, door: null,
+    poly: p, name, style, x0: Math.floor(x0), y0: Math.floor(y0), x1: Math.ceil(x1), y1: Math.ceil(y1), wall, door: null,
     roof: roofs[Math.floor(hash(Math.round(x0), Math.round(y0), 5) * roofs.length)],
   };
 });
@@ -591,187 +607,300 @@ function shade(hex: string, k: number): string {
   return `rgb(${f(r)},${f(g)},${f(b)})`;
 }
 
-const GROUND: Record<number, [string, string]> = {
-  [Gr.Hill]: ['#5c8848', '#598445'], [Gr.Sea]: ['#2a5f86', '#2c6390'], [Gr.Beach]: ['#dccb98', '#d8c793'],
-  [Gr.Wood]: ['#3a6534', '#386232'], [Gr.Cemetery]: ['#74a05a', '#709c56'], [Gr.Pitch]: ['#5aa04a', '#56994a'],
-  [Gr.Park]: ['#6a9a52', '#67964f'], [Gr.Parking]: ['#8a8a92', '#86868e'], [Gr.Plaza]: ['#cdbf9e', '#c9bb9a'],
-  [Gr.Pier]: ['#8a6a4a', '#84653f'], [Gr.School]: ['#78a85e', '#75a45b'], [Gr.Yard]: ['#9a9a9e', '#96969a'],
-  [Gr.Road]: ['#4a4c58', '#484a56'], [Gr.Lane]: ['#5c5e68', '#5a5c66'], [Gr.Path]: ['#c4bfb4', '#c0bbb0'],
-  [Gr.Steps]: ['#aaa59c', '#a6a198'], [Gr.Wall]: ['#a8a6ac', '#a8a6ac'],
-};
-const BUILT_PAVED: [string, string] = ['#bab4a8', '#b6b0a4'];
-const BUILT_GARDEN: [string, string] = ['#7aa45e', '#77a05b'];
+/** art pixels per metre: the ground and buildings are drawn this fine, then doubled up */
+const ART = 8;
+const LO = CHUNK * ART;
 
-const WALL_COLOUR: Record<BuildingStyle, string> = {
-  shop: '#e8dcc8', apartments: '#e4e4de', house: '#ece4d4', school: '#c47e60', temple: '#b8463a',
-  civic: '#e3ddd0', mall: '#c9d3dc', heritage: '#ddd2ba', quarters: '#d8d8d2',
+/** base colour per ground class, as [r, g, b] */
+const BASE: Record<number, [number, number, number]> = {
+  [Gr.Hill]: [92, 136, 72], [Gr.Sea]: [40, 94, 136], [Gr.Beach]: [222, 205, 154], [Gr.Wood]: [56, 98, 50],
+  [Gr.Cemetery]: [112, 158, 88], [Gr.Pitch]: [88, 158, 72], [Gr.Park]: [104, 154, 82], [Gr.Parking]: [128, 128, 136],
+  [Gr.Plaza]: [206, 192, 160], [Gr.Pier]: [140, 106, 72], [Gr.School]: [116, 166, 92], [Gr.Yard]: [150, 150, 154],
+  [Gr.Road]: [70, 72, 84], [Gr.Lane]: [88, 90, 100], [Gr.Path]: [196, 190, 178], [Gr.Steps]: [172, 166, 156],
+  [Gr.Wall]: [170, 168, 174],
 };
+const PAVED: [number, number, number] = [184, 178, 166];
+const GARDEN: [number, number, number] = [118, 162, 92];
+/** when two classes meet in a blend, the more 'man-made' one wins ties */
+const PRIORITY: Record<number, number> = {
+  [Gr.Road]: 9, [Gr.Lane]: 8, [Gr.Steps]: 7, [Gr.Path]: 7, [Gr.Pier]: 7, [Gr.Wall]: 9, [Gr.Plaza]: 6, [Gr.Parking]: 6,
+  [Gr.Beach]: 3, [Gr.Sea]: 2,
+};
+
+/** the ground class under a tile, with buildings standing on paving */
+const groundAt = (x: number, y: number): number => {
+  const g = at_(x, y);
+  return g === Gr.Building ? Gr.Built : g;
+};
+
+const noise = (x: number, y: number, s = 0): number => hash(x, y, s + 101);
 
 function renderChunk(cx: number, cy: number): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width = CPX; c.height = CPX;
-  const g = c.getContext('2d')!;
-  g.imageSmoothingEnabled = false;
-  g.translate(-cx * CPX, -cy * CPX);
   const tx0 = cx * CHUNK, ty0 = cy * CHUNK;
-  const tx1 = Math.min(MAP_W, tx0 + CHUNK), ty1 = Math.min(MAP_H, ty0 + CHUNK);
 
-  // ---- ground and buildings, tile by tile
-  for (let y = ty0; y < ty1; y += 1) for (let x = tx0; x < tx1; x += 1) drawTile(g, x, y);
+  // ---- 1. ground, at ART pixels per metre, blending the tile grid so edges come out smooth
+  const lo = document.createElement('canvas');
+  lo.width = LO; lo.height = LO;
+  const lg = lo.getContext('2d')!;
+  const img = lg.createImageData(LO, LO);
+  const label = new Uint8Array(LO * LO);
+  const seaW = new Float32Array(LO * LO);
+  const counts = new Float32Array(32);
+  for (let py = 0; py < LO; py += 1) {
+    const fy = ty0 + (py + 0.5) / ART - 0.5;
+    const y0 = Math.floor(fy), wy = fy - y0;
+    for (let px = 0; px < LO; px += 1) {
+      const fx = tx0 + (px + 0.5) / ART - 0.5;
+      const x0 = Math.floor(fx), wx = fx - x0;
+      counts.fill(0);
+      const c00 = groundAt(x0, y0), c10 = groundAt(x0 + 1, y0), c01 = groundAt(x0, y0 + 1), c11 = groundAt(x0 + 1, y0 + 1);
+      counts[c00] += (1 - wx) * (1 - wy); counts[c10] += wx * (1 - wy); counts[c01] += (1 - wx) * wy; counts[c11] += wx * wy;
+      let best = c00, bw = -1;
+      for (const c of [c00, c10, c01, c11]) {
+        const w = counts[c] + (PRIORITY[c] ?? 0) * 0.001;
+        if (w > bw) { bw = w; best = c; }
+      }
+      label[py * LO + px] = best;
+      seaW[py * LO + px] = counts[Gr.Sea];
+    }
+  }
+  const data = img.data;
+  for (let py = 0; py < LO; py += 1) {
+    for (let px = 0; px < LO; px += 1) {
+      const i = py * LO + px;
+      const c = label[i];
+      const gx = tx0 * ART + px, gy = ty0 * ART + py; // global art pixel, so textures run across chunks
+      const mx = tx0 + px / ART, my = ty0 + py / ART;
+      let col: [number, number, number] = BASE[c] ?? BASE[Gr.Hill];
+      if (c === Gr.Built) col = core(mx, my) ? PAVED : GARDEN;
+      let [r, g, b] = col;
+      const n = noise(gx, gy);
+      const other = (dx: number, dy: number): number => {
+        const qx = px + dx, qy = py + dy;
+        return qx < 0 || qy < 0 || qx >= LO || qy >= LO ? c : label[qy * LO + qx];
+      };
+      switch (c) {
+        case Gr.Sea: {
+          // shallow water near the shore, foam on the line, glints out in the bay
+          const shore = seaW[i] < 0.999;
+          if (shore) { r += 30; g += 36; b += 22; }
+          if (other(1, 0) !== Gr.Sea || other(-1, 0) !== Gr.Sea || other(0, 1) !== Gr.Sea || other(0, -1) !== Gr.Sea) { r = 214; g = 232; b = 240; }
+          else if (noise(gx >> 2, gy, 3) < 0.012) { r += 50; g += 50; b += 40; }
+          else { const v = (n - 0.5) * 8; r += v; g += v; b += v; }
+          break;
+        }
+        case Gr.Hill: case Gr.Park: case Gr.School: case Gr.Cemetery: case Gr.Pitch: case Gr.Built: {
+          if (c === Gr.Built && core(mx, my)) { // paving between shophouses
+            if (gx % 4 === 0 || (gy % 4 === 0 && (gx >> 2) % 2 === 0)) { r -= 14; g -= 14; b -= 14; }
+            break;
+          }
+          const v = (n - 0.5) * 14; r += v; g += v * 1.2; b += v * 0.6;
+          if (n < 0.06) { r -= 22; g -= 20; b -= 18; } else if (n > 0.97) { r += 26; g += 28; b += 12; }
+          if (c === Gr.Pitch && ((gx >> 4) % 2 === 0)) { r += 8; g += 10; b += 6; }
+          if (c === Gr.Hill && noise(gx >> 3, gy >> 3, 9) < 0.25) { r -= 8; g -= 6; b -= 6; }
+          break;
+        }
+        case Gr.Wood: { const v = (n - 0.5) * 20; r += v; g += v; b += v * 0.5; break; }
+        case Gr.Path: case Gr.Plaza: {
+          // small paving slabs, half a metre, staggered
+          const row = gy >> 2;
+          if (gy % 4 === 0 || (gx + (row % 2) * 2) % 4 === 0) { r -= 16; g -= 16; b -= 16; }
+          else { const v = (n - 0.5) * 8; r += v; g += v; b += v; }
+          break;
+        }
+        case Gr.Steps: if (gy % 3 === 0) { r -= 34; g -= 34; b -= 34; } break;
+        case Gr.Road: case Gr.Lane: case Gr.Parking: {
+          const v = (n - 0.5) * 12; r += v; g += v; b += v;
+          if (n > 0.985) { r += 30; g += 30; b += 30; }
+          // kerbs where the carriageway meets anything else
+          const edge = (q: number): boolean => q !== Gr.Road && q !== Gr.Lane && q !== Gr.Parking;
+          if (edge(other(1, 0)) || edge(other(-1, 0)) || edge(other(0, 1)) || edge(other(0, -1))) { r = 168; g = 168; b = 172; }
+          else if (c === Gr.Parking && gx % 20 === 0 && gy % 40 < 32) { r = 230; g = 230; b = 230; }
+          break;
+        }
+        case Gr.Beach: {
+          const v = (n - 0.5) * 16; r += v; g += v; b += v;
+          if (seaW[i] > 0.05) { r -= 30; g -= 30; b -= 26; } // wet sand at the water's edge
+          break;
+        }
+        case Gr.Pier: if (gy % 3 === 0) { r -= 40; g -= 32; b -= 24; } break;
+        case Gr.Wall: if ((gy % 8) < 2) { r += 30; g += 30; b += 30; } else if ((gy % 8) > 5) { r -= 40; g -= 40; b -= 40; } break;
+        case Gr.Yard: { const v = (n - 0.5) * 10; r += v; g += v; b += v; break; }
+        default:
+      }
+      const o = i * 4;
+      data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+    }
+  }
+  lg.putImageData(img, 0, 0);
 
-  // ---- road centre lines, painted along the real road lines
-  g.fillStyle = '#d8d0a0';
+  // ---- 2. road centre lines
+  lg.save();
+  lg.scale(ART, ART);
+  lg.translate(-tx0, -ty0);
+  lg.fillStyle = '#d8d0a0';
   for (const [p, h] of OSM.roads) {
     if (ROAD[h]?.[0] !== Gr.Road) continue;
     for (let i = 0; i + 3 < p.length; i += 2) {
       const ax = p[i], ay = p[i + 1], bx = p[i + 2], by = p[i + 3];
-      if (Math.max(ax, bx) < tx0 - 2 || Math.min(ax, bx) > tx1 + 2 || Math.max(ay, by) < ty0 - 2 || Math.min(ay, by) > ty1 + 2) continue;
+      if (Math.max(ax, bx) < tx0 - 2 || Math.min(ax, bx) > tx0 + CHUNK + 2 || Math.max(ay, by) < ty0 - 2 || Math.min(ay, by) > ty0 + CHUNK + 2) continue;
       const len = Math.hypot(bx - ax, by - ay);
-      for (let d = 0; d < len; d += 0.5) {
-        if (d % 6 > 3) continue;
+      for (let d = 0; d < len; d += 0.25) {
+        if (d % 5 > 2.5) continue;
         const x = ax + ((bx - ax) * d) / len, y = ay + ((by - ay) * d) / len;
         if (at_(Math.floor(x), Math.floor(y)) !== Gr.Road) continue;
-        g.fillRect(Math.round(x * TILE) - 1, Math.round(y * TILE) - 1, 3, 3);
+        lg.fillRect(Math.round(x * ART) / ART - 1 / ART, Math.round(y * ART) / ART - 1 / ART, 2 / ART, 2 / ART);
       }
     }
   }
 
-  // ---- props and trees, a tile of margin so canopies cross chunk edges cleanly
-  for (let y = ty0 - 2; y < ty1 + 3; y += 1) for (let x = tx0 - 2; x < tx1 + 2; x += 1) drawProp(g, x, y);
+  // ---- 3. buildings, from their outlines, back to front
+  const near = BUILDINGS.filter((b) => b.x1 >= tx0 - 2 && b.x0 <= tx0 + CHUNK + 2 && b.y1 >= ty0 - 2 && b.y0 <= ty0 + CHUNK + 2)
+    .sort((p, q) => p.y1 - q.y1);
+  for (const b of near) drawBuilding(lg, b);
+  lg.restore();
 
-  // ---- names over the landmarks
+  // ---- 4. double up to screen pixels, then the props and labels at full resolution
+  const c = document.createElement('canvas');
+  c.width = CPX; c.height = CPX;
+  const g = c.getContext('2d')!;
+  g.imageSmoothingEnabled = false;
+  g.drawImage(lo, 0, 0, CPX, CPX);
+  g.translate(-cx * CPX, -cy * CPX);
+  for (let y = ty0 - 2; y < ty0 + CHUNK + 3; y += 1) for (let x = tx0 - 3; x < tx0 + CHUNK + 3; x += 1) drawProp(g, x, y);
   for (const b of BUILDINGS) {
-    if (!b.name || !b.door || b.x1 < tx0 - 20 || b.x0 > tx1 + 20 || b.y1 < ty0 - 4 || b.y0 > ty1 + 4) continue;
+    if (!b.name || !b.door || b.x1 < tx0 - 20 || b.x0 > tx0 + CHUNK + 20 || b.y1 < ty0 - 4 || b.y0 > ty0 + CHUNK + 4) continue;
     if (/^(Block|House|No\.)/.test(b.name) || /[^\x20-\x7e]/.test(b.name)) continue;
-    const label = b.name.replace(' (Luke Yip Building)', '').replace('Hong Kong Correctional Services Museum', 'CSD Museum').toUpperCase();
-    const width = label.length * 6 + 8;
+    const label2 = b.name.replace(' (Luke Yip Building)', '').replace('Hong Kong Correctional Services Museum', 'CSD Museum').toUpperCase();
+    const width = label2.length * 6 + 8;
     if (width > (b.x1 - b.x0) * TILE + 24) continue;
     const lx = Math.round(((b.x0 + b.x1) / 2) * TILE - width / 2);
-    const ly = (b.door.y - b.wall + 1) * TILE + 2;
+    const ly = Math.round((b.y1 - b.wall - 0.6) * TILE);
     g.fillStyle = '#2a2420'; g.fillRect(lx - 1, ly - 1, width + 2, 12);
     g.fillStyle = '#f8f4e8'; g.fillRect(lx, ly, width, 10);
-    textFn(g, label, lx + 4, ly + 1, '#2a2a30');
+    textFn(g, label2, lx + 4, ly + 1, '#2a2a30');
   }
   return c;
 }
 
-function drawTile(g: CanvasRenderingContext2D, x: number, y: number): void {
-  const k = y * MAP_W + x;
-  const code = grid[k];
-  const px = x * TILE, py = y * TILE;
-  const r = hash(x, y);
-  if (code === Gr.Building) { drawBuildingTile(g, x, y, k, px, py); return; }
-  let col = GROUND[code];
-  if (code === Gr.Built) col = core(x, y) ? BUILT_PAVED : BUILT_GARDEN;
-  if (!col) col = GROUND[Gr.Hill];
-  g.fillStyle = (x + y) % 2 ? col[0] : col[1];
-  g.fillRect(px, py, TILE, TILE);
+// ------------------------------------------------------------ buildings ---
+const WALL_COLOUR: Record<BuildingStyle, string> = {
+  shop: '#e8dcc8', apartments: '#e4e4de', house: '#ece4d4', school: '#c47e60', temple: '#b8463a',
+  civic: '#e3ddd0', mall: '#c9d3dc', heritage: '#ddd2ba', quarters: '#d8d8d2',
+};
+const AWNINGS = ['#c8463a', '#3a7ac8', '#e0a83a', '#3aa86a', '#8a3ac8', '#d86a8a'];
 
-  switch (code) {
-    case Gr.Sea: {
-      if (r < 0.08) { g.fillStyle = 'rgba(255,255,255,0.08)'; g.fillRect(px + Math.floor(r * 120), py + Math.floor(hash(x, y, 3) * 14), 6, 1); }
-      g.fillStyle = 'rgba(220,240,255,0.55)';
-      if (at_(x, y - 1) !== Gr.Sea) g.fillRect(px, py, TILE, 2);
-      if (at_(x - 1, y) !== Gr.Sea) g.fillRect(px, py, 2, TILE);
-      if (at_(x + 1, y) !== Gr.Sea) g.fillRect(px + TILE - 2, py, 2, TILE);
-      if (at_(x, y + 1) !== Gr.Sea) g.fillRect(px, py + TILE - 2, TILE, 2);
-      break;
-    }
-    case Gr.Path: case Gr.Plaza: case Gr.Parking: {
-      g.fillStyle = 'rgba(0,0,0,0.07)';
-      if (code !== Gr.Parking) { g.fillRect(px, py + TILE - 1, TILE, 1); if ((x + (y % 2)) % 2 === 0) g.fillRect(px + TILE - 1, py, 1, TILE); }
-      else if (x % 3 === 0) { g.fillStyle = 'rgba(255,255,255,0.5)'; g.fillRect(px, py + 2, 1, 12); }
-      break;
-    }
-    case Gr.Steps: g.fillStyle = 'rgba(0,0,0,0.18)'; for (let i = 3; i < TILE; i += 5) g.fillRect(px, py + i, TILE, 2); break;
-    case Gr.Pier: g.fillStyle = 'rgba(40,24,10,0.4)'; for (let i = 3; i < TILE; i += 4) g.fillRect(px, py + i, TILE, 1); break;
-    case Gr.Beach: if (r < 0.3) { g.fillStyle = 'rgba(120,100,60,0.3)'; g.fillRect(px + Math.floor(r * 40), py + Math.floor(hash(x, y, 4) * 12), 2, 1); } break;
-    case Gr.Road: case Gr.Lane: {
-      const road = (v: number): boolean => v === Gr.Road || v === Gr.Lane;
-      g.fillStyle = '#9a9aa2';
-      if (!road(at_(x, y - 1))) g.fillRect(px, py, TILE, 2);
-      if (!road(at_(x, y + 1))) g.fillRect(px, py + TILE - 2, TILE, 2);
-      if (!road(at_(x - 1, y))) g.fillRect(px, py, 2, TILE);
-      if (!road(at_(x + 1, y))) g.fillRect(px + TILE - 2, py, 2, TILE);
-      break;
-    }
-    case Gr.Wall: {
-      g.fillStyle = '#c8c6cc'; g.fillRect(px, py, TILE, 4);
-      g.fillStyle = '#7a7880'; g.fillRect(px, py + 12, TILE, 4);
-      g.fillStyle = '#e0e0e4'; for (let i = 1; i < TILE; i += 4) g.fillRect(px + i, py, 1, 2);
-      break;
-    }
-    case Gr.Pitch: if ((x % 30 === 0) || (y % 30 === 0)) { g.fillStyle = 'rgba(255,255,255,0.5)'; g.fillRect(px, py + 7, TILE, 2); } break;
-    default:
-      if (code === Gr.Hill || code === Gr.Park || code === Gr.School || code === Gr.Cemetery || code === Gr.Built) {
-        g.fillStyle = 'rgba(30,60,30,0.3)';
-        for (let i = 0; i < 3; i += 1) g.fillRect(px + Math.floor(hash(x, y, i) * 15), py + Math.floor(hash(x, y, i + 9) * 14), 1, 2);
-      }
+const pipM = (x: number, y: number, p: number[]): boolean => {
+  let c = false;
+  for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
+    if ((p[i + 1] > y) !== (p[j + 1] > y) && x < ((p[j] - p[i]) * (y - p[i + 1])) / (p[j + 1] - p[i + 1]) + p[i]) c = !c;
   }
-}
+  return c;
+};
 
-function drawBuildingTile(g: CanvasRenderingContext2D, x: number, y: number, k: number, px: number, py: number): void {
-  const B = BUILDINGS[bid[k]];
-  const same = (dx: number, dy: number): boolean => {
-    const nx = x + dx, ny = y + dy;
-    return nx >= 0 && ny >= 0 && nx < MAP_W && ny < MAP_H && bid[ny * MAP_W + nx] === bid[k];
+/** draw one building in metre coordinates (the context is already scaled to art pixels) */
+function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
+  const p = B.poly;
+  const px = 1 / ART;
+  const path = (pts: number[], dy = 0): void => {
+    g.beginPath();
+    for (let i = 0; i < pts.length; i += 2) { if (i) g.lineTo(pts[i], pts[i + 1] + dy); else g.moveTo(pts[i], pts[i + 1] + dy); }
+    g.closePath();
   };
-  const depth = below[k];
-  if (depth < B.wall) {
-    // ---- front wall
-    const wall = WALL_COLOUR[B.style];
-    g.fillStyle = wall; g.fillRect(px, py, TILE, TILE);
-    if (depth === B.wall - 1) { g.fillStyle = shade(B.roof, 0.6); g.fillRect(px, py, TILE, 3); } // eave shadow
-    if (!same(-1, 0)) { g.fillStyle = shade(wall, 0.85); g.fillRect(px, py, 2, TILE); }
-    if (!same(1, 0)) { g.fillStyle = shade(wall, 0.75); g.fillRect(px + TILE - 2, py, 2, TILE); }
-    const isDoor = B.door && B.door.x === x && B.door.y === y;
-    if (depth === 0) {
-      g.fillStyle = shade(wall, 0.7); g.fillRect(px, py + TILE - 2, TILE, 2);
-      if (isDoor) {
-        g.fillStyle = B.style === 'temple' ? '#5a2018' : '#3a2e26'; g.fillRect(px + 3, py + 2, 10, 12);
-        g.fillStyle = '#d8b060'; g.fillRect(px + 10, py + 8, 1, 2);
-      } else if (B.style === 'shop' || B.style === 'mall') {
-        g.fillStyle = hash(x, y, 9) < 0.3 ? '#3a4a5a' : '#8ab8cc'; g.fillRect(px + 1, py + 3, 14, 10);
-        g.fillStyle = 'rgba(255,255,255,0.4)'; g.fillRect(px + 2, py + 4, 3, 4);
-      } else if (x % 2 === 0) {
-        g.fillStyle = '#7aa8c0'; g.fillRect(px + 4, py + 4, 8, 7);
-      }
-    } else if ((x + (B.style === 'apartments' ? 0 : depth)) % 2 === 0 || B.style === 'apartments' || B.style === 'quarters') {
-      // upper floors: a window per metre for flats, every other metre otherwise
-      g.fillStyle = B.style === 'heritage' ? '#5a6a7a' : '#7aa8c0';
-      if (B.style === 'heritage') { g.fillRect(px + 5, py + 3, 6, 11); g.fillStyle = shade(WALL_COLOUR.heritage, 0.85); g.fillRect(px + 4, py + 2, 8, 1); }
-      else g.fillRect(px + 4, py + 4, 8, 8);
-      if (B.style === 'apartments' && hash(x, y, 17) < 0.3) { g.fillStyle = '#e8e0d0'; g.fillRect(px + 3, py + 12, 10, 2); }
-    }
-    // shop awnings over the ground floor
-    if (B.style === 'shop' && depth === 1 && hash(B.x0, B.y0, 14) < 0.7) {
-      const cols = ['#c8463a', '#3a7ac8', '#e0a83a', '#3aa86a', '#8a3ac8', '#d86a8a'];
-      g.fillStyle = cols[Math.floor(hash(B.x0, B.y0, 15) * cols.length)];
-      g.fillRect(px, py + 11, TILE, 5);
-      if (x % 2 === 0) { g.fillStyle = 'rgba(255,255,255,0.55)'; g.fillRect(px, py + 11, TILE, 5); }
-    }
-    return;
-  }
-  // ---- roof
-  g.fillStyle = B.roof; g.fillRect(px, py, TILE, TILE);
-  if (!same(0, -1)) { g.fillStyle = shade(B.roof, 1.25); g.fillRect(px, py, TILE, 2); }
-  if (!same(-1, 0)) { g.fillStyle = shade(B.roof, 1.12); g.fillRect(px, py, 2, TILE); }
-  if (!same(1, 0)) { g.fillStyle = shade(B.roof, 0.82); g.fillRect(px + TILE - 2, py, 2, TILE); }
-  if (B.style === 'house' || B.style === 'heritage' || B.style === 'school') {
-    g.fillStyle = shade(B.roof, 0.88);
-    for (let i = 3; i < TILE; i += 5) g.fillRect(px, py + i, TILE, 1);
-    // ridge along the middle of the roof
-    const mid = Math.round((B.y0 + B.y1 - B.wall) / 2);
-    if (y === mid) { g.fillStyle = shade(B.roof, 1.15); g.fillRect(px, py + 6, TILE, 3); }
-  } else if (B.style === 'temple') {
-    g.fillStyle = '#2a5a40'; for (let i = 1; i < TILE; i += 4) g.fillRect(px + i, py, 2, TILE);
-    if (!same(0, -1)) { g.fillStyle = '#d8a83a'; g.fillRect(px, py, TILE, 2); }
+  // drop shadow to the south-east
+  g.fillStyle = 'rgba(0,0,0,0.22)';
+  path(p.map((v, i) => v + (i % 2 ? 0.5 : 0.6)));
+  g.fill();
+  // roof: the whole outline
+  g.fillStyle = B.roof;
+  path(p); g.fill();
+  g.save();
+  path(p); g.clip();
+  const pitched = B.style === 'house' || B.style === 'heritage' || B.style === 'school' || B.style === 'temple';
+  if (pitched) {
+    // tiles in rows, and a ridge along the long side
+    g.fillStyle = shade(B.roof, 0.86);
+    for (let y = Math.floor(B.y0); y < B.y1; y += 0.75) g.fillRect(B.x0 - 1, y, B.x1 - B.x0 + 2, px);
+    const wide = B.x1 - B.x0 >= B.y1 - B.y0;
+    g.fillStyle = shade(B.roof, 1.2);
+    if (wide) g.fillRect(B.x0 - 1, (B.y0 + B.y1 - B.wall) / 2, B.x1 - B.x0 + 2, 2 * px);
+    else g.fillRect((B.x0 + B.x1) / 2 - px, B.y0 - 1, 2 * px, B.y1 - B.y0 + 2);
+    if (B.style === 'temple') { g.fillStyle = '#d8a83a'; g.lineWidth = 2 * px; g.strokeStyle = '#d8a83a'; path(p); g.stroke(); }
   } else {
-    // flat roof: parapet edge, the odd water tank or plant box
-    if (hash(x, y, 23) < 0.025 && same(1, 0) && same(0, 1) && same(1, 1)) {
-      g.fillStyle = shade(B.roof, 0.75); g.fillRect(px + 3, py + 3, 20, 14);
-      g.fillStyle = shade(B.roof, 1.15); g.fillRect(px + 3, py + 3, 20, 2);
+    // flat roof: parapet, and plant boxes and water tanks
+    g.strokeStyle = shade(B.roof, 0.72); g.lineWidth = 3 * px; path(p); g.stroke();
+    g.strokeStyle = shade(B.roof, 1.18); g.lineWidth = px; path(p, 2 * px); g.stroke();
+    for (let y = Math.floor(B.y0) + 1; y < B.y1 - 1; y += 3) for (let x = Math.floor(B.x0) + 1; x < B.x1 - 1; x += 3) {
+      const r = hash(x, y, 77);
+      if (r > 0.12 || !pipM(x + 1, y + 1, p) || !pipM(x + 2.5, y + 2, p)) continue;
+      g.fillStyle = shade(B.roof, 0.8); g.fillRect(x + 0.3, y + 0.3, 1.6, 1.2);
+      g.fillStyle = shade(B.roof, 1.15); g.fillRect(x + 0.3, y + 0.3, 1.6, px * 2);
     }
+  }
+  g.restore();
+  g.strokeStyle = shade(B.roof, 0.6); g.lineWidth = px; path(p); g.stroke();
+
+  // front walls: every edge facing south, rising from its ground line into the footprint
+  const h = B.wall;
+  const wall = WALL_COLOUR[B.style];
+  const door = B.door ? { x: B.door.x + 0.5, y: B.door.y + 1 } : null;
+  let doorEdge = -1, doorT = 0, doorD = Infinity;
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const ax = p[i], ay = p[i + 1], bx = p[i + 2], by = p[i + 3];
+    const ex = bx - ax, ey = by - ay, len = Math.hypot(ex, ey);
+    if (len < 0.5) continue;
+    const nx = ey / len, ny = -ex / len;
+    const mx = (ax + bx) / 2, my = (ay + by) / 2;
+    // outward normal: the side of the edge that is outside the outline
+    const out = pipM(mx + nx * 0.2, my + ny * 0.2, p) ? -1 : 1;
+    const ony = ny * out;
+    if (ony < 0.25) continue;
+    if (door) {
+      const t = Math.max(0, Math.min(1, ((door.x - ax) * ex + (door.y - ay) * ey) / (len * len)));
+      const d = Math.hypot(ax + ex * t - door.x, ay + ey * t - door.y);
+      if (d < doorD) { doorD = d; doorEdge = i; doorT = t; }
+    }
+    const lit = 0.82 + 0.18 * ony; // walls turned east or west catch less light
+    g.fillStyle = shade(wall, lit);
+    g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.lineTo(bx, by - h); g.lineTo(ax, ay - h); g.closePath(); g.fill();
+    g.fillStyle = shade(B.roof, 0.55);
+    g.beginPath(); g.moveTo(ax, ay - h); g.lineTo(bx, by - h); g.lineTo(bx, by - h + 3 * px); g.lineTo(ax, ay - h + 3 * px); g.closePath(); g.fill();
+    g.fillStyle = shade(wall, 0.62);
+    g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.lineTo(bx, by - 2 * px); g.lineTo(ax, ay - 2 * px); g.closePath(); g.fill();
+    // windows: a row per storey, one every couple of metres
+    const floors = Math.max(1, Math.floor(h / 2.2));
+    const shopfront = B.style === 'shop' || B.style === 'mall';
+    const step = B.style === 'apartments' || B.style === 'quarters' ? 1.4 : 2;
+    for (let f = 0; f < floors; f += 1) {
+      const z = ((f + 0.55) * h) / floors;
+      if (f === 0 && shopfront) continue;
+      for (let t = step / 2 + 0.3; t < len - 0.5; t += step) {
+        const wx = ax + (ex * t) / len, wy = ay + (ey * t) / len - z;
+        g.fillStyle = B.style === 'heritage' ? '#5a6a7a' : hash(Math.round(wx * 4), Math.round(wy * 4), 3) < 0.15 ? '#e8d890' : '#6a9ab4';
+        g.fillRect(wx - 0.35, wy - 0.45, 0.7, B.style === 'heritage' ? 1.1 : 0.8);
+        g.fillStyle = 'rgba(255,255,255,0.45)'; g.fillRect(wx - 0.35, wy - 0.45, 0.2, 0.3);
+      }
+    }
+    if (shopfront) {
+      // glass shopfront and a striped awning along the ground floor
+      g.fillStyle = '#8ab8cc';
+      g.beginPath(); g.moveTo(ax, ay - 0.3); g.lineTo(bx, by - 0.3); g.lineTo(bx, by - 1.5); g.lineTo(ax, ay - 1.5); g.closePath(); g.fill();
+      const colour = AWNINGS[Math.floor(hash(Math.round(ax), Math.round(ay), 15) * AWNINGS.length)];
+      for (let t = 0; t < len; t += 0.5) {
+        const t2 = Math.min(len, t + 0.5);
+        const sx = ax + (ex * t) / len, sy = ay + (ey * t) / len, fx2 = ax + (ex * t2) / len, fy2 = ay + (ey * t2) / len;
+        g.fillStyle = Math.round(t * 2) % 2 ? '#f2eee4' : colour;
+        g.beginPath(); g.moveTo(sx, sy - 1.5); g.lineTo(fx2, fy2 - 1.5); g.lineTo(fx2, fy2 - 2.0); g.lineTo(sx, sy - 2.0); g.closePath(); g.fill();
+      }
+    }
+  }
+  // the door, on the front wall nearest the building's real entrance
+  if (doorEdge >= 0) {
+    const ax = p[doorEdge], ay = p[doorEdge + 1], bx = p[doorEdge + 2], by = p[doorEdge + 3];
+    const dx = ax + (bx - ax) * doorT, dy = ay + (by - ay) * doorT;
+    g.fillStyle = B.style === 'temple' ? '#5a2018' : '#3a2e26';
+    g.fillRect(dx - 0.55, dy - 1.9, 1.1, 1.9);
+    g.fillStyle = '#d8b060'; g.fillRect(dx + 0.25, dy - 1.0, 2 * px, 2 * px);
   }
 }
 
@@ -785,6 +914,46 @@ function drawTree(g: CanvasRenderingContext2D, px: number, py: number, r: number
   g.fillStyle = '#5a9a54'; g.fillRect(px + 2, py - 9 - s / 2, 5, 3);
 }
 
+function shrub(g: CanvasRenderingContext2D, px: number, py: number, r: number): void {
+  g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(px + 1, py + 10, 14, 3);
+  g.fillStyle = r < 0.5 ? '#3e6a38' : '#4a7a3e'; g.fillRect(px + 1, py + 4, 14, 8);
+  g.fillStyle = r < 0.5 ? '#4e7c44' : '#5a8a48'; g.fillRect(px + 3, py + 2, 10, 4);
+  g.fillStyle = 'rgba(255,255,255,0.15)'; g.fillRect(px + 4, py + 3, 3, 1);
+}
+
+function flowers(g: CanvasRenderingContext2D, px: number, py: number, r: number): void {
+  const cols = ['#e05a6a', '#f2d24a', '#f2eee4', '#c06ae0', '#f08a3a'];
+  for (let i = 0; i < 7; i += 1) {
+    g.fillStyle = '#3e6a38'; g.fillRect(px + 2 + ((i * 5) % 12), py + 4 + ((i * 7) % 9), 2, 3);
+    g.fillStyle = cols[Math.floor(hash(i, Math.floor(r * 1000), 5) * cols.length)];
+    g.fillRect(px + 2 + ((i * 5) % 12), py + 3 + ((i * 7) % 9), 2, 2);
+  }
+}
+
+function rock(g: CanvasRenderingContext2D, px: number, py: number): void {
+  g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(px + 3, py + 10, 11, 3);
+  g.fillStyle = '#8a8a86'; g.fillRect(px + 3, py + 5, 10, 7);
+  g.fillStyle = '#a8a8a2'; g.fillRect(px + 4, py + 5, 6, 2);
+}
+
+function bin(g: CanvasRenderingContext2D, px: number, py: number): void {
+  g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(px + 5, py + 12, 8, 2);
+  g.fillStyle = '#3a7a4a'; g.fillRect(px + 5, py + 3, 7, 10);
+  g.fillStyle = '#2a5a36'; g.fillRect(px + 5, py + 3, 7, 2);
+}
+
+function parkedCar(g: CanvasRenderingContext2D, px: number, py: number, r: number, vertical: boolean): void {
+  const cols = ['#c8382f', '#e0e0e8', '#3a6ac8', '#2a2a30', '#e8c23a', '#6a6a72', '#f2f2f2'];
+  const c = cols[Math.floor(r * cols.length)];
+  const w = vertical ? 30 : 68, h = vertical ? 68 : 30;
+  g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(px + 3, py + 3, w, h);
+  g.fillStyle = c; g.fillRect(px, py, w, h);
+  g.fillStyle = '#1a2a3a';
+  if (vertical) { g.fillRect(px + 3, py + 12, w - 6, 12); g.fillRect(px + 3, py + h - 18, w - 6, 8); }
+  else { g.fillRect(px + 12, py + 3, 12, h - 6); g.fillRect(px + w - 18, py + 3, 8, h - 6); }
+  g.fillStyle = 'rgba(255,255,255,0.25)'; g.fillRect(px + 2, py + 2, vertical ? w - 4 : 6, vertical ? 6 : h - 4);
+}
+
 function drawProp(g: CanvasRenderingContext2D, x: number, y: number): void {
   if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return;
   const code = grid[y * MAP_W + x];
@@ -792,23 +961,54 @@ function drawProp(g: CanvasRenderingContext2D, x: number, y: number): void {
   const r = hash(x, y, 7);
   switch (code) {
     case Gr.Wood: if (x % 2 === 0 && y % 2 === 0) drawTree(g, px + Math.floor(r * 6) - 3, py, r, r < 0.4); return;
-    case Gr.Hill: if (r < 0.025) drawTree(g, px, py, r * 40, r < 0.01); else if (r < 0.06) { g.fillStyle = '#3e6a38'; g.fillRect(px + 2, py + 6, 12, 8); g.fillStyle = '#4e7c44'; g.fillRect(px + 4, py + 4, 8, 4); } return;
-    case Gr.Park: case Gr.School: if (r < 0.012) drawTree(g, px, py, r * 80, true); else if (r < 0.016) bench(g, px, py); return;
-    case Gr.Built: if (!core(x, y) && r < 0.02) drawTree(g, px, py, r * 50, false); return;
+    case Gr.Hill:
+      if (r < 0.05) drawTree(g, px, py, r * 20, r < 0.02);
+      else if (r < 0.13) shrub(g, px, py, r);
+      else if (r < 0.15) rock(g, px, py);
+      return;
+    case Gr.Park: case Gr.School:
+      if (r < 0.02) drawTree(g, px, py, r * 50, true);
+      else if (r < 0.035) shrub(g, px, py, r);
+      else if (r < 0.045) flowers(g, px, py, r);
+      else if (r < 0.05) bench(g, px, py);
+      return;
+    case Gr.Built:
+      if (core(x, y)) { if (r < 0.01) bin(g, px, py); else if (r < 0.02) flowers(g, px, py, r); return; }
+      if (r < 0.04) drawTree(g, px, py, r * 25, false);
+      else if (r < 0.1) shrub(g, px, py, r);
+      else if (r < 0.12) flowers(g, px, py, r);
+      return;
     case Gr.Cemetery: if (x % 3 === 0 && y % 3 === 0) { g.fillStyle = '#e8e8e0'; g.fillRect(px + 5, py + 3, 6, 9); g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(px + 5, py + 12, 6, 2); } return;
-    case Gr.Beach: if (r < 0.006) umbrella(g, px, py, hash(x, y, 32)); return;
+    case Gr.Beach: if (r < 0.006) umbrella(g, px, py, hash(x, y, 32)); else if (r < 0.01) rock(g, px, py); return;
     case Gr.Plaza:
       if (x >= 640 && x <= 720 && y >= 440 && y <= 540 && x % 7 === 0 && y % 6 === 0) stall(g, px, py, hash(x, y, 61));
-      else if (r < 0.006) bench(g, px, py);
+      else if (r < 0.008) bench(g, px, py);
+      else if (r < 0.014) flowers(g, px, py, r);
       return;
     case Gr.Path: {
-      // street lamps along the kerb of the main roads
-      const nearRoad = at_(x - 1, y) === Gr.Road || at_(x + 1, y) === Gr.Road || at_(x, y - 1) === Gr.Road || at_(x, y + 1) === Gr.Road;
-      if (nearRoad && (x * 7 + y * 13) % 29 === 0) {
+      const byRoad = at_(x - 1, y) === Gr.Road || at_(x + 1, y) === Gr.Road || at_(x, y - 1) === Gr.Road || at_(x, y + 1) === Gr.Road;
+      if (byRoad && (x * 7 + y * 13) % 29 === 0) {
+        // a street lamp
         g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(px + 8, py + 13, 5, 2);
         g.fillStyle = '#3a3e4a'; g.fillRect(px + 7, py - 14, 2, 28);
         g.fillStyle = '#e8d8a0'; g.fillRect(px + 5, py - 17, 6, 4);
-      } else if (r < 0.003) bench(g, px, py);
+      } else if (byRoad && (x * 11 + y * 5) % 23 === 0) {
+        // a street tree in its pit
+        g.fillStyle = '#6a5a4a'; g.fillRect(px + 2, py + 6, 12, 8);
+        drawTree(g, px, py, r * 30, false);
+      } else if (r < 0.006) bin(g, px, py);
+      else if (r < 0.009) bench(g, px, py);
+      return;
+    }
+    case Gr.Lane: {
+      // cars parked along the kerb of side streets
+      const kerbN = at_(x, y - 1) !== Gr.Lane && at_(x, y - 1) !== Gr.Road;
+      const kerbW = at_(x - 1, y) !== Gr.Lane && at_(x - 1, y) !== Gr.Road;
+      // only on lanes wide enough to still drive past, and not too many
+      const wideH = at_(x, y + 4) === Gr.Lane || at_(x, y + 4) === Gr.Road;
+      const wideV = at_(x + 4, y) === Gr.Lane || at_(x + 4, y) === Gr.Road;
+      if (kerbN && x % 7 === 0 && r < 0.18 && wideH && at_(x + 4, y) === Gr.Lane) parkedCar(g, px + 2, py + 2, hash(x * 13 + y, y * 7 + x, 71), false);
+      else if (kerbW && y % 7 === 0 && r < 0.18 && wideV && at_(x, y + 4) === Gr.Lane) parkedCar(g, px + 2, py + 2, hash(x * 13 + y, y * 7 + x, 72), true);
       return;
     }
     case Gr.Sea: {
