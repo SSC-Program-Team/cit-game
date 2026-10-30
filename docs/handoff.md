@@ -106,7 +106,7 @@ npx vite preview --port 4173  # serves dist/ at http://localhost:4173/ (base is 
 rsync -az --delete dist/ developer@172.100.0.211:/var/www/html/cit-game/
 ```
 
-Pushing to `main` publishes the game to GitHub Pages automatically (<https://ssc-program-team.github.io/cit-game/>, see `docs/deploy.md`). The school server copy (ai.ssc.edu.hk/cit-game) is still updated by hand: someone with the server key
+Pushing to `main` does **not** update the live site. Someone with the server key
 runs the rsync. `npm run check` needs Node ≥ 22.6 (`--experimental-strip-types`). Restart
 `vite preview` after a build: it indexes `dist/` once at startup.
 

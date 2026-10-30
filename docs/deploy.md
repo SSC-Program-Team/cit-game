@@ -1,19 +1,7 @@
 # Deploying
 
-## GitHub Pages (automatic)
-
-Every push to `main` builds the game and publishes it with GitHub Pages
-(`.github/workflows/pages.yml`): `npm ci`, `npm run build` (content checks, typecheck, Vite),
-then `dist/` goes live at <https://ssc-program-team.github.io/cit-game/>. Pull requests run the
-same build (`.github/workflows/check.yml`) so a broken build never reaches `main`.
-
-One-time setup by an org admin: repo **Settings → Pages → Source: GitHub Actions**.
-
-The site is static, which is all the game needs today. The planned server (accounts, the
-school-wide leaderboard, the shared job market; design plan §9) will need a backend somewhere
-else; Pages can only serve files.
-
-The school server below still works the manual way if it should keep a copy.
+Pull requests run `npm run build` on GitHub (`.github/workflows/check.yml`); nothing is deployed
+from GitHub. Hosting is on our own server, below.
 
 ## The game — ai.ssc.edu.hk/cit-game (canonical)
 
