@@ -39,15 +39,27 @@ Ma Hang Estate in the north-west to Stanley Prison in the south-east.
 | Scale | 1 m per tile. Walking Stanley Plaza → SSC back gate (≈600 m) takes **5 minutes**; running (Shift or the run button) is 2.4× faster |
 | SSC back gate | Where the campus meets Wong Ma Kok Road beside Wong Ma Kok Road Playground |
 | Drawing | The map is about 22,500 × 20,500 px, so it is drawn in 512 px chunks as you walk; only nearby chunks are kept (fine on an iPad) |
-| Ground | Drawn at 8 art pixels per metre (2 px each), blending the 1 m grid so coastlines, roads and paths curve instead of stepping; fine textures (grass grain, half-metre paving, speckled asphalt, kerbs, shallow water and wet sand at the shore). Pavements are added beside every road |
-| Buildings | Drawn from their exact outlines as polygons: roof (pitched or flat with plant boxes), a front wall on every south-facing edge at any angle, windows per storey, glass shopfronts and striped awnings in the village, a door at the real entrance, name plates on landmarks |
-| Detail | Street trees and lamps along roads, shrubs, flower beds, rocks, bins, benches, parked cars on side streets, market stalls, beach umbrellas, boats, about fifty people walking |
+| Ground | Drawn at 8 art pixels per metre (2 px each). Each pixel takes the class with most pull from the 5×5 metres around it, so diagonal edges come out straight and coastlines curve; natural edges (grass, woods, sand) also wander a little. Painted from hand-picked tones, not raw noise: patchy grass with blades, mown stripes on lawns and pitches, dry patches on meadows, granite boulders on the shore, two bands of shallows, half-metre paving, kerbs and gutters. Pavements are added beside every road |
+| Buildings | Drawn from their exact outlines as polygons: pitched roofs with a shaded far slope, tile rows and a ridge, or flat roofs with a parapet, water tanks, air-con units, stair houses and (on big ones) solar panels; a front wall on every south-facing edge at any angle, a window row per storey with floor lines, glass shopfronts and striped awnings in the village, a door at the real entrance, a shadow that grows with height, name plates on landmarks. Walls turned well away from the viewer show piers instead of windows |
+| Detail | Woods are packed with overlapping pixel-art crowns in three greens (some in blossom), with a walkable 2 m edge of scrub along every path. Street trees and lamps along roads, shrubs, grass tufts, flowers, shore boulders, bins, benches, parked cars on side streets, market stalls, beach umbrellas, boats, about fifty people walking |
 | Places | Every shop, employer and job is pinned to the door of a real building near where it belongs; landmarks (Murray House, Stanley Plaza, Tin Hau Temple, the library, SSC buildings) use their real buildings by name |
 
 **How the data was made.** In a browser, the OpenStreetMap map API was queried for the box
 22.2105–22.2235 N, 114.2045–114.2200 E, converted to whole metres from the map's top-left corner and
 simplified to 0.4–0.8 m. `npm run import-osm`-style regeneration: save that export as JSON and run
 `node --experimental-strip-types scripts/import-osm.ts file.json`, which writes `src/stanley-osm.ts`.
+
+**The 3D model (SSC area).** The project owner supplied a 3D model (.glb) of about 750 × 600 m
+around St Stephen's College, St Stephen's Beach and the hill to Stanley Main Beach. Its meshes are
+Draco-compressed and are not decoded; the import uses only what is readable without that: the
+terrain's texture (an aerial photo), each building tile's bounding box (its height), and the tile
+names (Hong Kong 1980 Grid coordinates), which place it on the map to within a couple of metres.
+`python3 scripts/import-3d.py model.glb` sorts the photo into woods, lawn, shore rock and sand and
+writes `src/stanley-cover.ts`, along with a roof colour (snapped to a small palette), height and
+roof shape for the 184 buildings it covers. Front walls are drawn at about 0.4 of a building's real
+height (2–10 m) so roofs stay visible. Woods block walking, except a 2 m fringe along paths, roads
+and buildings. Outside the model, open hillside gets invented copses so it matches; that part is
+artistic, not surveyed.
 
 Known limits: OSM building outlines seal off a few courtyards (places are only put where you can
 walk). Collision still uses the 1 m grid, so you stop up to half a metre short of a slanted wall.

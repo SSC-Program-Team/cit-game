@@ -1962,6 +1962,7 @@ hooks.__skip = (hours: number) => { skew += hours * HOUR; tickWork(); };
 /** stand at a place and use it */
 hooks.__goto = (id: string) => { const p = PLACES.find((x) => x.id === id); if (p) { placePlayer(p.tx, p.ty); activate(p); } };
 hooks.__reset = () => { reset(); location.reload(); };
+hooks.__tp = (x: number, y: number) => placePlayer(x, y);
 hooks.__items = ITEMS.map((i) => i.id);
 hooks.__day = DAY;
 /** the whole map as a PNG data URL, for checking the layout */

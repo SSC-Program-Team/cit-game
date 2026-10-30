@@ -7,6 +7,7 @@
  */
 import { OSM } from './stanley-osm.ts';
 import { ROUTES } from './minibus.ts';
+import { COVER, ROOF } from './stanley-cover.ts';
 
 export const TILE = 16;
 export const MAP_W = OSM.w;
@@ -32,6 +33,8 @@ export type Place = {
 export const Gr = {
   Hill: 0, Sea: 1, Beach: 2, Wood: 3, Cemetery: 4, Pitch: 5, Park: 6, Parking: 7, Plaza: 8, Pier: 9, Built: 10,
   School: 11, Yard: 12, Road: 13, Lane: 14, Path: 15, Steps: 16, Building: 17, Wall: 18,
+  /** open grass (lawns and meadows seen in the aerial photo), the edge of a wood, shore rock */
+  Grass: 19, Scrub: 20, Rock: 21,
 } as const;
 export type Gr = (typeof Gr)[keyof typeof Gr];
 
@@ -39,6 +42,15 @@ export type Gr = (typeof Gr)[keyof typeof Gr];
 export const grid = new Uint8Array(N);
 /** building index per tile, -1 for none */
 export const bid = new Int32Array(N).fill(-1);
+
+/** is this metre in the village core, where open ground is paved rather than garden */
+const core = (x: number, y: number): boolean => (x >= 460 && x <= 845 && y >= 300 && y <= 700) || (x >= 280 && x <= 470 && y >= 260 && y <= 490);
+
+const hash = (x: number, y: number, salt = 0): number => {
+  let h = (x * 374761393 + y * 668265263 + salt * 2147483647) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+};
 
 const AREA_CODE: Record<string, Gr> = {
   beach: Gr.Beach, wood: Gr.Wood, cemetery: Gr.Cemetery, pitch: Gr.Pitch, park: Gr.Park, parking: Gr.Parking,
@@ -132,6 +144,42 @@ const ROAD: Record<string, [Gr, number]> = {
       if (k < N - MAP_W && !coast[k + MAP_W]) { coast[k + MAP_W] = 2; q[tail++] = k + MAP_W; }
     }
   }
+  // 2b. land cover from the aerial photo, where we have it: woods, lawns, coastal rock and sand.
+  //     Only open ground is changed; roads, paths and buildings are stamped over it next.
+  {
+    const raw = atob(COVER.runs);
+    const cover = new Uint8Array(COVER.w * COVER.h);
+    for (let i = 0, o = 0; i < raw.length; i += 1) {
+      const b = raw.charCodeAt(i), v = b >> 5;
+      for (let n = (b & 31) + 1; n > 0; n -= 1) cover[o++] = v;
+    }
+    // metres to the sea (up to 24), so rock and sand are only taken on the shore
+    const toSea = new Uint8Array(COVER.w * COVER.h).fill(255);
+    const q: number[] = [];
+    for (let y = 0; y < COVER.h; y += 1) for (let x = 0; x < COVER.w; x += 1) {
+      if (grid[(y + COVER.y) * MAP_W + x + COVER.x] === Gr.Sea) { toSea[y * COVER.w + x] = 0; q.push(y * COVER.w + x); }
+    }
+    for (let h = 0; h < q.length; h += 1) {
+      const k = q[h], d = toSea[k];
+      if (d >= 24) continue;
+      const x = k % COVER.w;
+      for (const n of [x > 0 ? k - 1 : -1, x < COVER.w - 1 ? k + 1 : -1, k - COVER.w, k + COVER.w]) {
+        if (n >= 0 && n < toSea.length && toSea[n] === 255) { toSea[n] = d + 1; q.push(n); }
+      }
+    }
+    for (let y = 0; y < COVER.h; y += 1) for (let x = 0; x < COVER.w; x += 1) {
+      const c = cover[y * COVER.w + x];
+      if (!c) continue;
+      const gx = x + COVER.x, gy = y + COVER.y, k = gy * MAP_W + gx, g = grid[k];
+      const open = g === Gr.Hill || g === Gr.Wood || g === Gr.Park || g === Gr.School || (g === Gr.Built && !core(gx, gy));
+      if (!open && !(g === Gr.Beach && c !== 1)) continue;
+      const shore = toSea[y * COVER.w + x] <= 24;
+      if (c === 1) grid[k] = Gr.Wood;
+      else if (c === 2) grid[k] = g === Gr.Park || g === Gr.School ? g : Gr.Grass;
+      else if (c === 3 && shore) grid[k] = Gr.Rock;
+      else if (c === 4 && shore) grid[k] = Gr.Beach;
+    }
+  }
   // 3. roads and paths, footpaths first so roads win where they meet; a path over water is a pier
   const rank = (h: string): number => (ROAD[h]?.[0] === Gr.Road ? 3 : ROAD[h]?.[0] === Gr.Lane ? 2 : 1);
   for (const [p, h] of [...OSM.roads].sort((a, b) => rank(a[1]) - rank(b[1]))) {
@@ -154,7 +202,7 @@ const ROAD: Record<string, [Gr, number]> = {
     }
     for (let k = 0; k < N; k += 1) {
       const g = grid[k];
-      if (side[k] && (g === Gr.Hill || g === Gr.Park || g === Gr.Built || g === Gr.School || g === Gr.Yard)) grid[k] = Gr.Path;
+      if (side[k] && (g === Gr.Hill || g === Gr.Grass || g === Gr.Park || g === Gr.Built || g === Gr.School || g === Gr.Yard)) grid[k] = Gr.Path;
     }
   }
   // 4. buildings
@@ -163,6 +211,27 @@ const ROAD: Record<string, [Gr, number]> = {
   for (const [p, kind] of OSM.walls) {
     if (kind === 'retaining_wall') continue;
     traceLine(p, (k) => { if (grid[k] !== Gr.Sea && grid[k] !== Gr.Building) grid[k] = Gr.Wall; });
+  }
+  // 5b. outside the aerial photo, open hillside gets invented copses, so it matches the wooded
+  //     hills the photo shows (Stanley's slopes are mostly trees). Artistic, not surveyed.
+  for (let y = 0; y < MAP_H; y += 1) for (let x = 0; x < MAP_W; x += 1) {
+    const k = y * MAP_W + x;
+    if (grid[k] !== Gr.Hill) continue;
+    if (x >= COVER.x && x < COVER.x + COVER.w && y >= COVER.y && y < COVER.y + COVER.h) continue;
+    const v = 0.7 * vnoise(x / 28, y / 28, 120) + 0.3 * vnoise(x / 9, y / 9, 121);
+    if (v > 0.58) grid[k] = Gr.Wood;
+    else if (v > 0.53) grid[k] = Gr.Scrub;
+  }
+  // 6. woods are thick, so they block; but keep a walkable fringe of scrub two metres deep along
+  //    every path, road and building, so trails stay open and no door ends up in the trees
+  {
+    const keep = (g: number): boolean => g !== Gr.Wood && g !== Gr.Hill && g !== Gr.Grass && g !== Gr.Scrub && g !== Gr.Sea && g !== Gr.Rock && g !== Gr.Beach && g !== Gr.Cemetery && g !== Gr.Park && g !== Gr.School && g !== Gr.Built;
+    const edge = new Uint8Array(N);
+    for (let y = 2; y < MAP_H - 2; y += 1) for (let x = 2; x < MAP_W - 2; x += 1) {
+      if (!keep(grid[y * MAP_W + x])) continue;
+      for (let dy = -2; dy <= 2; dy += 1) for (let dx = -2; dx <= 2; dx += 1) edge[(y + dy) * MAP_W + x + dx] = 1;
+    }
+    for (let k = 0; k < N; k += 1) if (edge[k] && grid[k] === Gr.Wood) grid[k] = Gr.Scrub;
   }
 }
 
@@ -196,16 +265,12 @@ export type Building = {
   wall: number;
   door: { x: number; y: number } | null;
   roof: string;
+  /** a pitched, tiled roof (otherwise flat, with a parapet) */
+  pitched: boolean;
+  /** real height in metres, from the 3D model, when known */
+  height: number;
 };
 
-/** is this metre in the village core, where open ground is paved rather than garden */
-const core = (x: number, y: number): boolean => (x >= 460 && x <= 845 && y >= 300 && y <= 700) || (x >= 280 && x <= 470 && y >= 260 && y <= 490);
-
-const hash = (x: number, y: number, salt = 0): number => {
-  let h = (x * 374761393 + y * 668265263 + salt * 2147483647) >>> 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0;
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-};
 
 const ROOFS: Record<BuildingStyle, string[]> = {
   shop: ['#9a6a52', '#7a7a82', '#a8845a', '#6a7a8a', '#8a5a4a', '#b0a08a', '#6e8a7a'],
@@ -234,18 +299,22 @@ function styleFor(kind: string, extra: string, cx: number, cy: number): Building
   return 'house';
 }
 
-export const BUILDINGS: Building[] = OSM.buildings.map(([p, kind, name, extra]) => {
+export const BUILDINGS: Building[] = OSM.buildings.map(([p, kind, name, extra], i) => {
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (let i = 0; i < p.length; i += 2) { x0 = Math.min(x0, p[i]); x1 = Math.max(x1, p[i]); y0 = Math.min(y0, p[i + 1]); y1 = Math.max(y1, p[i + 1]); }
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
   const style = name === 'Murray House' ? 'heritage' : styleFor(kind, extra, cx, cy);
   const span = Math.min(x1 - x0, y1 - y0);
   const tall = style === 'apartments' || style === 'quarters' || style === 'mall';
-  const wall = Math.max(2, Math.min(tall ? 7 : style === 'school' ? 3 : 4, Math.round(span * (tall ? 0.4 : style === 'school' ? 0.2 : 0.3))));
+  const real = ROOF[i];
+  let wall = Math.max(2, Math.min(tall ? 7 : style === 'school' ? 3 : 4, Math.round(span * (tall ? 0.4 : style === 'school' ? 0.2 : 0.3))));
+  // with a real height, draw the front wall about 0.4 of it: tall enough to read, not so tall it hides the roof
+  if (real?.[1]) wall = Math.max(2, Math.min(10, Math.round(real[1] * 0.4), Math.round((y1 - y0) * 0.6)));
   const roofs = ROOFS[style];
+  const pitched = real ? real[2] === 1 : style === 'house' || style === 'heritage' || style === 'school' || style === 'temple';
   return {
     poly: p, name, style, x0: Math.floor(x0), y0: Math.floor(y0), x1: Math.ceil(x1), y1: Math.ceil(y1), wall, door: null,
-    roof: roofs[Math.floor(hash(Math.round(x0), Math.round(y0), 5) * roofs.length)],
+    roof: real?.[0] ?? roofs[Math.floor(hash(Math.round(x0), Math.round(y0), 5) * roofs.length)], pitched, height: real?.[1] ?? 0,
   };
 });
 
@@ -557,6 +626,7 @@ const at_ = (x: number, y: number): number => (x < 0 || y < 0 || x >= MAP_W || y
 /** draw the map under the camera; chunks are drawn on first sight and kept while near */
 export function drawWorld(ctx: CanvasRenderingContext2D, camX: number, camY: number, w: number, h: number): void {
   frameNo += 1;
+  let drew = false;
   const cx0 = Math.floor(camX / CPX), cy0 = Math.floor(camY / CPX);
   const cx1 = Math.floor((camX + w) / CPX), cy1 = Math.floor((camY + h) / CPX);
   for (let cy = cy0; cy <= cy1; cy += 1) {
@@ -564,10 +634,20 @@ export function drawWorld(ctx: CanvasRenderingContext2D, camX: number, camY: num
       if (cx < 0 || cy < 0 || cx * CPX >= MAP_W * TILE || cy * CPX >= MAP_H * TILE) continue;
       const key = cy * 1000 + cx;
       let c = chunks.get(key);
-      if (!c) { c = { canvas: renderChunk(cx, cy), used: frameNo }; chunks.set(key, c); }
+      if (!c) { c = { canvas: renderChunk(cx, cy), used: frameNo }; chunks.set(key, c); drew = true; }
       c.used = frameNo;
       ctx.drawImage(c.canvas, cx * CPX - camX, cy * CPX - camY);
     }
+  }
+  // on a quiet frame, draw one chunk of the ring just off screen, so walking never waits for one
+  if (!drew) {
+    let best = -1, bd = Infinity;
+    for (let cy = cy0 - 1; cy <= cy1 + 1; cy += 1) for (let cx = cx0 - 1; cx <= cx1 + 1; cx += 1) {
+      if (cx < 0 || cy < 0 || cx * CPX >= MAP_W * TILE || cy * CPX >= MAP_H * TILE || chunks.has(cy * 1000 + cx)) continue;
+      const d = Math.hypot((cx + 0.5) * CPX - camX - w / 2, (cy + 0.5) * CPX - camY - h / 2);
+      if (d < bd) { bd = d; best = cy * 1000 + cx; }
+    }
+    if (best >= 0) chunks.set(best, { canvas: renderChunk(best % 1000, Math.floor(best / 1000)), used: frameNo });
   }
   if (chunks.size > MAX_CHUNKS) {
     const old = [...chunks.entries()].sort((a, b) => a[1].used - b[1].used).slice(0, chunks.size - MAX_CHUNKS);
@@ -599,6 +679,7 @@ const OVERVIEW: Record<number, [number, number, number]> = {
   [Gr.Plaza]: [205, 191, 158], [Gr.Pier]: [138, 106, 74], [Gr.Built]: [150, 175, 120], [Gr.School]: [120, 168, 96],
   [Gr.Yard]: [150, 150, 150], [Gr.Road]: [74, 76, 88], [Gr.Lane]: [92, 94, 104], [Gr.Path]: [196, 191, 180],
   [Gr.Steps]: [168, 163, 154], [Gr.Building]: [150, 140, 130], [Gr.Wall]: [168, 166, 172],
+  [Gr.Grass]: [104, 168, 82], [Gr.Scrub]: [72, 116, 58], [Gr.Rock]: [160, 138, 118],
 };
 
 function shade(hex: string, k: number): string {
@@ -611,34 +692,127 @@ function shade(hex: string, k: number): string {
 const ART = 8;
 const LO = CHUNK * ART;
 
-/** base colour per ground class, as [r, g, b] */
-const BASE: Record<number, [number, number, number]> = {
-  [Gr.Hill]: [92, 136, 72], [Gr.Sea]: [40, 94, 136], [Gr.Beach]: [222, 205, 154], [Gr.Wood]: [56, 98, 50],
-  [Gr.Cemetery]: [112, 158, 88], [Gr.Pitch]: [88, 158, 72], [Gr.Park]: [104, 154, 82], [Gr.Parking]: [128, 128, 136],
-  [Gr.Plaza]: [206, 192, 160], [Gr.Pier]: [140, 106, 72], [Gr.School]: [116, 166, 92], [Gr.Yard]: [150, 150, 154],
-  [Gr.Road]: [70, 72, 84], [Gr.Lane]: [88, 90, 100], [Gr.Path]: [196, 190, 178], [Gr.Steps]: [172, 166, 156],
-  [Gr.Wall]: [170, 168, 174],
+type RGB = [number, number, number];
+const hex3 = (h: string): RGB => hexRgb(h);
+/** hand-picked tones, darkest first: the ground is painted from these, never from raw noise */
+const TONES: Record<string, RGB[]> = {
+  meadow: ['#4b7a3a', '#588841', '#659648', '#77a552'].map(hex3),
+  dry: ['#6f8a45', '#83984d', '#97a659', '#adb46a'].map(hex3),
+  lawn: ['#4f8c42', '#5b9a49', '#68a852', '#7cb85f'].map(hex3),
+  pitch: ['#4e9a44', '#58a64a', '#62b052', '#70bc5e'].map(hex3),
+  scrub: ['#3a6331', '#446f37', '#4f7c3c', '#5f8b45'].map(hex3),
+  wood: ['#263f24', '#2d4a29', '#35552e', '#3f6134'].map(hex3),
+  sand: ['#d2b98a', '#dcc596', '#e5cfa2', '#eedab0'].map(hex3),
+  rock: ['#6e5c52', '#937a69', '#ad937d', '#c8ae95'].map(hex3),
+  rockGrey: ['#5f6062', '#808184', '#9c9c9c', '#b9b8b4'].map(hex3),
 };
-const PAVED: [number, number, number] = [184, 178, 166];
-const GARDEN: [number, number, number] = [118, 162, 92];
+const BASE: Record<number, RGB> = {
+  [Gr.Sea]: [40, 94, 136], [Gr.Parking]: [128, 128, 136], [Gr.Plaza]: [206, 192, 160], [Gr.Pier]: [140, 106, 72],
+  [Gr.Yard]: [150, 150, 154], [Gr.Road]: [70, 72, 84], [Gr.Lane]: [88, 90, 100], [Gr.Path]: [196, 190, 178],
+  [Gr.Steps]: [172, 166, 156], [Gr.Wall]: [170, 168, 174], [Gr.Built]: [184, 178, 166],
+};
 /** when two classes meet in a blend, the more 'man-made' one wins ties */
 const PRIORITY: Record<number, number> = {
   [Gr.Road]: 9, [Gr.Lane]: 8, [Gr.Steps]: 7, [Gr.Path]: 7, [Gr.Pier]: 7, [Gr.Wall]: 9, [Gr.Plaza]: 6, [Gr.Parking]: 6,
   [Gr.Beach]: 3, [Gr.Sea]: 2,
 };
+/** natural ground: where two of these meet, the edge wanders instead of following the grid */
+const NATURAL = new Set<number>([Gr.Hill, Gr.Grass, Gr.Wood, Gr.Scrub, Gr.Beach, Gr.Rock, Gr.Park, Gr.School, Gr.Cemetery, Gr.Sea]);
 
 /** the ground class under a tile, with buildings standing on paving */
 const groundAt = (x: number, y: number): number => {
   const g = at_(x, y);
-  return g === Gr.Building ? Gr.Built : g;
+  return g === Gr.Building ? (core(x, y) ? Gr.Built : Gr.Path) : g;
 };
 
 const noise = (x: number, y: number, s = 0): number => hash(x, y, s + 101);
+/** smooth value noise, about one feature per unit */
+function vnoise(x: number, y: number, s: number): number {
+  const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+  const u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy);
+  const a = hash(x0, y0, s), b = hash(x0 + 1, y0, s), c = hash(x0, y0 + 1, s), d = hash(x0 + 1, y0 + 1, s);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+
+/** blend weights: for each of the 8x8 places inside a tile, the pull of the 5x5 tiles around it.
+ *  Wide enough that a diagonal edge of 1 m steps comes out as a straight line. */
+const WT = (() => {
+  const t = new Float32Array(ART * ART * 25);
+  for (let sy = 0; sy < ART; sy += 1) for (let sx = 0; sx < ART; sx += 1) {
+    const fx = (sx + 0.5) / ART, fy = (sy + 0.5) / ART;
+    for (let dy = -2; dy <= 2; dy += 1) for (let dx = -2; dx <= 2; dx += 1) {
+      const d2 = (fx - 0.5 - dx) ** 2 + (fy - 0.5 - dy) ** 2;
+      t[(sy * ART + sx) * 25 + (dy + 2) * 5 + dx + 2] = Math.exp(-d2 / (2 * 0.75 * 0.75));
+    }
+  }
+  return t;
+})();
+const PULL_A = new Float32Array(32).fill(1), LEAN_A = new Float32Array(32), PRIO_A = new Float32Array(32);
+for (let c = 0; c < 32; c += 1) {
+  if (NATURAL.has(c)) LEAN_A[c] = (c * 0.618) % 1 < 0.5 ? 0.9 : -0.9;
+  PRIO_A[c] = PRIORITY[c] ?? 0;
+}
+/** man-made strips hold their width under the blend (a 1 m footpath would otherwise thin out) */
+const PULL: Record<number, number> = { [Gr.Road]: 1.2, [Gr.Lane]: 1.25, [Gr.Path]: 1.35, [Gr.Steps]: 1.35, [Gr.Pier]: 1.35, [Gr.Wall]: 1.6 };
+for (const [c, v] of Object.entries(PULL)) PULL_A[Number(c)] = v;
+
+/** slow noise for the grass, worked out once per 2x2 art pixels for the chunk being drawn */
+let fieldBig = new Float32Array(0), fieldMid = new Float32Array(0), fieldDry = new Float32Array(0), fieldX = 0, fieldY = 0;
+function grassFields(gx0: number, gy0: number): void {
+  const n = LO / 2;
+  if (fieldBig.length !== n * n) { fieldBig = new Float32Array(n * n); fieldMid = new Float32Array(n * n); fieldDry = new Float32Array(n * n); }
+  fieldX = gx0; fieldY = gy0;
+  for (let y = 0; y < n; y += 1) for (let x = 0; x < n; x += 1) {
+    const X = gx0 + x * 2, Y = gy0 + y * 2, k = y * n + x;
+    fieldBig[k] = vnoise(X / 44, Y / 44, 11); fieldMid[k] = vnoise(X / 13, Y / 13, 12); fieldDry[k] = vnoise(X / 70, Y / 70, 5);
+  }
+}
+/** grass: soft patches of four tones, with little blades of grass standing up in it */
+function grassTone(gx: number, gy: number, kind: 'meadow' | 'lawn' | 'pitch' | 'scrub' | 'wood'): RGB {
+  const f = ((gy - fieldY) >> 1) * (LO / 2) + ((gx - fieldX) >> 1);
+  let v = 0.55 * fieldBig[f] + 0.3 * fieldMid[f] + 0.15 * noise(gx, gy, 13);
+  let pal = TONES[kind];
+  if (kind === 'meadow' && fieldDry[f] > 0.66) pal = TONES.dry;
+  if (kind === 'lawn' || kind === 'pitch') v += ((gx >> 4) & 1 ? 0.12 : -0.04); // mowing stripes, 2 m wide
+  let t = v < 0.38 ? 0 : v < 0.52 ? 1 : v < 0.66 ? 2 : 3;
+  // blades: 3-pixel strokes, dark at the root and catching the light at the tip
+  const rate = kind === 'meadow' ? 0.09 : kind === 'scrub' ? 0.12 : kind === 'wood' ? 0.05 : 0.04;
+  const sy = gy + (gx * 5) % 3, k = noise(gx, Math.floor(sy / 3), 17);
+  if (k < rate) t = sy % 3 === 0 ? Math.min(3, t + 2) : Math.max(0, t - 1);
+  else if (kind === 'meadow' && k > 0.9985) return noise(gx, gy, 18) < 0.5 ? [238, 236, 220] : [240, 210, 80]; // clover, buttercups
+  return pal[t];
+}
+
+/** shore granite: rounded boulders with dark cracks, lit from the top left */
+function rockTone(gx: number, gy: number, wet: boolean): RGB {
+  const S = 11;
+  const cx = Math.floor(gx / S), cy = Math.floor(gy / S);
+  let d1 = 1e9, d2 = 1e9, fx = 0, fy = 0, cell = 0;
+  for (let j = -1; j <= 1; j += 1) for (let i = -1; i <= 1; i += 1) {
+    const px = (cx + i + 0.15 + 0.7 * hash(cx + i, cy + j, 31)) * S, py = (cy + j + 0.15 + 0.7 * hash(cx + i, cy + j, 32)) * S;
+    const d = (gx - px) ** 2 + (gy - py) ** 2;
+    if (d < d1) { d2 = d1; d1 = d; fx = gx - px; fy = gy - py; cell = hash(cx + i, cy + j, 33); } else if (d < d2) d2 = d;
+  }
+  const pal = cell < 0.3 ? TONES.rockGrey : TONES.rock;
+  let t: number;
+  if (Math.sqrt(d2) - Math.sqrt(d1) < 1.3) t = 0;
+  else { const lit = fx + fy; t = lit < -3 ? 3 : lit > 4 ? 1 : 2; }
+  const c = pal[t];
+  return wet ? [c[0] * 0.78, c[1] * 0.8, c[2] * 0.84] : c;
+}
+
+/** the label next to the art pixel being painted (set per pixel, so no closure is made each time) */
+let opx = 0, opy = 0, oc = 0, olabel = new Uint8Array(0);
+function other(dx: number, dy: number): number {
+  const qx = opx + dx, qy = opy + dy;
+  return qx < 0 || qy < 0 || qx >= LO || qy >= LO ? oc : olabel[qy * LO + qx];
+}
 
 function renderChunk(cx: number, cy: number): HTMLCanvasElement {
   const tx0 = cx * CHUNK, ty0 = cy * CHUNK;
 
-  // ---- 1. ground, at ART pixels per metre, blending the tile grid so edges come out smooth
+  // ---- 1. ground, at ART pixels per metre. Each art pixel takes the class with the most pull from
+  //         the 3x3 tiles around it, so edges come out round; natural edges also wander a little.
   const lo = document.createElement('canvas');
   lo.width = LO; lo.height = LO;
   const lg = lo.getContext('2d')!;
@@ -646,24 +820,50 @@ function renderChunk(cx: number, cy: number): HTMLCanvasElement {
   const label = new Uint8Array(LO * LO);
   const seaW = new Float32Array(LO * LO);
   const counts = new Float32Array(32);
+  const taps = new Uint8Array(25), seen = new Uint8Array(25);
+  // the chunk's tiles with a 2-tile margin, and which tiles have the same class all round them
+  const WW = CHUNK + 4;
+  const win = new Uint8Array(WW * WW);
+  for (let y = 0; y < WW; y += 1) for (let x = 0; x < WW; x += 1) win[y * WW + x] = groundAt(tx0 + x - 2, ty0 + y - 2);
+  const uniform = new Uint8Array(CHUNK * CHUNK);
+  for (let y = 0; y < CHUNK; y += 1) for (let x = 0; x < CHUNK; x += 1) {
+    const c = win[(y + 2) * WW + x + 2];
+    let u = 1;
+    for (let dy = 0; dy < 5 && u; dy += 1) for (let dx = 0; dx < 5; dx += 1) if (win[(y + dy) * WW + x + dx] !== c) { u = 0; break; }
+    uniform[y * CHUNK + x] = u;
+  }
   for (let py = 0; py < LO; py += 1) {
-    const fy = ty0 + (py + 0.5) / ART - 0.5;
-    const y0 = Math.floor(fy), wy = fy - y0;
+    const ly = Math.floor(py / ART), sy = py % ART;
     for (let px = 0; px < LO; px += 1) {
-      const fx = tx0 + (px + 0.5) / ART - 0.5;
-      const x0 = Math.floor(fx), wx = fx - x0;
-      counts.fill(0);
-      const c00 = groundAt(x0, y0), c10 = groundAt(x0 + 1, y0), c01 = groundAt(x0, y0 + 1), c11 = groundAt(x0 + 1, y0 + 1);
-      counts[c00] += (1 - wx) * (1 - wy); counts[c10] += wx * (1 - wy); counts[c01] += (1 - wx) * wy; counts[c11] += wx * wy;
-      let best = c00, bw = -1;
-      for (const c of [c00, c10, c01, c11]) {
-        const w = counts[c] + (PRIORITY[c] ?? 0) * 0.001;
+      const lx = Math.floor(px / ART), sx = px % ART;
+      const i = py * LO + px;
+      if (uniform[ly * CHUNK + lx]) { const c = win[(ly + 2) * WW + lx + 2]; label[i] = c; seaW[i] = c === Gr.Sea ? 1 : 0; continue; }
+      for (let dy = 0, n = 0; dy < 5; dy += 1) for (let dx = 0; dx < 5; dx += 1, n += 1) taps[n] = win[(ly + dy) * WW + lx + dx];
+      const w0 = (sy * ART + sx) * 25;
+      const gx = tx0 * ART + px, gy = ty0 * ART + py;
+      const wob = vnoise(gx / 7, gy / 7, 40) - 0.5;
+      let nd = 0;
+      for (let n = 0; n < 25; n += 1) {
+        const c = taps[n];
+        // natural edges wander: classes lean opposite ways on the same noise
+        const w = WT[w0 + n] * PULL_A[c] * (1 + wob * LEAN_A[c]);
+        if (counts[c] === 0) seen[nd++] = c;
+        counts[c] += w;
+      }
+      let best = taps[12], bw = -1, tot = 0;
+      for (let n = 0; n < nd; n += 1) {
+        const c = seen[n];
+        tot += counts[c];
+        const w = counts[c] + PRIO_A[c] * 0.004;
         if (w > bw) { bw = w; best = c; }
       }
-      label[py * LO + px] = best;
-      seaW[py * LO + px] = counts[Gr.Sea];
+      const sea = counts[Gr.Sea];
+      for (let n = 0; n < nd; n += 1) counts[seen[n]] = 0;
+      label[i] = best;
+      seaW[i] = sea / tot;
     }
   }
+  grassFields(tx0 * ART, ty0 * ART);
   const data = img.data;
   for (let py = 0; py < LO; py += 1) {
     for (let px = 0; px < LO; px += 1) {
@@ -671,63 +871,81 @@ function renderChunk(cx: number, cy: number): HTMLCanvasElement {
       const c = label[i];
       const gx = tx0 * ART + px, gy = ty0 * ART + py; // global art pixel, so textures run across chunks
       const mx = tx0 + px / ART, my = ty0 + py / ART;
-      let col: [number, number, number] = BASE[c] ?? BASE[Gr.Hill];
-      if (c === Gr.Built) col = core(mx, my) ? PAVED : GARDEN;
-      let [r, g, b] = col;
       const n = noise(gx, gy);
-      const other = (dx: number, dy: number): number => {
-        const qx = px + dx, qy = py + dy;
-        return qx < 0 || qy < 0 || qx >= LO || qy >= LO ? c : label[qy * LO + qx];
-      };
+      opx = px; opy = py; oc = c; olabel = label;
+      let r: number, g: number, b: number;
       switch (c) {
+        case Gr.Hill: [r, g, b] = grassTone(gx, gy, 'meadow'); break;
+        case Gr.Grass: case Gr.Park: case Gr.Cemetery: [r, g, b] = grassTone(gx, gy, 'lawn'); break;
+        case Gr.School: [r, g, b] = grassTone(gx, gy, 'lawn'); break;
+        case Gr.Pitch: [r, g, b] = grassTone(gx, gy, 'pitch'); break;
+        case Gr.Scrub: [r, g, b] = grassTone(gx, gy, 'scrub'); break;
+        case Gr.Wood: [r, g, b] = grassTone(gx, gy, 'wood'); break;
+        case Gr.Rock: [r, g, b] = rockTone(gx, gy, seaW[i] > 0.02); break;
+        case Gr.Built: {
+          if (!core(mx, my)) { [r, g, b] = grassTone(gx, gy, 'lawn'); break; }
+          // paving between shophouses: 0.5 m setts
+          [r, g, b] = BASE[Gr.Built];
+          if (gx % 4 === 0 || (gy % 4 === 0 && (gx >> 2) % 2 === 0)) { r -= 14; g -= 14; b -= 14; }
+          break;
+        }
         case Gr.Sea: {
           // shallow water near the shore, foam on the line, glints out in the bay
-          const shore = seaW[i] < 0.999;
-          if (shore) { r += 30; g += 36; b += 22; }
+          [r, g, b] = BASE[Gr.Sea];
+          const shore = seaW[i] < 0.995;
+          const deep = vnoise(gx / 90, gy / 90, 50);
+          r -= deep * 10; g -= deep * 8; b -= deep * 4;
+          // two bands of shallows, following the blended shore so they curve with it
+          if (seaW[i] < 0.8) { r += 44; g += 56; b += 30; } else if (shore) { r += 24; g += 32; b += 16; }
           if (other(1, 0) !== Gr.Sea || other(-1, 0) !== Gr.Sea || other(0, 1) !== Gr.Sea || other(0, -1) !== Gr.Sea) { r = 214; g = 232; b = 240; }
+          else if (shore && (other(2, 0) !== Gr.Sea || other(0, 2) !== Gr.Sea || other(-2, 0) !== Gr.Sea || other(0, -2) !== Gr.Sea)) { r += 40; g += 40; b += 30; }
           else if (noise(gx >> 2, gy, 3) < 0.012) { r += 50; g += 50; b += 40; }
-          else { const v = (n - 0.5) * 8; r += v; g += v; b += v; }
+          else if (Math.floor(gy / 3) % 7 === 0 && vnoise(gx / 10, gy / 3, 51) > 0.72) { r += 18; g += 20; b += 18; } // swell
           break;
         }
-        case Gr.Hill: case Gr.Park: case Gr.School: case Gr.Cemetery: case Gr.Pitch: case Gr.Built: {
-          if (c === Gr.Built && core(mx, my)) { // paving between shophouses
-            if (gx % 4 === 0 || (gy % 4 === 0 && (gx >> 2) % 2 === 0)) { r -= 14; g -= 14; b -= 14; }
+        case Gr.Path: case Gr.Plaza: {
+          [r, g, b] = BASE[c];
+          if (c === Gr.Plaza) {
+            // metre slabs, each a slightly different stone
+            const slab = hash(gx >> 3, gy >> 3, 21);
+            const v = (slab - 0.5) * 16; r += v; g += v; b += v * 0.8;
+            if (gx % 8 === 0 || gy % 8 === 0) { r -= 22; g -= 22; b -= 22; }
             break;
           }
-          const v = (n - 0.5) * 14; r += v; g += v * 1.2; b += v * 0.6;
-          if (n < 0.06) { r -= 22; g -= 20; b -= 18; } else if (n > 0.97) { r += 26; g += 28; b += 12; }
-          if (c === Gr.Pitch && ((gx >> 4) % 2 === 0)) { r += 8; g += 10; b += 6; }
-          if (c === Gr.Hill && noise(gx >> 3, gy >> 3, 9) < 0.25) { r -= 8; g -= 6; b -= 6; }
-          break;
-        }
-        case Gr.Wood: { const v = (n - 0.5) * 20; r += v; g += v; b += v * 0.5; break; }
-        case Gr.Path: case Gr.Plaza: {
           // small paving slabs, half a metre, staggered
           const row = gy >> 2;
           if (gy % 4 === 0 || (gx + (row % 2) * 2) % 4 === 0) { r -= 16; g -= 16; b -= 16; }
-          else { const v = (n - 0.5) * 8; r += v; g += v; b += v; }
+          else { const v = (n - 0.5) * 6; r += v; g += v; b += v; }
           break;
         }
-        case Gr.Steps: if (gy % 3 === 0) { r -= 34; g -= 34; b -= 34; } break;
+        case Gr.Steps: [r, g, b] = BASE[c]; if (gy % 3 === 0) { r -= 34; g -= 34; b -= 34; } else if (gy % 3 === 1) { r += 10; g += 10; b += 10; } break;
         case Gr.Road: case Gr.Lane: case Gr.Parking: {
-          const v = (n - 0.5) * 12; r += v; g += v; b += v;
-          if (n > 0.985) { r += 30; g += 30; b += 30; }
+          [r, g, b] = BASE[c];
+          const v = (n - 0.5) * 8 + (vnoise(gx / 30, gy / 30, 60) - 0.5) * 8; r += v; g += v; b += v;
+          if (n > 0.985) { r += 22; g += 22; b += 22; }
           // kerbs where the carriageway meets anything else
           const edge = (q: number): boolean => q !== Gr.Road && q !== Gr.Lane && q !== Gr.Parking;
           if (edge(other(1, 0)) || edge(other(-1, 0)) || edge(other(0, 1)) || edge(other(0, -1))) { r = 168; g = 168; b = 172; }
+          else if (edge(other(2, 0)) || edge(other(-2, 0)) || edge(other(0, 2)) || edge(other(0, -2))) { r -= 10; g -= 10; b -= 8; } // gutter
           else if (c === Gr.Parking && gx % 20 === 0 && gy % 40 < 32) { r = 230; g = 230; b = 230; }
           break;
         }
         case Gr.Beach: {
-          const v = (n - 0.5) * 16; r += v; g += v; b += v;
-          if (seaW[i] > 0.05) { r -= 30; g -= 30; b -= 26; } // wet sand at the water's edge
+          const pal = TONES.sand;
+          const v = 0.6 * vnoise(gx / 20, gy / 20, 70) + 0.4 * n;
+          [r, g, b] = pal[v < 0.35 ? 0 : v < 0.55 ? 1 : v < 0.8 ? 2 : 3];
+          if (seaW[i] > 0.05) { r -= 34; g -= 34; b -= 26; } // wet sand at the water's edge
+          else if (n > 0.996) { r = 246; g = 240; b = 230; } // shells
           break;
         }
-        case Gr.Pier: if (gy % 3 === 0) { r -= 40; g -= 32; b -= 24; } break;
-        case Gr.Wall: if ((gy % 8) < 2) { r += 30; g += 30; b += 30; } else if ((gy % 8) > 5) { r -= 40; g -= 40; b -= 40; } break;
-        case Gr.Yard: { const v = (n - 0.5) * 10; r += v; g += v; b += v; break; }
-        default:
+        case Gr.Pier: [r, g, b] = BASE[c]; if (gy % 3 === 0) { r -= 40; g -= 32; b -= 24; } else if (hash(gx >> 4, gy / 3 | 0, 80) < 0.3) { r -= 10; g -= 8; b -= 6; } break;
+        case Gr.Wall: [r, g, b] = BASE[c]; if ((gy % 8) < 2) { r += 30; g += 30; b += 30; } else if ((gy % 8) > 5) { r -= 40; g -= 40; b -= 40; } break;
+        case Gr.Yard: { [r, g, b] = BASE[c]; const v = (n - 0.5) * 8; r += v; g += v; b += v; break; }
+        default: [r, g, b] = TONES.meadow[1];
       }
+      // a soft dark rim where grass meets paving or a road, like a kerb's shadow
+      if ((c === Gr.Hill || c === Gr.Grass || c === Gr.Park || c === Gr.School || c === Gr.Scrub) &&
+        (PRIORITY[other(0, -1)] ?? 0) >= 6) { r *= 0.8; g *= 0.82; b *= 0.8; }
       const o = i * 4;
       data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
     }
@@ -767,7 +985,7 @@ function renderChunk(cx: number, cy: number): HTMLCanvasElement {
   g.imageSmoothingEnabled = false;
   g.drawImage(lo, 0, 0, CPX, CPX);
   g.translate(-cx * CPX, -cy * CPX);
-  for (let y = ty0 - 2; y < ty0 + CHUNK + 3; y += 1) for (let x = tx0 - 3; x < tx0 + CHUNK + 3; x += 1) drawProp(g, x, y);
+  for (let y = ty0 - 5; y < ty0 + CHUNK + 6; y += 1) for (let x = tx0 - 5; x < tx0 + CHUNK + 5; x += 1) drawProp(g, x, y);
   for (const b of BUILDINGS) {
     if (!b.name || !b.door || b.x1 < tx0 - 20 || b.x0 > tx0 + CHUNK + 20 || b.y1 < ty0 - 4 || b.y0 > ty0 + CHUNK + 4) continue;
     if (/^(Block|House|No\.)/.test(b.name) || /[^\x20-\x7e]/.test(b.name)) continue;
@@ -807,41 +1025,72 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
     for (let i = 0; i < pts.length; i += 2) { if (i) g.lineTo(pts[i], pts[i + 1] + dy); else g.moveTo(pts[i], pts[i + 1] + dy); }
     g.closePath();
   };
-  // drop shadow to the south-east
-  g.fillStyle = 'rgba(0,0,0,0.22)';
-  path(p.map((v, i) => v + (i % 2 ? 0.5 : 0.6)));
+  // cast shadow to the south-east, longer for taller buildings
+  const h = B.wall;
+  const sh = 0.5 + h * 0.3;
+  g.fillStyle = 'rgba(12,20,16,0.26)';
+  path(p.map((v, i) => v + (i % 2 ? 0.4 : sh)));
   g.fill();
   // roof: the whole outline
   g.fillStyle = B.roof;
   path(p); g.fill();
   g.save();
   path(p); g.clip();
-  const pitched = B.style === 'house' || B.style === 'heritage' || B.style === 'school' || B.style === 'temple';
-  if (pitched) {
-    // tiles in rows, and a ridge along the long side
-    g.fillStyle = shade(B.roof, 0.86);
-    for (let y = Math.floor(B.y0); y < B.y1; y += 0.75) g.fillRect(B.x0 - 1, y, B.x1 - B.x0 + 2, px);
+  const roofSeed = Math.round(B.x0 * 7 + B.y0 * 13);
+  if (B.pitched) {
+    // two slopes: the far one in shade, tiles in rows, a bright ridge between them
     const wide = B.x1 - B.x0 >= B.y1 - B.y0;
-    g.fillStyle = shade(B.roof, 1.2);
-    if (wide) g.fillRect(B.x0 - 1, (B.y0 + B.y1 - B.wall) / 2, B.x1 - B.x0 + 2, 2 * px);
-    else g.fillRect((B.x0 + B.x1) / 2 - px, B.y0 - 1, 2 * px, B.y1 - B.y0 + 2);
-    if (B.style === 'temple') { g.fillStyle = '#d8a83a'; g.lineWidth = 2 * px; g.strokeStyle = '#d8a83a'; path(p); g.stroke(); }
+    const ridgeY = (B.y0 + B.y1 - B.wall) / 2, ridgeX = (B.x0 + B.x1) / 2;
+    g.fillStyle = shade(B.roof, 0.8);
+    if (wide) g.fillRect(B.x0 - 1, B.y0 - 1, B.x1 - B.x0 + 2, ridgeY - B.y0 + 1);
+    else g.fillRect(ridgeX, B.y0 - 1, B.x1 - ridgeX + 1, B.y1 - B.y0 + 2);
+    g.fillStyle = shade(B.roof, 0.7);
+    for (let y = Math.floor(B.y0); y < B.y1; y += 0.75) g.fillRect(B.x0 - 1, y, B.x1 - B.x0 + 2, px);
+    g.fillStyle = shade(B.roof, 0.88);
+    for (let y = Math.floor(B.y0); y < B.y1; y += 0.75) for (let x = Math.floor(B.x0) + ((y * 4) % 2) * 0.5; x < B.x1; x += 1) g.fillRect(x, y + px, px, 0.75 - px);
+    g.fillStyle = shade(B.roof, 1.25);
+    if (wide) g.fillRect(B.x0 - 1, ridgeY - px, B.x1 - B.x0 + 2, 2 * px);
+    else g.fillRect(ridgeX - px, B.y0 - 1, 2 * px, B.y1 - B.y0 + 2);
+    if (B.style === 'temple') { g.lineWidth = 2 * px; g.strokeStyle = '#d8a83a'; path(p); g.stroke(); }
   } else {
-    // flat roof: parapet, and plant boxes and water tanks
+    // flat roof: parapet, then what sits on Hong Kong roofs: water tanks, air-con units, a stair
+    // house, and solar panels on the big ones
     g.strokeStyle = shade(B.roof, 0.72); g.lineWidth = 3 * px; path(p); g.stroke();
     g.strokeStyle = shade(B.roof, 1.18); g.lineWidth = px; path(p, 2 * px); g.stroke();
+    const area = (B.x1 - B.x0) * (B.y1 - B.y0);
+    if (area > 500 && hash(roofSeed, 1, 78) < 0.55) {
+      const sx = B.x0 + (B.x1 - B.x0) * 0.2, sy = B.y0 + (B.y1 - B.y0) * 0.2;
+      const sw = (B.x1 - B.x0) * 0.6, sh2 = Math.min((B.y1 - B.y0) * 0.45, 8);
+      for (let y = sy; y < sy + sh2; y += 1.4) for (let x = sx; x < sx + sw; x += 1.1) {
+        if (!pipM(x, y, p) || !pipM(x + 1, y + 1.2, p)) continue;
+        g.fillStyle = '#2a3a5a'; g.fillRect(x, y, 1, 1.2);
+        g.fillStyle = '#4a6a9a'; g.fillRect(x, y, 1, px); g.fillRect(x, y, px, 1.2);
+      }
+    }
     for (let y = Math.floor(B.y0) + 1; y < B.y1 - 1; y += 3) for (let x = Math.floor(B.x0) + 1; x < B.x1 - 1; x += 3) {
       const r = hash(x, y, 77);
-      if (r > 0.12 || !pipM(x + 1, y + 1, p) || !pipM(x + 2.5, y + 2, p)) continue;
-      g.fillStyle = shade(B.roof, 0.8); g.fillRect(x + 0.3, y + 0.3, 1.6, 1.2);
-      g.fillStyle = shade(B.roof, 1.15); g.fillRect(x + 0.3, y + 0.3, 1.6, px * 2);
+      if (r > 0.2 || !pipM(x + 0.5, y + 0.5, p) || !pipM(x + 2.5, y + 2, p)) continue;
+      if (r < 0.06) { // water tank
+        g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(x + 0.7, y + 0.5, 1.1, 1.2);
+        g.fillStyle = '#3a6a9a'; g.fillRect(x + 0.4, y + 0.3, 1.1, 1.2);
+        g.fillStyle = '#6a9ac8'; g.fillRect(x + 0.4, y + 0.3, 1.1, 0.4);
+      } else if (r < 0.14) { // air-con unit with its fan
+        g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(x + 0.5, y + 0.7, 1, 0.75);
+        g.fillStyle = '#c8c8c4'; g.fillRect(x + 0.3, y + 0.5, 1, 0.75);
+        g.fillStyle = '#7a7a78'; g.fillRect(x + 0.5, y + 0.625, 0.5, 0.5);
+      } else { // stair house
+        if (r > 0.17) continue;
+        g.fillStyle = 'rgba(0,0,0,0.22)'; g.fillRect(x + 0.4, y + 0.3, 2, 1.8);
+        g.fillStyle = shade(B.roof, 1.1); g.fillRect(x, y, 2, 1.2);
+        g.fillStyle = shade(B.roof, 0.78); g.fillRect(x, y + 1.2, 2, 0.75);
+        g.fillStyle = '#3a2e26'; g.fillRect(x + 0.75, y + 1.3, 0.5, 0.65);
+      }
     }
   }
   g.restore();
-  g.strokeStyle = shade(B.roof, 0.6); g.lineWidth = px; path(p); g.stroke();
+  g.strokeStyle = shade(B.roof, 0.5); g.lineWidth = px; path(p); g.stroke();
 
   // front walls: every edge facing south, rising from its ground line into the footprint
-  const h = B.wall;
   const wall = WALL_COLOUR[B.style];
   const door = B.door ? { x: B.door.x + 0.5, y: B.door.y + 1 } : null;
   let doorEdge = -1, doorT = 0, doorD = Infinity;
@@ -855,6 +1104,7 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
     const out = pipM(mx + nx * 0.2, my + ny * 0.2, p) ? -1 : 1;
     const ony = ny * out;
     if (ony < 0.25) continue;
+    const oblique = ony < 0.55; // a wall turned well away from us: no windows, just its piers
     if (door) {
       const t = Math.max(0, Math.min(1, ((door.x - ax) * ex + (door.y - ay) * ey) / (len * len)));
       const d = Math.hypot(ax + ex * t - door.x, ay + ey * t - door.y);
@@ -867,18 +1117,34 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
     g.beginPath(); g.moveTo(ax, ay - h); g.lineTo(bx, by - h); g.lineTo(bx, by - h + 3 * px); g.lineTo(ax, ay - h + 3 * px); g.closePath(); g.fill();
     g.fillStyle = shade(wall, 0.62);
     g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.lineTo(bx, by - 2 * px); g.lineTo(ax, ay - 2 * px); g.closePath(); g.fill();
-    // windows: a row per storey, one every couple of metres
-    const floors = Math.max(1, Math.floor(h / 2.2));
+    // windows: a row per storey (from the real height when known), one every couple of metres
+    const floors = Math.max(1, Math.min(Math.floor(h / 0.95), B.height ? Math.round(B.height / 3.2) : Math.floor(h / 2.2)));
+    if (floors > 2) {
+      // floor slabs as thin lines across the facade
+      g.fillStyle = shade(wall, 0.88);
+      for (let f = 1; f < floors; f += 1) {
+        const z = (f * h) / floors;
+        g.beginPath(); g.moveTo(ax, ay - z); g.lineTo(bx, by - z); g.lineTo(bx, by - z + px); g.lineTo(ax, ay - z + px); g.closePath(); g.fill();
+      }
+    }
+    // a dark line down each end of the wall, so corners read
+    g.fillStyle = shade(wall, 0.55);
+    g.fillRect(ax - px / 2, ay - h, px, h); g.fillRect(bx - px / 2, by - h, px, h);
     const shopfront = B.style === 'shop' || B.style === 'mall';
     const step = B.style === 'apartments' || B.style === 'quarters' ? 1.4 : 2;
-    for (let f = 0; f < floors; f += 1) {
+    if (oblique) {
+      g.fillStyle = shade(wall, 0.7);
+      for (let t = 2; t < len - 1; t += 3) { const wx = ax + (ex * t) / len, wy = ay + (ey * t) / len; g.fillRect(wx - px, wy - h, 2 * px, h); }
+    }
+    for (let f = 0; f < floors && !oblique; f += 1) {
       const z = ((f + 0.55) * h) / floors;
       if (f === 0 && shopfront) continue;
       for (let t = step / 2 + 0.3; t < len - 0.5; t += step) {
         const wx = ax + (ex * t) / len, wy = ay + (ey * t) / len - z;
         g.fillStyle = B.style === 'heritage' ? '#5a6a7a' : hash(Math.round(wx * 4), Math.round(wy * 4), 3) < 0.15 ? '#e8d890' : '#6a9ab4';
-        g.fillRect(wx - 0.35, wy - 0.45, 0.7, B.style === 'heritage' ? 1.1 : 0.8);
-        g.fillStyle = 'rgba(255,255,255,0.45)'; g.fillRect(wx - 0.35, wy - 0.45, 0.2, 0.3);
+        const wh = Math.min(B.style === 'heritage' ? 1.1 : 0.8, (h / floors) * 0.55);
+        g.fillRect(wx - 0.35, wy - wh / 2, 0.7, wh);
+        g.fillStyle = 'rgba(255,255,255,0.45)'; g.fillRect(wx - 0.35, wy - wh / 2, 0.2, Math.min(0.3, wh / 2));
       }
     }
     if (shopfront) {
@@ -904,54 +1170,164 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
   }
 }
 
+/** a crisp disc in 2 px steps (one art pixel), so props match the ground's pixel grid */
+function disc(g: CanvasRenderingContext2D, cx: number, cy: number, r: number): void {
+  const x0 = Math.round(cx / 2) * 2, y0 = Math.round(cy / 2) * 2;
+  for (let dy = -r; dy <= r; dy += 2) {
+    const w = Math.floor(Math.sqrt(Math.max(0, r * r - dy * dy)) / 2) * 2;
+    if (w > 0) g.fillRect(x0 - w, y0 + dy, w * 2, 2);
+  }
+}
+
+/** three families of crown colour, darkest first: deep green, yellow-green, blue-green */
+const CROWNS = [
+  ['#1c3824', '#2a5230', '#3a6c3c', '#55894c', '#77a45e'],
+  ['#25411f', '#365c2a', '#4b7634', '#668f42', '#89aa55'],
+  ['#1a3a33', '#264f42', '#346653', '#4d8366', '#6fa07c'],
+];
+const BLOSSOM = ['#d86a9a', '#e8a0c0', '#f2c8d8'];
+
+/** crowns are drawn once per size and look, then stamped: a wood has hundreds of them */
+const crownCache = new Map<string, HTMLCanvasElement>();
+function crown(g: CanvasRenderingContext2D, cx: number, cy: number, r: number, k: number, blossom = false): void {
+  const R = Math.max(4, Math.round(r / 2) * 2), kq = Math.floor(k * 24) / 24;
+  const key = `${R}|${kq}|${blossom ? 1 : 0}`;
+  let spr = crownCache.get(key);
+  if (!spr) {
+    spr = document.createElement('canvas');
+    spr.width = spr.height = 2 * R + 8;
+    paintCrown(spr.getContext('2d')!, R + 4, R + 4, R, kq, blossom);
+    crownCache.set(key, spr);
+  }
+  g.drawImage(spr, Math.round(cx / 2) * 2 - R - 4, Math.round(cy / 2) * 2 - R - 4);
+}
+/** a soft-edged shadow disc, cached per size */
+const shadowCache = new Map<number, HTMLCanvasElement>();
+function shadowDisc(g: CanvasRenderingContext2D, cx: number, cy: number, r: number, alpha: number): void {
+  const R = Math.max(2, Math.round(r / 2) * 2);
+  let spr = shadowCache.get(R);
+  if (!spr) {
+    spr = document.createElement('canvas');
+    spr.width = spr.height = 2 * R + 4;
+    const sg = spr.getContext('2d')!;
+    sg.fillStyle = '#0a180c'; disc(sg, R + 2, R + 2, R);
+    shadowCache.set(R, spr);
+  }
+  g.globalAlpha = alpha;
+  g.drawImage(spr, Math.round(cx / 2) * 2 - R - 2, Math.round(cy / 2) * 2 - R - 2);
+  g.globalAlpha = 1;
+}
+/** a tree crown in pixel-art layers: rim, body, light side, a few bright clumps */
+function paintCrown(g: CanvasRenderingContext2D, cx: number, cy: number, r: number, k: number, blossom: boolean): void {
+  const pal = CROWNS[Math.floor(k * 3) % 3];
+  g.fillStyle = pal[0]; disc(g, cx, cy, r + 2);
+  g.fillStyle = pal[1]; disc(g, cx, cy, r);
+  g.fillStyle = pal[2]; disc(g, cx - r * 0.18, cy - r * 0.2, r * 0.72);
+  g.fillStyle = pal[3]; disc(g, cx - r * 0.32, cy - r * 0.36, r * 0.4);
+  // clumps of leaves catching the light
+  for (let i = 0; i < 4; i += 1) {
+    const a = k * 40 + i * 1.7, d = r * (0.35 + 0.3 * ((i * 0.37 + k) % 1));
+    g.fillStyle = i < 2 ? pal[3] : pal[4];
+    disc(g, cx + Math.cos(a) * d * 0.8 - r * 0.15, cy + Math.sin(a) * d * 0.6 - r * 0.25, Math.max(2, r * 0.18));
+  }
+  if (blossom) {
+    for (let i = 0; i < 9; i += 1) {
+      const a = i * 2.4 + k * 9, d = r * 0.75 * ((i * 0.618) % 1);
+      g.fillStyle = BLOSSOM[i % 3];
+      g.fillRect(Math.round((cx + Math.cos(a) * d) / 2) * 2, Math.round((cy + Math.sin(a) * d) / 2) * 2, 2, 2);
+    }
+  }
+}
+
 function drawTree(g: CanvasRenderingContext2D, px: number, py: number, r: number, big: boolean): void {
-  const s = big ? 6 : 0;
-  g.fillStyle = 'rgba(0,0,0,0.22)'; g.beginPath(); g.ellipse(px + 8, py + 14, 10 + s / 2, 4, 0, 0, Math.PI * 2); g.fill();
-  g.fillStyle = '#5a3e26'; g.fillRect(px + 6, py + 4, 4, 10);
-  const dark = r < 0.33 ? '#2f5e34' : r < 0.66 ? '#355f2e' : '#2c5838';
-  g.fillStyle = dark; g.beginPath(); g.arc(px + 8, py - 2 - s / 2, 10 + s / 2, 0, Math.PI * 2); g.fill();
-  g.fillStyle = r < 0.5 ? '#3e7442' : '#4a7a3a'; g.beginPath(); g.arc(px + 6, py - 4 - s / 2, 7 + s / 3, 0, Math.PI * 2); g.fill();
-  g.fillStyle = '#5a9a54'; g.fillRect(px + 2, py - 9 - s / 2, 5, 3);
+  const R = big ? 18 : 12 + Math.round((r % 1) * 4) * 2;
+  const cx = px + 8, cy = py - R * 0.55;
+  shadowDisc(g, cx + R * 0.35, py + 10, R * 0.85, 0.28);
+  g.fillStyle = '#4a3420'; g.fillRect(cx - 2, py - 2, 4, 14);
+  g.fillStyle = '#6a4c30'; g.fillRect(cx - 2, py - 2, 2, 14);
+  crown(g, cx, cy, R, r % 1, (r * 97) % 1 < 0.06);
 }
 
 function shrub(g: CanvasRenderingContext2D, px: number, py: number, r: number): void {
-  g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(px + 1, py + 10, 14, 3);
-  g.fillStyle = r < 0.5 ? '#3e6a38' : '#4a7a3e'; g.fillRect(px + 1, py + 4, 14, 8);
-  g.fillStyle = r < 0.5 ? '#4e7c44' : '#5a8a48'; g.fillRect(px + 3, py + 2, 10, 4);
-  g.fillStyle = 'rgba(255,255,255,0.15)'; g.fillRect(px + 4, py + 3, 3, 1);
+  const pal = CROWNS[Math.floor(r * 30) % 3];
+  const w = 6 + Math.round(r * 10) * 2 % 6;
+  g.fillStyle = 'rgba(16,32,16,0.25)'; disc(g, px + 10, py + 12, w);
+  g.fillStyle = pal[1]; disc(g, px + 8, py + 8, w);
+  g.fillStyle = pal[2]; disc(g, px + 6, py + 6, w - 3);
+  g.fillStyle = pal[3]; g.fillRect(px + 2, py + 2, 4, 2); g.fillRect(px + 8, py + 4, 2, 2);
+}
+
+/** a clump of tall grass or ferns */
+function tuft(g: CanvasRenderingContext2D, px: number, py: number, r: number): void {
+  const pal = r < 0.5 ? ['#3f6a34', '#5e8c44', '#82aa58'] : ['#58703a', '#7c8e46', '#a8ac5c'];
+  const x = px + 2 + Math.round(r * 5) * 2, y = py + 8;
+  for (let i = 0; i < 5; i += 1) {
+    const h = 4 + ((i * 3 + Math.round(r * 9)) % 4) * 2;
+    g.fillStyle = pal[i % 2]; g.fillRect(x + i * 2, y - h, 2, h);
+  }
+  g.fillStyle = pal[2]; g.fillRect(x + 2, y - 8, 2, 2); g.fillRect(x + 6, y - 6, 2, 2);
 }
 
 function flowers(g: CanvasRenderingContext2D, px: number, py: number, r: number): void {
   const cols = ['#e05a6a', '#f2d24a', '#f2eee4', '#c06ae0', '#f08a3a'];
+  const c = cols[Math.floor(r * 1000) % cols.length], c2 = cols[(Math.floor(r * 1000) + 2) % cols.length];
   for (let i = 0; i < 7; i += 1) {
-    g.fillStyle = '#3e6a38'; g.fillRect(px + 2 + ((i * 5) % 12), py + 4 + ((i * 7) % 9), 2, 3);
-    g.fillStyle = cols[Math.floor(hash(i, Math.floor(r * 1000), 5) * cols.length)];
-    g.fillRect(px + 2 + ((i * 5) % 12), py + 3 + ((i * 7) % 9), 2, 2);
+    const x = px + 2 + ((i * 5) % 12) & ~1, y = py + 4 + ((i * 7) % 9) & ~1;
+    g.fillStyle = '#3e6a38'; g.fillRect(x, y + 2, 2, 2);
+    g.fillStyle = i % 3 ? c : c2; g.fillRect(x, y, 2, 2);
   }
 }
 
 function rock(g: CanvasRenderingContext2D, px: number, py: number): void {
-  g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(px + 3, py + 10, 11, 3);
-  g.fillStyle = '#8a8a86'; g.fillRect(px + 3, py + 5, 10, 7);
-  g.fillStyle = '#a8a8a2'; g.fillRect(px + 4, py + 5, 6, 2);
+  g.fillStyle = 'rgba(0,0,0,0.22)'; g.fillRect(px + 4, py + 10, 12, 4);
+  g.fillStyle = '#6e6660'; g.fillRect(px + 2, py + 4, 12, 8);
+  g.fillStyle = '#948a80'; g.fillRect(px + 2, py + 4, 10, 6);
+  g.fillStyle = '#b4aa9c'; g.fillRect(px + 4, py + 4, 4, 2);
+}
+
+/** a big shore boulder */
+function boulder(g: CanvasRenderingContext2D, px: number, py: number, r: number): void {
+  const s = 8 + Math.round(r * 4) * 2;
+  g.fillStyle = 'rgba(0,0,0,0.25)'; disc(g, px + 10, py + 12, s);
+  g.fillStyle = '#6e5c52'; disc(g, px + 8, py + 8, s);
+  g.fillStyle = '#9c8270'; disc(g, px + 6, py + 6, s - 3);
+  g.fillStyle = '#c4a88e'; disc(g, px + 4, py + 3, Math.max(2, s - 8));
 }
 
 function bin(g: CanvasRenderingContext2D, px: number, py: number): void {
-  g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(px + 5, py + 12, 8, 2);
-  g.fillStyle = '#3a7a4a'; g.fillRect(px + 5, py + 3, 7, 10);
-  g.fillStyle = '#2a5a36'; g.fillRect(px + 5, py + 3, 7, 2);
+  g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(px + 6, py + 12, 8, 2);
+  g.fillStyle = '#3a7a4a'; g.fillRect(px + 6, py + 4, 6, 10);
+  g.fillStyle = '#2a5a36'; g.fillRect(px + 6, py + 4, 6, 2);
 }
 
 function parkedCar(g: CanvasRenderingContext2D, px: number, py: number, r: number, vertical: boolean): void {
   const cols = ['#c8382f', '#e0e0e8', '#3a6ac8', '#2a2a30', '#e8c23a', '#6a6a72', '#f2f2f2'];
   const c = cols[Math.floor(r * cols.length)];
   const w = vertical ? 30 : 68, h = vertical ? 68 : 30;
-  g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(px + 3, py + 3, w, h);
+  g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(px + 4, py + 4, w, h);
+  g.fillStyle = shade(c, 0.7); g.fillRect(px - 2, py - 2, w + 4, h + 4);
   g.fillStyle = c; g.fillRect(px, py, w, h);
   g.fillStyle = '#1a2a3a';
-  if (vertical) { g.fillRect(px + 3, py + 12, w - 6, 12); g.fillRect(px + 3, py + h - 18, w - 6, 8); }
-  else { g.fillRect(px + 12, py + 3, 12, h - 6); g.fillRect(px + w - 18, py + 3, 8, h - 6); }
+  if (vertical) { g.fillRect(px + 4, py + 12, w - 8, 12); g.fillRect(px + 4, py + h - 18, w - 8, 8); }
+  else { g.fillRect(px + 12, py + 4, 12, h - 8); g.fillRect(px + w - 18, py + 4, 8, h - 8); }
   g.fillStyle = 'rgba(255,255,255,0.25)'; g.fillRect(px + 2, py + 2, vertical ? w - 4 : 6, vertical ? 6 : h - 4);
+}
+
+/** are these trees part of a wood: then crowns fill it from two staggered lattices */
+function woodCrowns(g: CanvasRenderingContext2D, x: number, y: number): void {
+  for (const off of [0, 1]) {
+    // lattice points every 3 m, the second set shifted half a step
+    const lx = x - off, ly = y - off;
+    if (((lx % 3) + 3) % 3 !== 0 || ((ly % 3) + 3) % 3 !== 0) continue;
+    const k = hash(x, y, 90 + off);
+    if (off && k < 0.3) continue;
+    const jx = (hash(x, y, 91) - 0.5) * 24, jy = (hash(x, y, 92) - 0.5) * 20;
+    const sz = hash(x, y, 93);
+    const R = sz < 0.3 ? 16 + Math.round(sz * 20) * 2 : 24 + Math.round(sz * 9) * 2;
+    const cx = x * TILE + 8 + jx, cy = y * TILE + 8 + jy - 10;
+    shadowDisc(g, cx + R * 0.3, cy + R * 0.45, R, 0.3);
+    crown(g, cx, cy, R, k);
+  }
 }
 
 function drawProp(g: CanvasRenderingContext2D, x: number, y: number): void {
@@ -960,25 +1336,42 @@ function drawProp(g: CanvasRenderingContext2D, x: number, y: number): void {
   const px = x * TILE, py = y * TILE;
   const r = hash(x, y, 7);
   switch (code) {
-    case Gr.Wood: if (x % 2 === 0 && y % 2 === 0) drawTree(g, px + Math.floor(r * 6) - 3, py, r, r < 0.4); return;
+    case Gr.Wood: woodCrowns(g, x, y); return;
+    case Gr.Scrub:
+      if (r < 0.06) drawTree(g, px, py, r * 16, r < 0.02);
+      else if (r < 0.26) shrub(g, px, py, r);
+      else if (r < 0.4) tuft(g, px, py, hash(x, y, 8));
+      return;
     case Gr.Hill:
-      if (r < 0.05) drawTree(g, px, py, r * 20, r < 0.02);
-      else if (r < 0.13) shrub(g, px, py, r);
-      else if (r < 0.15) rock(g, px, py);
+      if (r < 0.035) drawTree(g, px, py, r * 28, r < 0.012);
+      else if (r < 0.09) shrub(g, px, py, r);
+      else if (r < 0.2) tuft(g, px, py, hash(x, y, 8));
+      else if (r < 0.215) rock(g, px, py);
+      else if (r < 0.225) flowers(g, px, py, r);
+      return;
+    case Gr.Grass:
+      if (r < 0.008) drawTree(g, px, py, r * 120, true);
+      else if (r < 0.016) flowers(g, px, py, r);
+      else if (r < 0.03) tuft(g, px, py, hash(x, y, 8));
+      return;
+    case Gr.Rock:
+      if (r < 0.05) boulder(g, px, py, hash(x, y, 9));
       return;
     case Gr.Park: case Gr.School:
       if (r < 0.02) drawTree(g, px, py, r * 50, true);
       else if (r < 0.035) shrub(g, px, py, r);
       else if (r < 0.045) flowers(g, px, py, r);
       else if (r < 0.05) bench(g, px, py);
+      else if (r < 0.06) tuft(g, px, py, hash(x, y, 8));
       return;
     case Gr.Built:
       if (core(x, y)) { if (r < 0.01) bin(g, px, py); else if (r < 0.02) flowers(g, px, py, r); return; }
       if (r < 0.04) drawTree(g, px, py, r * 25, false);
       else if (r < 0.1) shrub(g, px, py, r);
       else if (r < 0.12) flowers(g, px, py, r);
+      else if (r < 0.16) tuft(g, px, py, hash(x, y, 8));
       return;
-    case Gr.Cemetery: if (x % 3 === 0 && y % 3 === 0) { g.fillStyle = '#e8e8e0'; g.fillRect(px + 5, py + 3, 6, 9); g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(px + 5, py + 12, 6, 2); } return;
+    case Gr.Cemetery: if (x % 3 === 0 && y % 3 === 0) { g.fillStyle = '#e8e8e0'; g.fillRect(px + 6, py + 2, 6, 10); g.fillStyle = '#c8c8c0'; g.fillRect(px + 6, py + 2, 6, 2); g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(px + 6, py + 12, 8, 2); } return;
     case Gr.Beach: if (r < 0.006) umbrella(g, px, py, hash(x, y, 32)); else if (r < 0.01) rock(g, px, py); return;
     case Gr.Plaza:
       if (x >= 640 && x <= 720 && y >= 440 && y <= 540 && x % 7 === 0 && y % 6 === 0) stall(g, px, py, hash(x, y, 61));
