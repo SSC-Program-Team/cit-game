@@ -2,6 +2,10 @@
 
 **A pixel-art life sim that teaches networking to HKDSE ICT students.**
 
+> **2026-10-30:** the game now covers F1–F6 and the whole DSE ICT compulsory part, set in Stanley
+> village. [stanley-expansion.md](stanley-expansion.md) records those decisions and overrides this
+> document where they disagree.
+
 | | |
 |---|---|
 | **Status** | Concept v0.3 — direction agreed, systems drafted, UI decluttered to a spec, demo not yet built |

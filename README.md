@@ -8,8 +8,13 @@ accept is a real networking task, scored.
 
 ![Sham Shui Po at night](docs/mockups/01-city-night.png)
 
-**Status:** playable slice (v0.3) — walkable Tung Tau Wan Road at night, one graded job that pays,
-Stanley shopfronts that are shut for now, procedural music and SFX, saves.
+**Status:** playable slice (v0.5) — a top-down Stanley village you walk around, freelance gigs on
+the market notice board, two employers that send work tasks in real time (and fire you), a computer
+shop, courses at Stanley Plaza, free study at the library, a warning-then-jail law system, and a
+62-question MC bank: junior ICT/CIT, coding and AI for F1–3, and the five DSE ICT compulsory modules
+for F4–6. The networking console jobs from v0.4 are still there.
+
+**Read first:** [Stanley expansion plan](docs/design/stanley-expansion.md) — the decisions behind v0.5.
 
 ![Tung Tau Wan Road, v0.3](docs/mockups/v03-city.png)
 ![The job screen, v0.3](docs/mockups/v03-job.png)
@@ -22,10 +27,20 @@ npm install && npm run build          # -> dist/
 rsync -rc --delete dist/ developer@172.100.0.211:/var/www/html/cit-game/
 ```
 
-WASD / arrows to walk, **E** to interact, tap works the same on an iPad, **M** mutes. The first job is
-陳太's tea shop: read the console, name the fault, get paid. The other Stanley shopfronts — the
-restaurant, the store, the market, the bakery, Stanley Plaza — are shut and only give you a line of
-flavour for now; they are the next place to hang real jobs.
+WASD / arrows or tap to walk, **E** to use a place, **I** (or the `i` button) for your status,
+**M** mutes. In a quiz, **A–D** or **1–4** answers and **Enter** moves on. You start at the bus
+terminus with a used laptop and $1,280.
+
+| Where | What |
+|---|---|
+| Notice board, Stanley Market | freelance gigs: one-off, paid per right answer, need your own gear |
+| Bayview Café / Tide Restaurant (Murray House) | employment: a work task every 5 real hours; relaxed boss fires at 5 days, strict at 3 |
+| Pixel Fix | laptops, tools, software licences |
+| Phone stall | pirated software and two illegal side jobs |
+| Stanley Plaza | courses with a 5-question exam; Tide Restaurant wants the IT support certificate |
+| Stanley Public Library | free practice by topic, with explanations |
+| Stanley Police Station | your record |
+| Bus shelter | go home, sleep, next day |
 
 ## What v0.3 changed
 
@@ -76,9 +91,11 @@ copy those values into the game, do not invent a second style.
 **Layout rule:** one focus surface per screen, three permanent numbers, one prompt line,
 and edges only on things that are physical objects. See §7.1 of the design doc.
 
-## Planned stack
+## Stack
 
-Phaser 3 + TypeScript + Vite, content in JSON, static deploy to GitHub Pages.
+TypeScript + Vite, one 640×360 canvas, no Phaser and no backend. Content is TypeScript data
+(`src/questions.ts`, `src/economy.ts`, `src/jobs.ts`, `src/world.ts`), checked at build time by
+`npm run check`.
 
 Runs in a browser on **school laptops (keyboard + mouse) and iPads (touch, landscape)**:
 fixed 384 px design width with fluid height (216–272), every touch target ≥24 px

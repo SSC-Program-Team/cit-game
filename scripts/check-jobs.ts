@@ -5,6 +5,10 @@
  *   node --experimental-strip-types scripts/check-jobs.ts
  */
 import { JOBS, MISSIONS, OFFER, CHARSET, type JobDef } from '../src/jobs.ts';
+import { QUESTIONS, TOPIC_TIER, type Topic } from '../src/questions.ts';
+import { GIGS, COURSES, EMPLOYERS, ITEMS, OFFENCES, COURSE_QUESTIONS, TASK_QUESTIONS } from '../src/economy.ts';
+import { FONT_CHARS } from '../src/font.ts';
+import { PLACES, solidTile } from '../src/world.ts';
 
 const errors: string[] = [];
 
@@ -57,8 +61,43 @@ fits('offer take', OFFER.take, 46);
 fits('offer walk', OFFER.walk, 46);
 for (const [k, v] of Object.entries(OFFER.crime)) fits(`offer crime ${k}`, v, 56);
 
+// ---- the MC bank: mixed-case prose, so the full font applies
+function prose(where: string, s: string, max: number): void {
+  for (const ch of s) if (ch !== '\n' && !FONT_CHARS.includes(ch)) errors.push(`${where}: '${ch}' is not in the font: ${s}`);
+  if (s.length > max) errors.push(`${where}: ${s.length} > ${max} chars`);
+}
+const qids = new Set<string>();
+for (const q of QUESTIONS) {
+  const at = `question ${q.id}`;
+  if (qids.has(q.id)) errors.push(`duplicate question id ${q.id}`);
+  qids.add(q.id);
+  if (TOPIC_TIER[q.topic] !== q.tier) errors.push(`${at}: topic ${q.topic} is not ${q.tier}`);
+  prose(`${at} q`, q.q, 360);
+  if (q.q.split('\n').length > 7) errors.push(`${at}: more than 7 lines`);
+  prose(`${at} why`, q.why, 300);
+  if (q.options.length !== 4) errors.push(`${at}: needs 4 options`);
+  if (new Set(q.options).size !== q.options.length) errors.push(`${at}: options repeat`);
+  if (!(q.answer >= 0 && q.answer < 4)) errors.push(`${at}: answer out of range`);
+  q.options.forEach((o, i) => prose(`${at} option ${i + 1}`, o, 84));
+}
+const count = (topics: Topic[]): number => QUESTIONS.filter((q) => topics.includes(q.topic)).length;
+for (const g of GIGS) {
+  if (count(g.topics) < g.questions) errors.push(`gig ${g.id}: only ${count(g.topics)} questions for ${g.questions}`);
+  for (const t of g.topics) if (TOPIC_TIER[t] !== g.tier) errors.push(`gig ${g.id}: topic ${t} is not ${g.tier}`);
+  for (const n of g.needs) if (!ITEMS.some((i) => i.provides === n)) errors.push(`gig ${g.id}: nothing provides ${n}`);
+}
+for (const c of COURSES) if (count(c.topics) < COURSE_QUESTIONS) errors.push(`course ${c.id}: too few questions`);
+for (const e of EMPLOYERS) {
+  if (count(e.topics) < TASK_QUESTIONS) errors.push(`employer ${e.id}: too few questions`);
+  if (!PLACES.some((p) => p.id === e.place)) errors.push(`employer ${e.id}: no place ${e.place}`);
+  for (const n of e.needs) if (!COURSES.some((c) => c.id === n)) errors.push(`employer ${e.id}: unknown course ${n}`);
+}
+for (const o of Object.values(OFFENCES)) for (const k of ['law', 'offence', 'act', 'fix'] as const) fits(`offence ${o.id} ${k}`, o[k], 64);
+for (const p of PLACES) if (solidTile(p.tx, p.ty)) errors.push(`place ${p.id}: its tile ${p.tx},${p.ty} is solid`);
+for (const j of [...JOBS, ...MISSIONS]) if (!PLACES.some((p) => p.id === j.spot)) errors.push(`job ${j.id}: no place ${j.spot}`);
+
 if (errors.length) {
   console.error(errors.join('\n'));
   process.exit(1);
 }
-console.log(`jobs ok: ${JOBS.length} jobs, ${MISSIONS.length} missions`);
+console.log(`content ok: ${JOBS.length} jobs, ${MISSIONS.length} missions, ${QUESTIONS.length} questions (${QUESTIONS.filter((q) => q.tier === 'junior').length} junior), ${GIGS.length} gigs`);

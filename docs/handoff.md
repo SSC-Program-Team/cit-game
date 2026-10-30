@@ -5,8 +5,35 @@ traps that cost time.
 
 - **Repo:** <https://github.com/SSC-Program-Team/cit-game> (private, `main`)
 - **Live:** <https://ai.ssc.edu.hk/cit-game/> — a static build served by school Apache
-- **Status:** playable slice, v0.4. One street, two jobs, two sudden missions, a shady offer, prison
-  lockout, saves, audio, ambience, repainted street.
+- **Status:** playable slice, v0.5. Top-down Stanley village, MC gigs and work tasks, employers on a
+  real-time clock, shop, courses, library, warning-then-jail. See
+  [stanley-expansion.md](design/stanley-expansion.md) for the decisions. The v0.4 notes below still
+  hold for the console jobs, missions and prison; where they mention `map.png`, the road band or
+  spot anchors, they describe the old side-on street, which v0.5 replaced.
+
+## v0.5 in one screen
+
+| Path | What it is |
+|---|---|
+| `src/world.ts` | The map: ground painted from rectangles, `BUILDINGS`, `PLACES` (what you can use, on which tile), collision, BFS `findPath` for tap-to-walk, and `renderWorld()` which draws everything once into an offscreen canvas |
+| `src/questions.ts` | The MC bank. Four options, one answer, an explanation. Tier `junior` (J1–J4) or `dse` (A–E). All original — **do not paste HKEAA past-paper questions** |
+| `src/economy.ts` | Items, Pixel Fix and pirate stock, courses, employers, gigs, the daily board, offences |
+| `src/font.ts` | The pixel font as a glyph table (caps from `pixelart.py` plus lowercase). Replaces `font.png` |
+| `src/state.ts` | Save v2. A v1 save migrates: money and progress kept, position reset |
+| `src/main.ts` | Modes in priority order: prison, console job, quiz, menu, village |
+
+- **Real time on purpose.** `state.work.tasks` holds wall-clock issue times. `tickWork()` runs at
+  start and every second: it issues tasks that fell due (every 5 h, max 4 waiting), warns at half the
+  firing limit and fires at the limit (strict 3 days, relaxed 5). Test with `__skip(hours)`.
+- **The law is deterministic.** A gig done with a pirated licence ends with a police check. First
+  offence of any kind and not serious: $500 fine, pirated items confiscated, a record entry. Any
+  later offence, or a serious one (selling discs, leaking the customer list, the console-job
+  crimes): jail for 30 real minutes.
+- **Test hooks:** `__goto(placeId)` stands you at a place and uses it; `__quiz()` exposes the right
+  answer; `__menu()`; `__skip(h)`; `__reset()`; plus the v0.4 hooks.
+- **Build in a sandbox without npm:** if the registry is blocked, `tsc --noEmit` and
+  `esbuild src/main.ts --bundle --format=esm` give a playable bundle; `npm run build` is still the
+  real build.
 
 ## What the game is
 
