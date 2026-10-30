@@ -13,11 +13,11 @@ import {
   TILE, MAP_W, MAP_H, PLACES, START, RELEASE, renderWorld, solidAt, solidTile, findPath, ground,
   type Place,
 } from './world';
-import { QUESTIONS, TOPIC_NAMES, type Question, type Tier, type Topic } from './questions';
+import { QUESTIONS, TOPIC_NAMES, FORM_RATE, type Form, type Question, type Tier, type Topic } from './questions';
 import {
   ITEMS, item, SHOP_STOCK, PIRATE_STOCK, NEED_NAMES, COURSES, COURSE_QUESTIONS, COURSE_PASS,
   EMPLOYERS, TASK_EVERY, TASK_CAP, TASK_QUESTIONS, REHIRE_WAIT, fireAfter, DAY, HOUR,
-  boardFor, OFFENCES, WARNING_FINE, type Employer, type Gig, type Offence,
+  boardFor, gigRate, OFFENCES, WARNING_FINE, type Employer, type Gig, type Offence,
 } from './economy';
 
 const W = 640;
@@ -180,9 +180,17 @@ let frames = 0;
 let tickTimer = 0;
 let worldImg: HTMLCanvasElement;
 const walkers: Walker[] = [];
-const cars = [
-  { x: 61.5 * TILE, y: 26 * TILE, vx: 0, vy: -70, w: 12, h: 22, colour: '#c8382f', wait: 0 },
-  { x: 80 * TILE, y: 24.6 * TILE, vx: -80, vy: 0, w: 22, h: 12, colour: '#e0e0e8', wait: 3 },
+/** cars drive a road from one end to the other, wait, and come round again */
+type Car = { x: number; y: number; from: [number, number]; to: [number, number]; v: number; w: number; h: number; colour: string; wait: number };
+const car = (from: [number, number], to: [number, number], v: number, colour: string, wait: number): Car => ({
+  x: from[0] * TILE, y: from[1] * TILE, from, to, v, colour, wait,
+  w: from[0] === to[0] ? 12 : 22, h: from[0] === to[0] ? 22 : 12,
+});
+const cars: Car[] = [
+  car([52.5, 41], [52.5, -2], 70, '#c8382f', 0),
+  car([51.6, -2], [51.6, 40], 64, '#e0e0e8', 4),
+  car([54, 40.6], [84, 40.6], 60, '#3a6ac8', 7),
+  car([62, 9.6], [55, 9.6], 40, '#3aa86a', 2),
 ];
 
 function say(title: string, line: string): void {
@@ -256,8 +264,8 @@ function prepare(q: Question): Prepared {
   return { q, options: order.map((i) => q.options[i]), answer: order.indexOf(q.answer) };
 }
 
-function drawQuestions(topics: Topic[], n: number): Prepared[] {
-  const pool = QUESTIONS.filter((q) => topics.includes(q.topic));
+function drawQuestions(topics: Topic[], n: number, forms: [Form, Form] = [1, 6]): Prepared[] {
+  const pool = QUESTIONS.filter((q) => topics.includes(q.topic) && q.form >= forms[0] && q.form <= forms[1]);
   const fresh = pool.filter((q) => !state.seen.includes(q.id)).sort(() => Math.random() - 0.5);
   const stale = pool.filter((q) => state.seen.includes(q.id)).sort(() => Math.random() - 0.5);
   return [...fresh, ...stale].slice(0, n).map(prepare);
@@ -267,6 +275,8 @@ class Quiz {
   i = 0;
   picked: number | null = null;
   right = 0;
+  /** the form of each question answered right: gigs pay by it */
+  rightForms: Form[] = [];
   summary: string[] | null = null;
   summaryColour = '#7be08a';
 
@@ -289,7 +299,7 @@ class Quiz {
     const p = this.current;
     const ok = i === p.answer;
     state.answered += 1;
-    if (ok) { this.right += 1; state.right += 1; audio.play('ok'); } else audio.play('bad');
+    if (ok) { this.right += 1; this.rightForms.push(p.q.form); state.right += 1; audio.play('ok'); } else audio.play('bad');
     addMastery(p.q.topic, ok ? 4 : -2);
     state.seen = [p.q.id, ...state.seen.filter((s) => s !== p.q.id)].slice(0, 24);
     save();
@@ -563,7 +573,7 @@ function openEmployer(e: Employer): void {
 }
 
 function startWorkTask(e: Employer): void {
-  startQuiz(new Quiz(`work task - ${e.name}`, `${e.boss} is watching`, e.tier, drawQuestions(e.topics, TASK_QUESTIONS),
+  startQuiz(new Quiz(`work task - ${e.name}`, `${e.boss} is watching`, e.tier, drawQuestions(e.topics, TASK_QUESTIONS, e.forms),
     (right, n) => {
       const w = state.work;
       addMoney(e.wage);
@@ -605,16 +615,16 @@ function openBoard(): void {
   const gigs = boardFor(state.day);
   openMenu({
     title: `notice board - day ${state.day}`,
-    line: 'freelance gigs. one-off, paid per right answer, and you bring your own gear. new gigs every day: take the bus home to sleep.',
+    line: 'freelance gigs. one-off, and you bring your own gear. each right answer pays by its level: f1 work pays least, f6 most. new gigs every day.',
     items: [
       ...gigs.map((g): MenuItem => {
         const done = state.gigs.includes(`${state.day}:${g.id}`);
         const missing = g.needs.filter((n) => !has(n));
-        const top = Math.round((g.payEach * g.questions * payBoost()) / 10) * 10;
+        const top = Math.round((gigRate(g) * g.questions * payBoost()) / 10) * 10;
         return {
           label: `[${g.tier === 'dse' ? 'dse' : 'junior'}] ${g.title}`,
-          right: done ? 'done' : `up to ${money(top)}`,
-          sub: `${g.client}, ${g.place} - ${g.questions} qs - ${g.needs.length ? `needs ${g.needs.map((n) => NEED_NAMES[n] ?? n).join(', ')}` : 'no gear needed'}`,
+          right: done ? 'done' : `about ${money(top)}`,
+          sub: `${g.client}, ${g.place} - f${g.forms[0]}-${g.forms[1]}, ${g.questions} qs - ${g.needs.length ? `needs ${g.needs.map((n) => NEED_NAMES[n] ?? n).join(', ')}` : 'no gear needed'}`,
           colour: g.tier === 'dse' ? '#ffc84a' : '#7be0d0',
           off: done || missing.length > 0 || state.energy <= 0,
           why: done ? 'already done today' : missing.length ? `you need: ${missing.map((n) => NEED_NAMES[n] ?? n).join(', ')}` : 'too tired. take the bus home and sleep',
@@ -628,9 +638,10 @@ function openBoard(): void {
 
 function startGig(g: Gig): void {
   const pirated = g.needs.some((n) => owns(n) && !ownsLegit(n) && !laptopCovers(n));
-  startQuiz(new Quiz(`gig - ${g.title}`, `${g.client}, ${g.place}`, g.tier, drawQuestions(g.topics, g.questions),
+  startQuiz(new Quiz(`gig - ${g.title}`, `${g.client}, ${g.place}`, g.tier, drawQuestions(g.topics, g.questions, g.forms),
     (right, n, qz) => {
-      const pay = Math.round((right * g.payEach * payBoost()) / 10) * 10;
+      const earned = qz.rightForms.reduce((sum, f) => sum + FORM_RATE[f], 0);
+      const pay = Math.round((earned * g.mult * payBoost()) / 10) * 10;
       state.gigs = [...state.gigs.filter((k) => Number(k.split(':')[0]) >= state.day - 2), `${state.day}:${g.id}`];
       state.energy = Math.max(0, state.energy - 1);
       addMinutes(g.minutes);
@@ -736,7 +747,7 @@ function openCourses(): void {
           off: passed || state.money < c.price, why: passed ? 'you have this certificate' : 'not enough money',
           act: () => {
             addMoney(-c.price);
-            startQuiz(new Quiz(`exam - ${c.name}`, 'stanley plaza training centre', c.tier, drawQuestions(c.topics, COURSE_QUESTIONS),
+            startQuiz(new Quiz(`exam - ${c.name}`, 'stanley plaza training centre', c.tier, drawQuestions(c.topics, COURSE_QUESTIONS, c.forms),
               (right, n, qz) => {
                 addMinutes(90);
                 if (right >= COURSE_PASS) {
@@ -999,13 +1010,18 @@ function nearestPlace(): Place | null {
 
 function areaName(): string {
   const tx = player.x / TILE, ty = player.y / TILE;
-  if (tx >= 58 && ty >= 23) return 'tung tau wan road';
-  if (tx >= 58) return 'stanley village road';
-  if (ty >= 25) return 'stanley main street';
-  if (tx < 18) return 'stanley plaza';
-  if (ty < 13) return 'stanley market road';
-  if (tx >= 30) return 'stanley market';
-  return 'stanley new street';
+  if (ty >= 43 && tx >= 77) return 'stanley prison';
+  if (ty >= 43) return "st stephen's college";
+  if (ty >= 37) return 'tung tau wan road';
+  if (tx >= 55 && ty < 12) return 'stanley main beach';
+  if (tx >= 55 && ty < 20) return 'bus terminus';
+  if (tx >= 49) return 'stanley village road';
+  if (ty >= 33) return 'stanley main street';
+  if (tx < 15 && ty < 13) return 'ma hang';
+  if (tx < 28) return 'stanley plaza';
+  if (ty < 21) return 'stanley market road';
+  if (tx >= 35 && tx < 39) return 'stanley new street';
+  return 'stanley market';
 }
 
 // ------------------------------------------------------------------ input ---
@@ -1130,7 +1146,8 @@ function move(dx: number, dy: number): boolean {
 }
 
 const WAYPOINTS: Array<[number, number]> = [
-  [10, 26], [25, 27], [40, 26], [55, 27], [34, 18], [45, 23], [10, 12], [30, 9], [50, 9], [59, 15], [68, 27], [9, 33],
+  [8, 34], [22, 34], [36, 34], [48, 34], [36, 26], [42, 21], [14, 24], [24, 14], [36, 20], [58, 18],
+  [50, 10], [65, 9], [60, 41], [76, 41], [18, 40], [9, 20],
 ];
 
 function spawnWalkers(): void {
@@ -1165,10 +1182,11 @@ function updateWalkers(dt: number): void {
 function updateCars(dt: number): void {
   for (const c of cars) {
     if (c.wait > 0) { c.wait -= dt; continue; }
-    c.x += c.vx * dt;
-    c.y += c.vy * dt;
-    if (c.vy < 0 && c.y < -40) { c.y = 26 * TILE; c.wait = 3 + Math.random() * 5; }
-    if (c.vx < 0 && c.x < 58 * TILE) { c.x = MAP_W * TILE + 20; c.wait = 4 + Math.random() * 6; }
+    const tx = c.to[0] * TILE, ty = c.to[1] * TILE;
+    const d = Math.hypot(tx - c.x, ty - c.y);
+    if (d < 2) { c.x = c.from[0] * TILE; c.y = c.from[1] * TILE; c.wait = 3 + Math.random() * 6; continue; }
+    c.x += ((tx - c.x) / d) * c.v * dt;
+    c.y += ((ty - c.y) / d) * c.v * dt;
   }
 }
 
@@ -1342,11 +1360,11 @@ function drawCity(): void {
   }
 
   // the bus at the terminus
-  const bx = 67 * TILE - cam.x, by = 6 * TILE + 2 - cam.y;
-  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(bx + 3, by + 3, 120, 22);
-  ctx.fillStyle = '#e8c23a'; ctx.fillRect(bx, by, 120, 22);
-  ctx.fillStyle = '#c84a2a'; ctx.fillRect(bx, by + 16, 120, 6);
-  ctx.fillStyle = '#3a5a7a'; for (let i = 6; i < 112; i += 14) ctx.fillRect(bx + i, by + 4, 10, 8);
+  const bx = 56 * TILE + 8 - cam.x, by = 15 * TILE + 4 - cam.y;
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(bx + 3, by + 3, 100, 22);
+  ctx.fillStyle = '#e8c23a'; ctx.fillRect(bx, by, 100, 22);
+  ctx.fillStyle = '#c84a2a'; ctx.fillRect(bx, by + 16, 100, 6);
+  ctx.fillStyle = '#3a5a7a'; for (let i = 6; i < 94; i += 14) ctx.fillRect(bx + i, by + 4, 10, 8);
   text('6 central', bx + 4, by - 9, '#e8e4d8');
 
   for (const c of cars) {
@@ -1355,7 +1373,7 @@ function drawCity(): void {
     ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(cx - c.w / 2 + 2, cy - c.h / 2 + 2, c.w, c.h);
     ctx.fillStyle = c.colour; ctx.fillRect(cx - c.w / 2, cy - c.h / 2, c.w, c.h);
     ctx.fillStyle = '#1a2a3a';
-    if (c.vy) ctx.fillRect(cx - c.w / 2 + 2, cy - c.h / 2 + 4, c.w - 4, 5);
+    if (c.w < c.h) ctx.fillRect(cx - c.w / 2 + 2, cy - c.h / 2 + 4, c.w - 4, 5);
     else ctx.fillRect(cx - c.w / 2 + 4, cy - c.h / 2 + 2, 5, c.h - 4);
   }
 
@@ -1482,7 +1500,7 @@ function drawQuiz(): void {
 
   const p = qz.current;
   textRight(`${qz.i + 1} / ${qz.qs.length}`, 628, 10, '#9aa0b8');
-  textRight(TOPIC_NAMES[p.q.topic], 628, 25, '#6f7688');
+  textRight(`f${p.q.form} - ${TOPIC_NAMES[p.q.topic]}`, 628, 25, '#6f7688');
   const { qLines, optTop } = quizLayout();
   qLines.forEach((l, i) => prose(l, 24, 50 + i * 11, l.startsWith(' ') ? '#7be08a' : '#ffffff'));
 
@@ -1781,3 +1799,5 @@ hooks.__goto = (id: string) => { const p = PLACES.find((x) => x.id === id); if (
 hooks.__reset = () => { reset(); location.reload(); };
 hooks.__items = ITEMS.map((i) => i.id);
 hooks.__day = DAY;
+/** the whole map as a PNG data URL, for checking the layout */
+hooks.__world = () => worldImg.toDataURL();

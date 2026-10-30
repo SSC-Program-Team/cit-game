@@ -11,8 +11,9 @@ accept is a real networking task, scored.
 **Status:** playable slice (v0.5) — a top-down Stanley village you walk around, freelance gigs on
 the market notice board, two employers that send work tasks in real time (and fire you), a computer
 shop, courses at Stanley Plaza, free study at the library, a warning-then-jail law system, and a
-62-question MC bank: junior ICT/CIT, coding and AI for F1–3, and the five DSE ICT compulsory modules
-for F4–6. The networking console jobs from v0.4 are still there.
+62-question MC bank tagged F1–F6 (junior ICT/CIT, coding and AI up to F3; the five DSE ICT
+compulsory modules from F4), where harder questions pay more. The map is drawn from the real
+coordinates of Stanley's landmarks. The networking console jobs from v0.4 are still there.
 
 **Read first:** [Stanley expansion plan](docs/design/stanley-expansion.md) — the decisions behind v0.5.
 
@@ -90,6 +91,16 @@ copy those values into the game, do not invent a second style.
 
 **Layout rule:** one focus surface per screen, three permanent numbers, one prompt line,
 and edges only on things that are physical objects. See §7.1 of the design doc.
+
+## Adding questions
+
+Fill in `content/question-bank-template.csv` (one row per MC: form 1–6, topic, question, four
+options, answer letter, explanation), then:
+
+```bash
+npm run import -- content/your-bank.csv   # writes src/questions-imported.ts
+npm run check                             # validates every question
+```
 
 ## Stack
 

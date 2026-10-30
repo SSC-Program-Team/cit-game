@@ -5,7 +5,7 @@
  *   node --experimental-strip-types scripts/check-jobs.ts
  */
 import { JOBS, MISSIONS, OFFER, CHARSET, type JobDef } from '../src/jobs.ts';
-import { QUESTIONS, TOPIC_TIER, type Topic } from '../src/questions.ts';
+import { QUESTIONS, TOPIC_TIER, tierOf, type Form, type Topic } from '../src/questions.ts';
 import { GIGS, COURSES, EMPLOYERS, ITEMS, OFFENCES, COURSE_QUESTIONS, TASK_QUESTIONS } from '../src/economy.ts';
 import { FONT_CHARS } from '../src/font.ts';
 import { PLACES, solidTile } from '../src/world.ts';
@@ -72,6 +72,7 @@ for (const q of QUESTIONS) {
   if (qids.has(q.id)) errors.push(`duplicate question id ${q.id}`);
   qids.add(q.id);
   if (TOPIC_TIER[q.topic] !== q.tier) errors.push(`${at}: topic ${q.topic} is not ${q.tier}`);
+  if (!(q.form >= 1 && q.form <= 6) || tierOf(q.form) !== q.tier) errors.push(`${at}: form ${q.form} does not match ${q.tier}`);
   prose(`${at} q`, q.q, 360);
   if (q.q.split('\n').length > 7) errors.push(`${at}: more than 7 lines`);
   prose(`${at} why`, q.why, 300);
@@ -80,15 +81,17 @@ for (const q of QUESTIONS) {
   if (!(q.answer >= 0 && q.answer < 4)) errors.push(`${at}: answer out of range`);
   q.options.forEach((o, i) => prose(`${at} option ${i + 1}`, o, 84));
 }
-const count = (topics: Topic[]): number => QUESTIONS.filter((q) => topics.includes(q.topic)).length;
+const count = (topics: Topic[], forms: [Form, Form] = [1, 6]): number =>
+  QUESTIONS.filter((q) => topics.includes(q.topic) && q.form >= forms[0] && q.form <= forms[1]).length;
 for (const g of GIGS) {
-  if (count(g.topics) < g.questions) errors.push(`gig ${g.id}: only ${count(g.topics)} questions for ${g.questions}`);
+  if (count(g.topics, g.forms) < g.questions) errors.push(`gig ${g.id}: only ${count(g.topics, g.forms)} questions for ${g.questions}`);
+  if (tierOf(g.forms[0]) !== g.tier || tierOf(g.forms[1]) !== g.tier) errors.push(`gig ${g.id}: forms do not match ${g.tier}`);
   for (const t of g.topics) if (TOPIC_TIER[t] !== g.tier) errors.push(`gig ${g.id}: topic ${t} is not ${g.tier}`);
   for (const n of g.needs) if (!ITEMS.some((i) => i.provides === n)) errors.push(`gig ${g.id}: nothing provides ${n}`);
 }
-for (const c of COURSES) if (count(c.topics) < COURSE_QUESTIONS) errors.push(`course ${c.id}: too few questions`);
+for (const c of COURSES) if (count(c.topics, c.forms) < COURSE_QUESTIONS) errors.push(`course ${c.id}: too few questions`);
 for (const e of EMPLOYERS) {
-  if (count(e.topics) < TASK_QUESTIONS) errors.push(`employer ${e.id}: too few questions`);
+  if (count(e.topics, e.forms) < TASK_QUESTIONS) errors.push(`employer ${e.id}: too few questions`);
   if (!PLACES.some((p) => p.id === e.place)) errors.push(`employer ${e.id}: no place ${e.place}`);
   for (const n of e.needs) if (!COURSES.some((c) => c.id === n)) errors.push(`employer ${e.id}: unknown course ${n}`);
 }

@@ -6,7 +6,8 @@
   "scripts": {
     "build": "npm run check && tsc --noEmit && vite build",
     "check": "node --experimental-strip-types --no-warnings scripts/check-jobs.ts",
-    "dev": "vite"
+    "dev": "vite",
+    "import": "node --experimental-strip-types --no-warnings scripts/import-questions.ts"
   },
   "devDependencies": {
     "typescript": "^5.4.5",

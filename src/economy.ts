@@ -3,7 +3,7 @@
  * offences that send you to the police. All of it is data; main.ts runs it.
  * See docs/design/stanley-expansion.md §4-6.
  */
-import type { Tier, Topic } from './questions';
+import { FORM_RATE, type Form, type Tier, type Topic } from './questions.ts';
 
 // ------------------------------------------------------------------ items ---
 export type ItemKind = 'laptop' | 'tool' | 'licence' | 'pirated';
@@ -67,15 +67,16 @@ export type Course = {
   price: number;
   tier: Tier;
   topics: Topic[];
+  forms: [Form, Form];
   blurb: string;
 };
 
 export const COURSES: Course[] = [
-  { id: 'c.junior', name: 'junior digital skills', price: 300, tier: 'junior', topics: ['J1', 'J2', 'J4'],
+  { id: 'c.junior', name: 'junior digital skills', price: 300, tier: 'junior', topics: ['J1', 'J2', 'J4'], forms: [1, 3],
     blurb: 'basics, staying safe online, and ai.' },
-  { id: 'c.support', name: 'it support certificate', price: 900, tier: 'dse', topics: ['B', 'C'],
+  { id: 'c.support', name: 'it support certificate', price: 900, tier: 'dse', topics: ['B', 'C'], forms: [4, 6],
     blurb: 'hardware, operating systems, networks. tide restaurant asks for it.' },
-  { id: 'c.code', name: 'python programming', price: 1200, tier: 'dse', topics: ['D'],
+  { id: 'c.code', name: 'python programming', price: 1200, tier: 'dse', topics: ['D'], forms: [4, 6],
     blurb: 'algorithms, tracing and testing.' },
 ];
 
@@ -91,7 +92,8 @@ export type Employer = {
   boss: string;
   tier: Tier;
   topics: Topic[];
-  /** paid for every completed work task, whatever the score */
+  forms: [Form, Form];
+  /** paid for every completed work task, whatever the score; easier work pays less */
   wage: number;
   /** strict bosses fire at 3 days, relaxed at 5 */
   strict: boolean;
@@ -102,10 +104,10 @@ export type Employer = {
 };
 
 export const EMPLOYERS: Employer[] = [
-  { id: 'cafe', place: 'cafe', name: 'bayview cafe', boss: 'miss ho', tier: 'junior', topics: ['J1', 'J2', 'J4'],
+  { id: 'cafe', place: 'cafe', name: 'bayview cafe', boss: 'miss ho', tier: 'junior', topics: ['J1', 'J2', 'J4'], forms: [1, 3],
     wage: 280, strict: false, needs: [], cleanDays: 0,
     pitch: 'help with the till, the wi-fi and our social media. relaxed hours.' },
-  { id: 'tide', place: 'murray', name: 'tide restaurant', boss: 'mr cheung', tier: 'dse', topics: ['A', 'B', 'C', 'E'],
+  { id: 'tide', place: 'murray', name: 'tide restaurant', boss: 'mr cheung', tier: 'dse', topics: ['A', 'B', 'C', 'E'], forms: [4, 6],
     wage: 420, strict: true, needs: ['c.support'], cleanDays: 14,
     pitch: 'run it for the restaurant: bookings, network, data. i check everything.' },
 ];
@@ -129,40 +131,49 @@ export type Gig = {
   tier: Tier;
   topics: Topic[];
   questions: number;
-  /** paid per right answer, before the laptop boost */
-  payEach: number;
+  /** which forms' questions this gig draws: easier gigs draw lower forms and pay less */
+  forms: [Form, Form];
+  /** on top of each right answer's form rate: gear-heavy gigs pay more */
+  mult: number;
   needs: string[];
   minutes: number;
 };
 
 export const GIGS: Gig[] = [
   { id: 'g.menu', client: 'chan tai', place: 'tea shop', title: 'type up the new menu',
-    tier: 'junior', topics: ['J1'], questions: 4, payEach: 130, needs: ['office'], minutes: 60 },
+    tier: 'junior', topics: ['J1'], questions: 4, forms: [1, 2], mult: 1.3, needs: ['office'], minutes: 60 },
   { id: 'g.poster', client: 't-shirt stall', place: 'stanley market', title: 'design a sale poster',
-    tier: 'junior', topics: ['J2'], questions: 4, payEach: 140, needs: ['photo'], minutes: 90 },
+    tier: 'junior', topics: ['J2'], questions: 4, forms: [1, 2], mult: 1.4, needs: ['photo'], minutes: 90 },
   { id: 'g.chatbot', client: 'stall holders', place: 'stanley market', title: 'explain the new ai chatbot',
-    tier: 'junior', topics: ['J4'], questions: 4, payEach: 120, needs: [], minutes: 60 },
+    tier: 'junior', topics: ['J4'], questions: 4, forms: [2, 3], mult: 1.2, needs: [], minutes: 60 },
   { id: 'g.club', client: 'kids coding club', place: 'stanley library', title: 'help run a coding class',
-    tier: 'junior', topics: ['J3'], questions: 4, payEach: 120, needs: [], minutes: 90 },
+    tier: 'junior', topics: ['J3'], questions: 4, forms: [1, 3], mult: 1.2, needs: [], minutes: 90 },
   { id: 'g.photos', client: 'silk stall', place: 'stanley market', title: 'product photos for a web shop',
-    tier: 'junior', topics: ['J1', 'J2'], questions: 5, payEach: 170, needs: ['camera', 'photo'], minutes: 120 },
+    tier: 'junior', topics: ['J1', 'J2'], questions: 5, forms: [1, 2], mult: 1.7, needs: ['camera', 'photo'], minutes: 120 },
   { id: 'g.stock', client: 'the store', place: 'stanley main st', title: 'build a stock spreadsheet',
-    tier: 'dse', topics: ['A'], questions: 4, payEach: 190, needs: ['office'], minutes: 90 },
+    tier: 'dse', topics: ['A'], questions: 4, forms: [4, 5], mult: 1.2, needs: ['office'], minutes: 90 },
   { id: 'g.books', client: 'bakery', place: 'stanley main st', title: 'monthly accounts and invoices',
-    tier: 'dse', topics: ['A', 'E'], questions: 5, payEach: 210, needs: ['accounts'], minutes: 120 },
+    tier: 'dse', topics: ['A', 'E'], questions: 5, forms: [4, 5], mult: 1.3, needs: ['accounts'], minutes: 120 },
   { id: 'g.cable', client: 'plaza office', place: 'stanley plaza', title: 'cable a new office',
-    tier: 'dse', topics: ['C'], questions: 5, payEach: 220, needs: ['tester', 'labeler'], minutes: 150 },
+    tier: 'dse', topics: ['C'], questions: 5, forms: [4, 6], mult: 1.4, needs: ['tester', 'labeler'], minutes: 150 },
   { id: 'g.upgrade', client: 'chops stall', place: 'stanley market', title: 'upgrade an old pc',
-    tier: 'dse', topics: ['B'], questions: 4, payEach: 200, needs: ['laptop2'], minutes: 90 },
+    tier: 'dse', topics: ['B'], questions: 4, forms: [4, 5], mult: 1.25, needs: ['laptop2'], minutes: 90 },
   { id: 'g.privacy', client: 'tide restaurant', place: 'murray house', title: 'write a privacy notice',
-    tier: 'dse', topics: ['E'], questions: 4, payEach: 180, needs: [], minutes: 60 },
+    tier: 'dse', topics: ['E'], questions: 4, forms: [4, 5], mult: 1.1, needs: [], minutes: 60 },
   { id: 'g.script', client: 'bus company', place: 'bus terminus', title: 'fix the timetable script',
-    tier: 'dse', topics: ['D'], questions: 5, payEach: 230, needs: ['laptop2'], minutes: 120 },
+    tier: 'dse', topics: ['D'], questions: 5, forms: [5, 6], mult: 1.3, needs: ['laptop2'], minutes: 120 },
   { id: 'g.wifi', client: 'murray house', place: 'murray house', title: 'guest wi-fi for diners',
-    tier: 'dse', topics: ['C', 'E'], questions: 5, payEach: 240, needs: ['tester', 'laptop2'], minutes: 150 },
+    tier: 'dse', topics: ['C', 'E'], questions: 5, forms: [4, 6], mult: 1.4, needs: ['tester', 'laptop2'], minutes: 150 },
 ];
 
 export const BOARD_SIZE = 4;
+
+/** what one right answer on this gig is worth on average, before the laptop boost */
+export function gigRate(g: Gig): number {
+  let sum = 0;
+  for (let f = g.forms[0]; f <= g.forms[1]; f += 1) sum += FORM_RATE[f as Form];
+  return (sum / (g.forms[1] - g.forms[0] + 1)) * g.mult;
+}
 
 /** the board for an in-game day: deterministic, half junior and half DSE */
 export function boardFor(day: number): Gig[] {

@@ -17,10 +17,10 @@ style.
 |---|---|
 | Map scope | Village core: bus terminus, Stanley Village Rd, Stanley Market, Stanley Main St waterfront, Stanley Plaza, Murray House, Blake Pier, the library, the police station, and the link to Tung Tau Wan Rd (college, prison) |
 | Camera | Top-down, scrolling, north up, traced from the real street layout |
-| Language | English only (the bitmap font stays A–Z, 0–9) |
+| Language | English only (the pixel font now has lowercase for questions; no Chinese) |
 | F1–3 content | Junior ICT/CIT basics, coding and computational thinking, CDC junior AI module |
 | F4–6 content | DSE ICT compulsory part A–E |
-| Form split | **Job tiers, open to all.** Every job and gig is tagged JUNIOR or DSE; anyone can take any |
+| Form split | **Nobody is assigned a form.** Questions range from F1 to F6 and every player sees all of them. Easier work pays less (§3.1) |
 | MC delivery | Inside jobs and gigs (pay depends on answers), plus a free **study spot** at the library |
 | Work | Employment (steady wage, real-time tasks, can be fired) and freelance (one-off, pays more, needs gear) |
 | Upgrades | Equipment, software licences, courses/certificates, and later your own shop |
@@ -29,25 +29,46 @@ style.
 
 ## 2. The map
 
-Real Stanley, compressed so it fits on about three screens each way. North is up. The sea (Stanley
-Bay) is on the west and south-west, as it really is.
+Redrawn on 2026-10-30 from real coordinates. Every landmark's latitude and longitude was taken
+from public sources and mapped to a tile, so directions between landmarks are right: Stanley Bay
+lies **south** of Main Street, Stanley Main Beach is **north-east** of the village on Tai Tam Bay,
+and the college and prison sit on the peninsula to the **south-east**. The mapping is piecewise —
+the village core is drawn larger than the hills and bays around it — so distances are compressed,
+but no landmark is on the wrong side of another. The anchor table lives at the top of
+`src/world.ts`.
 
 ```
-              N   STANLEY VILLAGE RD (from the 6/6X/260/73 buses)
-   ~~~~~~~~     ┌──────────┐ ║
-   ~ STANLEY ~  │ LIBRARY  │ ║  BUS TERMINUS
-   ~   BAY   ~  │ (6 Mkt Rd)│ ║  POLICE STN ── OLD POLICE STN (supermarket)
-   ~~~~~~~~     └──────────┘ ║
-   ~~ MAIN ST ══ MARKET LANES ═╣
-   ~~ cafés,     stalls,       ║
-   ~~ bars       notice board  ║
-   ~~~~~~~~ ═════════════════  ╚═ TUNG TAU WAN RD ─▶ COLLEGE (22) ─▶ PRISON (99)
-   ~ BLAKE PIER  MURRAY HOUSE  STANLEY PLAZA  TIN HAU TEMPLE
-   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  N            MA HANG          (hill)              STANLEY VILLAGE RD     MAIN BEACH ~ TAI TAM
+  ~ CARMEL RD  ESTATE                                  ║   BEACH RD ─────── water sports    BAY ~
+  ~   ║                     LIBRARY   PIXEL FIX       ║   BUS TERMINUS                        ~
+  ~ STANLEY PLAZA      ═══ STANLEY MARKET RD ═══════╣                                    ~
+  ~ TIN HAU   STORE    T-SHIRTS │NEW ST│ SILK PHONES  ║   STANLEY POLICE STATION       ~
+  ~ MURRAY HOUSE  TEA SHOP CAFE │ board│ BAKERY  OLD POLICE STN (supermarket)        ~
+  ~ ═══════════════ STANLEY MAIN ST (promenade) ═══════╣                          ~
+  ~~~~ BLAKE PIER ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ╚═ TUNG TAU WAN RD ═════╗  ~
+  ~~~~~~~~~~ STANLEY BAY ~~~~~~~~~~~~~~ ST STEPHEN'S   ST STEPHEN'S COLLEGE    ║ ~
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ BEACH           MILITARY CEMETERY   STANLEY PRISON
 ```
 
-The layout is approximate and from public sources. Before release, check it against a Lands
-Department map: students will notice a shop on the wrong side of the road.
+| Landmark | Lat, lon | Source |
+|---|---|---|
+| Ma Hang Estate | 22.2214, 114.2065 | Wikipedia |
+| Murray House | 22.2182, 114.2097 | Wikipedia (map centre) |
+| Stanley Market | 22.2188, 114.2120 | Wikipedia |
+| Old Stanley Police Station | 22.2183, 114.2131 | Wikipedia |
+| Stanley Main Beach | 22.2212, 114.2140 | Wikipedia |
+| Stanley Bay (centre) | 22.2162, 114.2112 | Wikipedia |
+| St Stephen's College | 22.2157, 114.2160 | Sygic travel listing |
+| St Stephen's Beach | 22.2130, 114.2148 | Wikipedia |
+| Stanley Prison | 22.2119, 114.2189 | Wikipedia |
+
+Tin Hau Temple is placed from its description ("western end of Stanley Main Street, through Stanley
+Plaza"), Blake Pier from "next to Murray House", the library from its address (6 Stanley Market
+Road) and the new police station as "opposite the old one". The shop rows inside the market are
+invented. Private housing is drawn without names.
+
+Still worth a check against a Lands Department map before release: the exact line of Tung Tau Wan
+Road (drawn as straight segments), and the shape of the Tai Tam Bay coast.
 
 **Naming rule.** Real names are used for public places and landmarks: Stanley Plaza, Murray House,
 Blake Pier, Stanley Market, Stanley Public Library (Stanley Municipal Services Building, 6 Stanley
@@ -58,8 +79,8 @@ and fined, and no real shop should be the one that happens to.
 
 ## 3. Content tiers
 
-Every job, gig and practice question carries a tier and a topic code. Anyone can take anything; the
-board just tells you what you are walking into.
+Every question carries a **form level (F1–F6)** and a topic code. F1–3 questions use the junior
+topics and F4–6 the DSE ones. Players are never assigned a form: everyone sees the whole range.
 
 | Tier | Code | Topic |
 |---|---|---|
@@ -72,6 +93,22 @@ board just tells you what you are walking into.
 | DSE | C | Internet and its applications: networks, IP, DNS, protocols, web, security |
 | DSE | D | Computational thinking and programming: algorithms, pseudocode, testing, data types |
 | DSE | E | Social implications: health and safety, IP and copyright, privacy (PDPO), cybercrime |
+
+### 3.1 Easier work pays less
+
+Each right answer on a gig pays its form's rate, times the gig's gear multiplier and the laptop
+boost: F1 $80, F2 $100, F3 $120, F4 $160, F5 $190, F6 $220 (`FORM_RATE` in `src/questions.ts`).
+Each gig draws questions from a form range (e.g. F1–2 or F5–6), so the board shows roughly what it
+pays. Employment pays a flat wage per task, and the junior-level employer pays less than the DSE one.
+
+### 3.2 The question bank
+
+The owner will supply the main bank. Teachers fill in `content/question-bank-template.csv` (columns
+`id, form, topic, question, a, b, c, d, answer, explanation`) and run
+`npm run import -- path/to/bank.csv`. That writes `src/questions-imported.ts`, which is merged into
+the bank, and rejects rows with a wrong form/topic pairing, a bad answer letter, or characters the
+pixel font cannot draw. The 62 starter questions stay unless they are removed from
+`src/questions.ts`.
 
 **Questions are original.** They are written in the style of DSE Paper 1 MCs and test the same
 skills, but none is copied from an HKEAA past paper. Past papers are HKEAA copyright, and a game
@@ -138,10 +175,10 @@ the case sheet. A teacher should check the wording before students see it.
 
 | Act | Ordinance | Severity |
 |---|---|---|
-| Buying or using pirated software | Copyright Ordinance (Cap. 528) | minor |
-| Selling or distributing pirated copies | Copyright Ordinance (Cap. 528) | serious |
+| Using pirated software for paid work | Copyright Ordinance (Cap. 528) s.31A | minor |
+| Selling or distributing pirated copies | Copyright Ordinance (Cap. 528) s.118 | serious |
 | Logging into a system you were not given access to | Crimes Ordinance (Cap. 200) s.161 | serious |
-| Copying or leaking a client's customer data | Personal Data (Privacy) Ordinance (Cap. 486) | serious |
+| Copying or leaking a client's customer data | Personal Data (Privacy) Ordinance (Cap. 486) s.64 | serious |
 
 - **First minor offence:** a police officer stops you. A written warning and a fine, and the pirated
   item is confiscated. The warning goes on your record.
@@ -167,8 +204,7 @@ What this build delivers, in order:
 
 ## 8. Open questions
 
-1. Should the teacher switch that turns off law consequences for younger classes (§4.11 of the main
-   doc) also apply to F1–3 players automatically?
-2. Who reviews the question bank for accuracy against the current DSE ICT curriculum and
-   assessment framework before students see it?
-3. Is 30 real minutes of jail right for F1 students, or should the sentence scale with severity?
+Answered on 2026-10-30: players do not pick a form, so the law applies the same to everyone; the
+owner will provide the question bank; the map has been redrawn from real coordinates.
+
+1. Should the starter questions be kept alongside the owner's bank, or replaced by it?
