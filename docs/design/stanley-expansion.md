@@ -217,3 +217,47 @@ Answered on 2026-10-30: players do not pick a form, so the law applies the same 
 owner will provide the question bank; the map has been redrawn from real coordinates.
 
 1. Should the starter questions be kept alongside the owner's bank, or replaced by it?
+
+## 9. Gameplay direction (agreed 2026-10-30, for v0.6 onwards)
+
+| Decision | Choice |
+|---|---|
+| When students play | Freely, any time, not tied to lessons |
+| Goal | Be the **richest on the server** (a net-worth leaderboard) |
+| Other players | A leaderboard, competing in one shared job market, and (late game) owning a business. Nothing else: no chat, no trading |
+| Teachers | Admins and observers only. They do not steer what students get |
+
+### 9.1 What those decisions force
+
+1. **A server, with the economy on it.** Today money, answers and the clock live in the browser
+   (localStorage and the device clock), which any student can edit. That is fine for one player and
+   fatal for a leaderboard. The server must own money, the clock and the answer key: the browser
+   sends the choice and gets back right or wrong, never the answer in advance.
+2. **A real-time cap on play.** At the moment taking the bus home starts a new day with full
+   energy, so energy is unlimited and "richest" would just mean "played longest". Proposal: energy
+   comes back in real time (say 1 every 30 minutes, up to 8), and sleeping only moves the in-game
+   clock.
+3. **Accuracy beats volume.** Pay follows right answers, with a streak bonus. A question you have
+   already seen pays less each time, so memorising a shared answer list stops paying. Wrong answers
+   cost reputation.
+4. **One job market per server.** One notice board for everyone: gigs are claimed first come,
+   first served, and employers have a fixed number of jobs and hire the applicants with the best
+   reputation and certificates.
+5. **Money has to drain out**, or the leaderboard is just a record of the past: rent, software
+   licences that expire, gear that wears out, fines, minibus fares, a business's running costs.
+   Net worth counts what you own at resale value, so buying gear never drops you down the board.
+6. **Businesses are real shopfronts.** Late game, a limited number of real Stanley shopfronts can
+   be rented, one player each. Income depends on reputation and on handling incidents (questions);
+   a neglected shop loses customers and can be lost.
+7. **Teacher tools.** Observer: a class view of progress by topic, accuracy and records.
+   Admin: reset or suspend a player, rename an unsuitable shop name, end a season.
+8. **Seasons (proposal).** The leaderboard resets each term, so a student who joins late still has
+   a chance.
+
+### 9.2 Open questions
+
+1. Who builds and hosts the server, and how do students log in (school Microsoft or Google
+   accounts)?
+2. Is "the server" one school, one class, or every school playing together?
+3. Do the real-time work tasks (every 5 hours) stay as they are, now that play is free?
+4. Seasons: yes or no, and how long?

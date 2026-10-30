@@ -2,7 +2,10 @@
 """
 Build src/stanley-cover.ts from a Lands Department-style 3D model export (.glb) of part of Stanley.
 
-    python3 scripts/import-3d.py path/to/ssc-campus.glb
+    python3 scripts/import-3d.py tile1.glb [tile2.glb ...]
+
+Each .glb is one 750 x 600 m tile exported from the Lands Department's 3D Visualisation Map
+(3d.map.gov.hk). Pass every tile you have; neighbouring tiles are stitched together.
 
 What it takes from the model, without decoding the (Draco-compressed) meshes:
   * the terrain's texture, which is an aerial photo of the area, to tell trees, lawn, rock and sand apart;
@@ -21,33 +24,12 @@ from PIL import Image, ImageDraw
 from scipy import ndimage as ndi
 
 ROOT = __file__.rsplit('/scripts/', 1)[0]
-glb_path = sys.argv[1]
-
+glb_paths = sys.argv[1:]
 # ---- the game map (OpenStreetMap, whole metres from the top-left corner)
 src = open(f'{ROOT}/src/stanley-osm.ts').read()
 osm = json.loads(src[src.index('String.raw`') + 11:src.rindex('`')])
 W, H = osm['w'], osm['h']
 lat0, lon0 = osm['origin']
-
-# ---- the model
-b = open(glb_path, 'rb').read()
-jl, = struct.unpack('<I', b[12:16])
-j = json.loads(b[20:20 + jl])
-BIN = 20 + jl + 8
-N, A = j['nodes'], j['accessors']
-
-def image(i):
-    v = j['bufferViews'][j['images'][i]['bufferView']]
-    o = BIN + v.get('byteOffset', 0)
-    return Image.open(BytesIO(b[o:o + v['byteLength']])).convert('RGB')
-
-def tex_source(t):
-    t = j['textures'][t]
-    return t.get('source', t.get('extensions', {}).get('EXT_texture_webp', {}).get('source'))
-
-root = N[j['scenes'][0]['nodes'][0]]
-m = re.match(r'[A-Z](\d{5})(\d{5})', root['name'])
-E0, N0 = 800000 + int(m.group(1)), 800000 + int(m.group(2))  # B39763 08903 -> E 839763, N 808903
 
 # ---- HK1980 Grid -> WGS84 -> game metres
 a_, f_ = 6378388.0, 1 / 297.0
@@ -73,30 +55,62 @@ def hk_to_game(E, Nn):
     lat, lon = math.degrees(lat) - 5.5 / 3600, math.degrees(lon) + 8.8 / 3600  # HK80 -> WGS84 datum
     return (lon - lon0) * 111320 * math.cos(math.radians(lat0)), (lat0 - lat) * 110574
 
-# ---- building tiles: bounding boxes in the model's Z-up metres
-parent = {c: i for i, n in enumerate(N) for c in n.get('children', [])}
-tiles = {}
-for i, n in enumerate(N):
-    if 'mesh' not in n:
-        continue
-    t, p, name = list(n.get('translation', [0, 0, 0])), parent.get(i), None
-    while p is not None and 'rotation' not in N[p]:
-        tr = N[p].get('translation', [0, 0, 0])
-        t = [t[k] + tr[k] for k in range(3)]
-        name, p = N[p]['name'], parent.get(p)
-    if not name:
-        continue
-    for pr in j['meshes'][n['mesh']]['primitives']:
-        ac = A[pr['attributes']['POSITION']]
-        mn = [t[k] + ac['min'][k] for k in range(3)]
-        mx = [t[k] + ac['max'][k] for k in range(3)]
-        if name in tiles:
-            o = tiles[name]
-            mn = [min(o[0][k], mn[k]) for k in range(3)]
-            mx = [max(o[1][k], mx[k]) for k in range(3)]
-        tiles[name] = (mn, mx, n)
-buildings = {k: v for k, v in tiles.items() if k[0] == 'B'}
-terrain = next(v for k, v in tiles.items() if k[0] == 'T')
+# ---- the models: each file is one 1:1000 map tile (750 x 600 m). Positions are kept in metres
+#      from the first file's origin (E0, N0), so several neighbouring tiles fit together.
+E0 = N0 = None
+buildings = {}  # tile name -> (min, max) in metres from (E0, N0), Z up
+terrains = []   # (aerial photo as an array, min, max)
+for path in glb_paths:
+    b = open(path, 'rb').read()
+    jl, = struct.unpack('<I', b[12:16])
+    j = json.loads(b[20:20 + jl])
+    BIN = 20 + jl + 8
+    N, A = j['nodes'], j['accessors']
+
+    def image(i, b=b, j=j, BIN=BIN):
+        v = j['bufferViews'][j['images'][i]['bufferView']]
+        o = BIN + v.get('byteOffset', 0)
+        return Image.open(BytesIO(b[o:o + v['byteLength']])).convert('RGB')
+
+    def tex_source(t, j=j):
+        t = j['textures'][t]
+        return t.get('source', t.get('extensions', {}).get('EXT_texture_webp', {}).get('source'))
+
+    root = N[j['scenes'][0]['nodes'][0]]
+    m = re.match(r'[A-Z](\d{5})(\d{5})', root['name'])
+    fe, fn = 800000 + int(m.group(1)), 800000 + int(m.group(2))  # B39763 08903 -> E 839763, N 808903
+    if E0 is None:
+        E0, N0 = fe, fn
+    dx0, dy0 = fe - E0, fn - N0
+    parent = {c: i for i, n in enumerate(N) for c in n.get('children', [])}
+    tiles = {}
+    for i, n in enumerate(N):
+        if 'mesh' not in n:
+            continue
+        t, q, name = list(n.get('translation', [0, 0, 0])), parent.get(i), None
+        while q is not None and 'rotation' not in N[q]:
+            tr = N[q].get('translation', [0, 0, 0])
+            t = [t[k] + tr[k] for k in range(3)]
+            name, q = N[q]['name'], parent.get(q)
+        if not name:
+            continue
+        for pr in j['meshes'][n['mesh']]['primitives']:
+            ac = A[pr['attributes']['POSITION']]
+            mn = [t[0] + ac['min'][0] + dx0, t[1] + ac['min'][1] + dy0, t[2] + ac['min'][2]]
+            mx = [t[0] + ac['max'][0] + dx0, t[1] + ac['max'][1] + dy0, t[2] + ac['max'][2]]
+            if name in tiles:
+                o = tiles[name]
+                mn = [min(o[0][k], mn[k]) for k in range(3)]
+                mx = [max(o[1][k], mx[k]) for k in range(3)]
+            tiles[name] = (mn, mx, n)
+    for name, (mn, mx, n) in tiles.items():
+        if name[0] == 'B':
+            buildings[name] = (mn, mx)
+        elif name[0] == 'T':
+            mat = j['materials'][j['meshes'][n['mesh']]['primitives'][0]['material']]
+            photo = np.array(image(tex_source(mat['pbrMetallicRoughness']['baseColorTexture']['index']))).astype(np.float32)
+            terrains.append((photo, mn, mx))
+    print(f'{path}: {sum(1 for k in tiles if k[0] == "B")} buildings, origin E {fe} N {fn}')
 
 # ---- fit: shift and scale the projected tile centres onto OSM building outlines
 outl = Image.new('L', (W, H), 0)
@@ -105,7 +119,7 @@ for bl in osm['buildings']:
     p = bl[0]
     d.polygon(list(zip(p[0::2], p[1::2])), fill=1)
 mask = np.array(outl) > 0
-cent = np.array([hk_to_game(E0 + (mn[0] + mx[0]) / 2, N0 + (mn[1] + mx[1]) / 2) for mn, mx, _ in buildings.values()])
+cent = np.array([hk_to_game(E0 + (mn[0] + mx[0]) / 2, N0 + (mn[1] + mx[1]) / 2) for mn, mx in buildings.values()])
 c0 = cent.mean(0)
 best = (-1, 1, 0, 0)
 for s in (0.99, 0.995, 1.0, 1.005, 1.01):
@@ -121,8 +135,8 @@ for s in (0.99, 0.995, 1.0, 1.005, 1.01):
 _, s, dx, dy = best
 print(f'fit: {best[0]}/{len(cent)} tiles on an OSM building, scale {s}, shift {dx},{dy} m')
 P, Q = [], []
-for x in range(-40, 800, 40):
-    for y in range(-560, 140, 40):
+for x in range(-1600, 1600, 50):
+    for y in range(-1400, 1400, 50):
         gx, gy = hk_to_game(E0 + x, N0 + y)
         P.append([x, y, 1])
         Q.append([(gx - c0[0]) * s + c0[0] + dx, (gy - c0[1]) * s + c0[1] + dy])
@@ -132,43 +146,54 @@ Li = np.linalg.inv(Aff[:2].T)
 def to_game(x, y):
     return Aff[0, 0] * x + Aff[1, 0] * y + Aff[2, 0], Aff[0, 1] * x + Aff[1, 1] * y + Aff[2, 1]
 
-# ---- classify the aerial photo: 1 trees, 2 lawn, 3 rock, 4 sand
-tmin, tmax, tnode = terrain
-mat = j['materials'][j['meshes'][tnode['mesh']]['primitives'][0]['material']]
-ort = np.array(image(tex_source(mat['pbrMetallicRoughness']['baseColorTexture']['index']))).astype(np.float32)
-oh, ow = ort.shape[:2]
-r, g, bb = ort[..., 0], ort[..., 1], ort[..., 2]
-V = (r + g + bb) / 3
-mu = ndi.uniform_filter(V, 11)
-sd = np.sqrt(np.maximum(ndi.uniform_filter(V * V, 11) - mu * mu, 0))  # texture over about 2 m
-rs, gs, bs = (ndi.uniform_filter(c, 11) for c in (r, g, bb))
-Vs, ex = (rs + gs + bs) / 3, 2 * gs - rs - bs
-tree = (ex > 1) & (Vs < 118) & (sd > 11) & (gs >= rs - 4)
-tree = ndi.binary_closing(tree, iterations=4) & (sd > 6)  # fill the shadows between crowns
-lawn = (ex > 10) & (Vs >= 105) & (sd < 20) & (rs < gs + 12) & ~tree
-sand = (rs > gs) & (gs > bs) & (Vs > 150) & (rs - bs > 30) & (rs - bs < 110) & (sd < 22)
-rock = (rs > gs + 16) & (rs > bs + 40) & (Vs < 185) & ~lawn & ~tree
-cls = np.zeros(V.shape, np.uint8)
-cls[lawn], cls[tree], cls[sand], cls[rock] = 2, 1, 4, 3
+# ---- classify the aerial photos: 1 trees, 2 lawn, 3 rock, 4 sand
+def classify(ort):
+    r, g, bb = ort[..., 0], ort[..., 1], ort[..., 2]
+    V = (r + g + bb) / 3
+    mu = ndi.uniform_filter(V, 11)
+    sd = np.sqrt(np.maximum(ndi.uniform_filter(V * V, 11) - mu * mu, 0))  # texture over about 2 m
+    rs, gs, bs = (ndi.uniform_filter(c, 11) for c in (r, g, bb))
+    Vs, ex = (rs + gs + bs) / 3, 2 * gs - rs - bs
+    tree = (ex > 1) & (Vs < 118) & (sd > 11) & (gs >= rs - 4)
+    tree = ndi.binary_closing(tree, iterations=4) & (sd > 6)  # fill the shadows between crowns
+    lawn = (ex > 10) & (Vs >= 105) & (sd < 20) & (rs < gs + 12) & ~tree
+    sand = (rs > gs) & (gs > bs) & (Vs > 150) & (rs - bs > 30) & (rs - bs < 110) & (sd < 22)
+    rock = (rs > gs + 16) & (rs > bs + 40) & (Vs < 185) & ~lawn & ~tree
+    cls = np.zeros(V.shape, np.uint8)
+    cls[lawn], cls[tree], cls[sand], cls[rock] = 2, 1, 4, 3
+    return cls
 
-# corners of the photo on the game map give the box to sample
-cx = [to_game(x, y) for x in (tmin[0], tmax[0]) for y in (tmin[1], tmax[1])]
+# the box on the game map that the photos cover
+cx = [to_game(x, y) for _, tmin, tmax in terrains for x in (tmin[0], tmax[0]) for y in (tmin[1], tmax[1])]
 X0, Y0 = int(min(p[0] for p in cx)), int(min(p[1] for p in cx))
 X1, Y1 = int(max(p[0] for p in cx)) + 1, int(max(p[1] for p in cx)) + 1
 X0, Y0, X1, Y1 = max(X0, 0), max(Y0, 0), min(X1, W), min(Y1, H)
 gy, gx = np.mgrid[Y0:Y1, X0:X1].astype(np.float64)
 votes = np.zeros((5,) + gx.shape, np.int16)
 inside = np.zeros(gx.shape, bool)
-for fa in np.linspace(0.1, 0.9, 5):
-    for fc in np.linspace(0.1, 0.9, 5):
-        lx, ly = np.einsum('ij,jhw->ihw', Li, np.stack([gx + fa - Aff[2, 0], gy + fc - Aff[2, 1]]))
-        u = ((lx - tmin[0]) / (tmax[0] - tmin[0]) * ow).astype(int)
-        v = ((tmax[1] - ly) / (tmax[1] - tmin[1]) * oh).astype(int)
-        ok = (u >= 0) & (u < ow) & (v >= 0) & (v < oh)
-        inside |= ok
-        k = np.where(ok, cls[np.clip(v, 0, oh - 1), np.clip(u, 0, ow - 1)], 0)
-        for q in range(5):
-            votes[q] += k == q
+cover_rgb = np.zeros(gx.shape + (3,), np.float32)  # the photos on the game grid, for roof colours
+for ort, tmin, tmax in terrains:
+    oh, ow = ort.shape[:2]
+    cls = classify(ort)
+    for fa in np.linspace(0.1, 0.9, 5):
+        for fc in np.linspace(0.1, 0.9, 5):
+            lx, ly = np.einsum('ij,jhw->ihw', Li, np.stack([gx + fa - Aff[2, 0], gy + fc - Aff[2, 1]]))
+            u = ((lx - tmin[0]) / (tmax[0] - tmin[0]) * ow).astype(int)
+            v = ((tmax[1] - ly) / (tmax[1] - tmin[1]) * oh).astype(int)
+            ok = (u >= 0) & (u < ow) & (v >= 0) & (v < oh)
+            inside |= ok
+            k = np.where(ok, cls[np.clip(v, 0, oh - 1), np.clip(u, 0, ow - 1)], 0)
+            for q in range(5):
+                votes[q] += k == q
+    lx, ly = np.einsum('ij,jhw->ihw', Li, np.stack([gx + 0.5 - Aff[2, 0], gy + 0.5 - Aff[2, 1]]))
+    u = ((lx - tmin[0]) / (tmax[0] - tmin[0]) * ow).astype(int)
+    v = ((tmax[1] - ly) / (tmax[1] - tmin[1]) * oh).astype(int)
+    ok = (u >= 0) & (u < ow) & (v >= 0) & (v < oh)
+    acc = np.zeros(gx.shape + (3,), np.float32)
+    for du in (-1, 0, 1):
+        for dv in (-1, 0, 1):
+            acc += ort[np.clip(v + dv, 0, oh - 1), np.clip(u + du, 0, ow - 1)] / 9
+    cover_rgb[ok] = acc[ok]
 cover = votes.argmax(0).astype(np.uint8)
 cover = np.stack([ndi.uniform_filter((cover == q).astype(np.float32), 3) for q in range(5)]).argmax(0).astype(np.uint8)
 for q in (1, 2, 3, 4):
@@ -177,13 +202,6 @@ for q in (1, 2, 3, 4):
         size = ndi.sum(np.ones_like(lab), lab, range(1, n + 1))
         cover[np.isin(lab, np.where(size < 8)[0] + 1)] = 0
 cover[~inside] = 0
-cover_rgb = np.zeros(gx.shape + (3,), np.float32)  # the photo on the game grid, for roof colours
-for fa in (0.25, 0.75):
-    for fc in (0.25, 0.75):
-        lx, ly = np.einsum('ij,jhw->ihw', Li, np.stack([gx + fa - Aff[2, 0], gy + fc - Aff[2, 1]]))
-        u = np.clip(((lx - tmin[0]) / (tmax[0] - tmin[0]) * ow).astype(int), 0, ow - 1)
-        v = np.clip(((tmax[1] - ly) / (tmax[1] - tmin[1]) * oh).astype(int), 0, oh - 1)
-        cover_rgb += ort[v, u] / 4
 
 # ---- buildings: height from the model, roof colour from the photo, snapped to a palette
 PALETTE = {
@@ -227,7 +245,7 @@ for i, bl in enumerate(osm['buildings']):
         roof = snap(np.median(px, 0))
     near = ndi.binary_dilation(mk, iterations=2)
     hs = []
-    for mn, mx, _ in buildings.values():
+    for mn, mx in buildings.values():
         tx, ty = to_game((mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2)
         tx, ty = int(tx) - bx0, int(ty) - by0
         h = mx[2] - mn[2]
