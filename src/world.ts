@@ -1016,22 +1016,141 @@ const pipM = (x: number, y: number, p: number[]): boolean => {
   return c;
 };
 
-/** draw one building in metre coordinates (the context is already scaled to art pixels) */
+/** drop vertices that move the outline less than `tol` metres: OSM traces many tiny jogs */
+function simplifyRing(p: number[], tol: number): number[] {
+  let pts: Array<[number, number]> = [];
+  for (let i = 0; i < p.length; i += 2) pts.push([p[i], p[i + 1]]);
+  if (pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts.pop();
+  let changed = true;
+  while (changed && pts.length > 4) {
+    changed = false;
+    for (let i = 0; i < pts.length && pts.length > 4; i += 1) {
+      const a = pts[(i + pts.length - 1) % pts.length], b = pts[i], c = pts[(i + 1) % pts.length];
+      const ex = c[0] - a[0], ey = c[1] - a[1], l = Math.hypot(ex, ey) || 1;
+      const d = Math.abs((b[0] - a[0]) * ey - (b[1] - a[1]) * ex) / l;
+      if (d < tol) { pts.splice(i, 1); changed = true; i -= 1; }
+    }
+  }
+  const out: number[] = [];
+  for (const [x, y] of pts) out.push(x, y);
+  out.push(pts[0][0], pts[0][1]);
+  return out;
+}
+const outlines = new Map<Building, number[]>();
+
+/**
+ * Draw one building in metre coordinates (the context is already scaled to art pixels).
+ * It is drawn as a block of height `wall` seen from the south: front walls go up from each
+ * south-facing edge, back to front, and the roof sits on top of them, lifted by the same height.
+ * Everything is kept inside the footprint, so a building never paints over the ground around it.
+ */
 function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
-  const p = B.poly;
+  let p = outlines.get(B);
+  if (!p) { p = simplifyRing(B.poly, 0.35); outlines.set(B, p); }
   const px = 1 / ART;
+  const h = B.wall;
   const path = (pts: number[], dy = 0): void => {
     g.beginPath();
     for (let i = 0; i < pts.length; i += 2) { if (i) g.lineTo(pts[i], pts[i + 1] + dy); else g.moveTo(pts[i], pts[i + 1] + dy); }
     g.closePath();
   };
   // cast shadow to the south-east, longer for taller buildings
-  const h = B.wall;
-  const sh = 0.5 + h * 0.3;
   g.fillStyle = 'rgba(12,20,16,0.26)';
-  path(p.map((v, i) => v + (i % 2 ? 0.4 : sh)));
+  path(p.map((v, i) => v + (i % 2 ? 0.4 : 0.5 + h * 0.3)));
   g.fill();
-  // roof: the whole outline
+
+  g.save();
+  path(p); g.clip();
+
+  // ---- front walls
+  const wall = WALL_COLOUR[B.style];
+  const shopfront = B.style === 'shop' || B.style === 'mall';
+  const floors = Math.max(1, Math.min(Math.floor(h / 0.95), B.height ? Math.round(B.height / 3.2) : Math.floor(h / 2.2)));
+  type Face = { ax: number; ay: number; ex: number; ey: number; len: number; ony: number };
+  const faces: Face[] = [];
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const ax = p[i], ay = p[i + 1], bx = p[i + 2], by = p[i + 3];
+    const ex = bx - ax, ey = by - ay, len = Math.hypot(ex, ey);
+    if (len < 0.2) continue;
+    const nx = ey / len, ny = -ex / len;
+    const out = pipM((ax + bx) / 2 + nx * 0.15, (ay + by) / 2 + ny * 0.15, p) ? -1 : 1;
+    const ony = ny * out;
+    if (ony < 0.12) continue; // faces away from us, or edge-on
+    faces.push({ ax, ay, ex, ey, len, ony });
+  }
+  // back to front, so a wall further south covers the ones behind it
+  faces.sort((a, b) => Math.max(a.ay, a.ay + a.ey) - Math.max(b.ay, b.ay + b.ey));
+  /** a patch on a face: from t0 to t1 metres along it, z0 to z1 metres up */
+  const patch = (f: Face, t0: number, t1: number, z0: number, z1: number): void => {
+    const ux = f.ex / f.len, uy = f.ey / f.len;
+    g.beginPath();
+    g.moveTo(f.ax + ux * t0, f.ay + uy * t0 - z0); g.lineTo(f.ax + ux * t1, f.ay + uy * t1 - z0);
+    g.lineTo(f.ax + ux * t1, f.ay + uy * t1 - z1); g.lineTo(f.ax + ux * t0, f.ay + uy * t0 - z1);
+    g.closePath(); g.fill();
+  };
+  // the door goes on the biggest proper front face nearest the building's real entrance
+  const door = B.door ? { x: B.door.x + 0.5, y: B.door.y + 1 } : null;
+  let doorFace: Face | null = null, doorT = 0, doorD = Infinity;
+  if (door) for (const f of faces) {
+    if (f.len < 1.6 || f.ony < 0.5) continue;
+    const t = Math.max(0.8, Math.min(f.len - 0.8, ((door.x - f.ax) * f.ex + (door.y - f.ay) * f.ey) / f.len));
+    const d = Math.hypot(f.ax + (f.ex * t) / f.len - door.x, f.ay + (f.ey * t) / f.len - door.y);
+    if (d < doorD) { doorD = d; doorFace = f; doorT = t; }
+  }
+  const colourAwning = AWNINGS[Math.floor(hash(B.x0, B.y0, 15) * AWNINGS.length)];
+  for (const f of faces) {
+    const lit = 0.8 + 0.2 * f.ony; // walls turned east or west catch less light
+    g.fillStyle = shade(wall, lit); patch(f, 0, f.len, 0, h);
+    g.fillStyle = shade(wall, 0.62); patch(f, 0, f.len, 0, 2 * px); // plinth
+    g.fillStyle = shade(wall, lit * 0.86); patch(f, 0, f.len, h - 2 * px, h); // under the eaves
+    if (floors > 2) {
+      g.fillStyle = shade(wall, lit * 0.9);
+      for (let k = 1; k < floors; k += 1) { const z = (k * h) / floors; patch(f, 0, f.len, z, z + px); }
+    }
+    if (f.len < 1.2) continue; // a jog in the outline: plain wall
+    const step = B.style === 'apartments' || B.style === 'quarters' ? 1.5 : 2;
+    const n = Math.max(1, Math.floor((f.len - 0.4) / step));
+    const gap = f.len / n;
+    const ww = Math.min(0.8, gap * 0.5);
+    const storey = h / floors;
+    const wh = Math.min(B.style === 'heritage' ? 1.1 : 0.85, storey * 0.55);
+    const shopHere = shopfront && f.len >= 2.5 && f.ony > 0.4;
+    for (let k = 0; k < floors; k += 1) {
+      if (k === 0 && shopHere) continue;
+      const zc = (k + 0.55) * storey;
+      for (let w = 0; w < n; w += 1) {
+        const tc = (w + 0.5) * gap;
+        if (doorFace === f && k === 0 && Math.abs(tc - doorT) < 1.1) continue;
+        const lit2 = hash(Math.round((f.ax + tc) * 3), Math.round(f.ay * 3) + k, 3) < 0.15;
+        g.fillStyle = shade(wall, 0.6); patch(f, tc - ww / 2 - px, tc + ww / 2 + px, zc - wh / 2 - px, zc + wh / 2 + px); // frame
+        g.fillStyle = B.style === 'heritage' ? '#4e5e6e' : lit2 ? '#e8d890' : '#5f8fac';
+        patch(f, tc - ww / 2, tc + ww / 2, zc - wh / 2, zc + wh / 2);
+        g.fillStyle = 'rgba(255,255,255,0.4)'; patch(f, tc - ww / 2, tc - ww / 2 + 2 * px, zc, zc + wh / 2);
+      }
+    }
+    if (shopHere) {
+      // glass shopfront under a striped awning, the whole width of the face
+      g.fillStyle = '#7fb0c6'; patch(f, 0.2, f.len - 0.2, 0.15, Math.min(1.5, storey * 0.8));
+      g.fillStyle = 'rgba(255,255,255,0.3)'; patch(f, 0.2, f.len - 0.2, Math.min(1.5, storey * 0.8) - 3 * px, Math.min(1.5, storey * 0.8));
+      const top = Math.min(2.0, storey * 0.98), bot = top - 0.45;
+      const stripes = Math.max(2, Math.round(f.len / 0.5));
+      for (let s = 0; s < stripes; s += 1) {
+        g.fillStyle = s % 2 ? '#f2eee4' : colourAwning;
+        patch(f, (s * f.len) / stripes, ((s + 1) * f.len) / stripes, bot, top);
+      }
+      g.fillStyle = 'rgba(0,0,0,0.25)'; patch(f, 0, f.len, bot - 2 * px, bot);
+    }
+  }
+  if (doorFace) {
+    const dh = Math.min(1.9, h - 0.3);
+    g.fillStyle = shade(wall, 0.5); patch(doorFace, doorT - 0.6, doorT + 0.6, 0, dh + px);
+    g.fillStyle = B.style === 'temple' ? '#5a2018' : '#3a2e26'; patch(doorFace, doorT - 0.5, doorT + 0.5, 0, dh);
+    g.fillStyle = '#d8b060'; patch(doorFace, doorT + 0.25, doorT + 0.25 + 2 * px, dh * 0.5, dh * 0.5 + 2 * px);
+  }
+
+  // ---- the roof, on top of the walls
+  g.save();
+  g.translate(0, -h);
   g.fillStyle = B.roof;
   path(p); g.fill();
   g.save();
@@ -1040,7 +1159,7 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
   if (B.pitched) {
     // two slopes: the far one in shade, tiles in rows, a bright ridge between them
     const wide = B.x1 - B.x0 >= B.y1 - B.y0;
-    const ridgeY = (B.y0 + B.y1 - B.wall) / 2, ridgeX = (B.x0 + B.x1) / 2;
+    const ridgeY = (B.y0 + B.y1) / 2, ridgeX = (B.x0 + B.x1) / 2;
     g.fillStyle = shade(B.roof, 0.8);
     if (wide) g.fillRect(B.x0 - 1, B.y0 - 1, B.x1 - B.x0 + 2, ridgeY - B.y0 + 1);
     else g.fillRect(ridgeX, B.y0 - 1, B.x1 - ridgeX + 1, B.y1 - B.y0 + 2);
@@ -1051,6 +1170,8 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
     g.fillStyle = shade(B.roof, 1.25);
     if (wide) g.fillRect(B.x0 - 1, ridgeY - px, B.x1 - B.x0 + 2, 2 * px);
     else g.fillRect(ridgeX - px, B.y0 - 1, 2 * px, B.y1 - B.y0 + 2);
+    // eaves: a lit lip along the front
+    g.strokeStyle = shade(B.roof, 1.12); g.lineWidth = 2 * px; path(p); g.stroke();
     if (B.style === 'temple') { g.lineWidth = 2 * px; g.strokeStyle = '#d8a83a'; path(p); g.stroke(); }
   } else {
     // flat roof: parapet, then what sits on Hong Kong roofs: water tanks, air-con units, a stair
@@ -1069,7 +1190,7 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
     }
     for (let y = Math.floor(B.y0) + 1; y < B.y1 - 1; y += 3) for (let x = Math.floor(B.x0) + 1; x < B.x1 - 1; x += 3) {
       const r = hash(x, y, 77);
-      if (r > 0.2 || !pipM(x + 0.5, y + 0.5, p) || !pipM(x + 2.5, y + 2, p)) continue;
+      if (r > 0.17 || !pipM(x + 0.2, y + 0.2, p) || !pipM(x + 2.4, y + 2.2, p) || !pipM(x + 2.4, y + 0.2, p) || !pipM(x + 0.2, y + 2.2, p)) continue;
       if (r < 0.06) { // water tank
         g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(x + 0.7, y + 0.5, 1.1, 1.2);
         g.fillStyle = '#3a6a9a'; g.fillRect(x + 0.4, y + 0.3, 1.1, 1.2);
@@ -1079,7 +1200,6 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
         g.fillStyle = '#c8c8c4'; g.fillRect(x + 0.3, y + 0.5, 1, 0.75);
         g.fillStyle = '#7a7a78'; g.fillRect(x + 0.5, y + 0.625, 0.5, 0.5);
       } else { // stair house
-        if (r > 0.17) continue;
         g.fillStyle = 'rgba(0,0,0,0.22)'; g.fillRect(x + 0.4, y + 0.3, 2, 1.8);
         g.fillStyle = shade(B.roof, 1.1); g.fillRect(x, y, 2, 1.2);
         g.fillStyle = shade(B.roof, 0.78); g.fillRect(x, y + 1.2, 2, 0.75);
@@ -1089,85 +1209,10 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
   }
   g.restore();
   g.strokeStyle = shade(B.roof, 0.5); g.lineWidth = px; path(p); g.stroke();
-
-  // front walls: every edge facing south, rising from its ground line into the footprint
-  const wall = WALL_COLOUR[B.style];
-  const door = B.door ? { x: B.door.x + 0.5, y: B.door.y + 1 } : null;
-  let doorEdge = -1, doorT = 0, doorD = Infinity;
-  for (let i = 0; i + 3 < p.length; i += 2) {
-    const ax = p[i], ay = p[i + 1], bx = p[i + 2], by = p[i + 3];
-    const ex = bx - ax, ey = by - ay, len = Math.hypot(ex, ey);
-    if (len < 0.5) continue;
-    const nx = ey / len, ny = -ex / len;
-    const mx = (ax + bx) / 2, my = (ay + by) / 2;
-    // outward normal: the side of the edge that is outside the outline
-    const out = pipM(mx + nx * 0.2, my + ny * 0.2, p) ? -1 : 1;
-    const ony = ny * out;
-    if (ony < 0.25) continue;
-    const oblique = ony < 0.55; // a wall turned well away from us: no windows, just its piers
-    if (door) {
-      const t = Math.max(0, Math.min(1, ((door.x - ax) * ex + (door.y - ay) * ey) / (len * len)));
-      const d = Math.hypot(ax + ex * t - door.x, ay + ey * t - door.y);
-      if (d < doorD) { doorD = d; doorEdge = i; doorT = t; }
-    }
-    const lit = 0.82 + 0.18 * ony; // walls turned east or west catch less light
-    g.fillStyle = shade(wall, lit);
-    g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.lineTo(bx, by - h); g.lineTo(ax, ay - h); g.closePath(); g.fill();
-    g.fillStyle = shade(B.roof, 0.55);
-    g.beginPath(); g.moveTo(ax, ay - h); g.lineTo(bx, by - h); g.lineTo(bx, by - h + 3 * px); g.lineTo(ax, ay - h + 3 * px); g.closePath(); g.fill();
-    g.fillStyle = shade(wall, 0.62);
-    g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.lineTo(bx, by - 2 * px); g.lineTo(ax, ay - 2 * px); g.closePath(); g.fill();
-    // windows: a row per storey (from the real height when known), one every couple of metres
-    const floors = Math.max(1, Math.min(Math.floor(h / 0.95), B.height ? Math.round(B.height / 3.2) : Math.floor(h / 2.2)));
-    if (floors > 2) {
-      // floor slabs as thin lines across the facade
-      g.fillStyle = shade(wall, 0.88);
-      for (let f = 1; f < floors; f += 1) {
-        const z = (f * h) / floors;
-        g.beginPath(); g.moveTo(ax, ay - z); g.lineTo(bx, by - z); g.lineTo(bx, by - z + px); g.lineTo(ax, ay - z + px); g.closePath(); g.fill();
-      }
-    }
-    // a dark line down each end of the wall, so corners read
-    g.fillStyle = shade(wall, 0.55);
-    g.fillRect(ax - px / 2, ay - h, px, h); g.fillRect(bx - px / 2, by - h, px, h);
-    const shopfront = B.style === 'shop' || B.style === 'mall';
-    const step = B.style === 'apartments' || B.style === 'quarters' ? 1.4 : 2;
-    if (oblique) {
-      g.fillStyle = shade(wall, 0.7);
-      for (let t = 2; t < len - 1; t += 3) { const wx = ax + (ex * t) / len, wy = ay + (ey * t) / len; g.fillRect(wx - px, wy - h, 2 * px, h); }
-    }
-    for (let f = 0; f < floors && !oblique; f += 1) {
-      const z = ((f + 0.55) * h) / floors;
-      if (f === 0 && shopfront) continue;
-      for (let t = step / 2 + 0.3; t < len - 0.5; t += step) {
-        const wx = ax + (ex * t) / len, wy = ay + (ey * t) / len - z;
-        g.fillStyle = B.style === 'heritage' ? '#5a6a7a' : hash(Math.round(wx * 4), Math.round(wy * 4), 3) < 0.15 ? '#e8d890' : '#6a9ab4';
-        const wh = Math.min(B.style === 'heritage' ? 1.1 : 0.8, (h / floors) * 0.55);
-        g.fillRect(wx - 0.35, wy - wh / 2, 0.7, wh);
-        g.fillStyle = 'rgba(255,255,255,0.45)'; g.fillRect(wx - 0.35, wy - wh / 2, 0.2, Math.min(0.3, wh / 2));
-      }
-    }
-    if (shopfront) {
-      // glass shopfront and a striped awning along the ground floor
-      g.fillStyle = '#8ab8cc';
-      g.beginPath(); g.moveTo(ax, ay - 0.3); g.lineTo(bx, by - 0.3); g.lineTo(bx, by - 1.5); g.lineTo(ax, ay - 1.5); g.closePath(); g.fill();
-      const colour = AWNINGS[Math.floor(hash(Math.round(ax), Math.round(ay), 15) * AWNINGS.length)];
-      for (let t = 0; t < len; t += 0.5) {
-        const t2 = Math.min(len, t + 0.5);
-        const sx = ax + (ex * t) / len, sy = ay + (ey * t) / len, fx2 = ax + (ex * t2) / len, fy2 = ay + (ey * t2) / len;
-        g.fillStyle = Math.round(t * 2) % 2 ? '#f2eee4' : colour;
-        g.beginPath(); g.moveTo(sx, sy - 1.5); g.lineTo(fx2, fy2 - 1.5); g.lineTo(fx2, fy2 - 2.0); g.lineTo(sx, sy - 2.0); g.closePath(); g.fill();
-      }
-    }
-  }
-  // the door, on the front wall nearest the building's real entrance
-  if (doorEdge >= 0) {
-    const ax = p[doorEdge], ay = p[doorEdge + 1], bx = p[doorEdge + 2], by = p[doorEdge + 3];
-    const dx = ax + (bx - ax) * doorT, dy = ay + (by - ay) * doorT;
-    g.fillStyle = B.style === 'temple' ? '#5a2018' : '#3a2e26';
-    g.fillRect(dx - 0.55, dy - 1.9, 1.1, 1.9);
-    g.fillStyle = '#d8b060'; g.fillRect(dx + 0.25, dy - 1.0, 2 * px, 2 * px);
-  }
+  g.restore(); // the lift
+  g.restore(); // the footprint clip
+  // the footprint's outline at ground level, so the block sits firmly on the ground
+  g.strokeStyle = 'rgba(20,16,14,0.55)'; g.lineWidth = px; path(p); g.stroke();
 }
 
 /** a crisp disc in 2 px steps (one art pixel), so props match the ground's pixel grid */
@@ -1335,48 +1380,51 @@ function drawProp(g: CanvasRenderingContext2D, x: number, y: number): void {
   const code = grid[y * MAP_W + x];
   const px = x * TILE, py = y * TILE;
   const r = hash(x, y, 7);
+  // small things stay off the strip right against a building, where they would poke up over its wall
+  let nb = false;
+  for (let dy = -1; dy <= 1 && !nb; dy += 1) for (let dx = -1; dx <= 1; dx += 1) if (at_(x + dx, y + dy) === Gr.Building) { nb = true; break; }
   switch (code) {
     case Gr.Wood: woodCrowns(g, x, y); return;
     case Gr.Scrub:
       if (r < 0.06) drawTree(g, px, py, r * 16, r < 0.02);
-      else if (r < 0.26) shrub(g, px, py, r);
-      else if (r < 0.4) tuft(g, px, py, hash(x, y, 8));
+      else if (r < 0.26) nb || shrub(g, px, py, r);
+      else if (r < 0.4) nb || tuft(g, px, py, hash(x, y, 8));
       return;
     case Gr.Hill:
       if (r < 0.035) drawTree(g, px, py, r * 28, r < 0.012);
-      else if (r < 0.09) shrub(g, px, py, r);
-      else if (r < 0.2) tuft(g, px, py, hash(x, y, 8));
-      else if (r < 0.215) rock(g, px, py);
-      else if (r < 0.225) flowers(g, px, py, r);
+      else if (r < 0.09) nb || shrub(g, px, py, r);
+      else if (r < 0.2) nb || tuft(g, px, py, hash(x, y, 8));
+      else if (r < 0.215) nb || rock(g, px, py);
+      else if (r < 0.225) nb || flowers(g, px, py, r);
       return;
     case Gr.Grass:
       if (r < 0.008) drawTree(g, px, py, r * 120, true);
-      else if (r < 0.016) flowers(g, px, py, r);
-      else if (r < 0.03) tuft(g, px, py, hash(x, y, 8));
+      else if (r < 0.016) nb || flowers(g, px, py, r);
+      else if (r < 0.03) nb || tuft(g, px, py, hash(x, y, 8));
       return;
     case Gr.Rock:
       if (r < 0.05) boulder(g, px, py, hash(x, y, 9));
       return;
     case Gr.Park: case Gr.School:
       if (r < 0.02) drawTree(g, px, py, r * 50, true);
-      else if (r < 0.035) shrub(g, px, py, r);
-      else if (r < 0.045) flowers(g, px, py, r);
+      else if (r < 0.035) nb || shrub(g, px, py, r);
+      else if (r < 0.045) nb || flowers(g, px, py, r);
       else if (r < 0.05) bench(g, px, py);
-      else if (r < 0.06) tuft(g, px, py, hash(x, y, 8));
+      else if (r < 0.06) nb || tuft(g, px, py, hash(x, y, 8));
       return;
     case Gr.Built:
-      if (core(x, y)) { if (r < 0.01) bin(g, px, py); else if (r < 0.02) flowers(g, px, py, r); return; }
+      if (core(x, y)) { if (r < 0.01) bin(g, px, py); else if (r < 0.02) nb || flowers(g, px, py, r); return; }
       if (r < 0.04) drawTree(g, px, py, r * 25, false);
-      else if (r < 0.1) shrub(g, px, py, r);
-      else if (r < 0.12) flowers(g, px, py, r);
-      else if (r < 0.16) tuft(g, px, py, hash(x, y, 8));
+      else if (r < 0.1) nb || shrub(g, px, py, r);
+      else if (r < 0.12) nb || flowers(g, px, py, r);
+      else if (r < 0.16) nb || tuft(g, px, py, hash(x, y, 8));
       return;
     case Gr.Cemetery: if (x % 3 === 0 && y % 3 === 0) { g.fillStyle = '#e8e8e0'; g.fillRect(px + 6, py + 2, 6, 10); g.fillStyle = '#c8c8c0'; g.fillRect(px + 6, py + 2, 6, 2); g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(px + 6, py + 12, 8, 2); } return;
-    case Gr.Beach: if (r < 0.006) umbrella(g, px, py, hash(x, y, 32)); else if (r < 0.01) rock(g, px, py); return;
+    case Gr.Beach: if (r < 0.006) umbrella(g, px, py, hash(x, y, 32)); else if (r < 0.01) nb || rock(g, px, py); return;
     case Gr.Plaza:
       if (x >= 640 && x <= 720 && y >= 440 && y <= 540 && x % 7 === 0 && y % 6 === 0) stall(g, px, py, hash(x, y, 61));
       else if (r < 0.008) bench(g, px, py);
-      else if (r < 0.014) flowers(g, px, py, r);
+      else if (r < 0.014) nb || flowers(g, px, py, r);
       return;
     case Gr.Path: {
       const byRoad = at_(x - 1, y) === Gr.Road || at_(x + 1, y) === Gr.Road || at_(x, y - 1) === Gr.Road || at_(x, y + 1) === Gr.Road;
