@@ -253,9 +253,9 @@ owner will provide the question bank; the map has been redrawn from real coordin
    be rented, one player each. Income depends on reputation and on handling incidents (questions);
    a neglected shop loses customers and can be lost.
 7. **Teacher tools.** Observer: a class view of progress by topic, accuracy and records.
-   Admin: reset or suspend a player, rename an unsuitable shop name, end a season.
-8. **Seasons (proposal).** The leaderboard resets each term, so a student who joins late still has
-   a chance.
+   Admin: reset or suspend a player, rename an unsuitable shop name.
+8. **No seasons.** The leaderboard never resets (decided, §9.2). Because a student who joins late
+   starts far behind, the money drains in point 5 matter even more.
 
 ### 9.2 Answered on 2026-10-30
 
