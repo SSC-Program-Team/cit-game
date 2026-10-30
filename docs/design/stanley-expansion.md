@@ -54,7 +54,10 @@ around St Stephen's College, St Stephen's Beach and the hill to Stanley Main Bea
 Draco-compressed and are not decoded; the import uses only what is readable without that: the
 terrain's texture (an aerial photo), each building tile's bounding box (its height), and the tile
 names (Hong Kong 1980 Grid coordinates), which place it on the map to within a couple of metres.
-`python3 scripts/import-3d.py model.glb` sorts the photo into woods, lawn, shore rock and sand and
+The model is one 750 × 600 m tile of the Lands Department's 3D Visualisation Map
+(3d.map.gov.hk); the game map spans a 3 × 3 block of them, and this is the centre one.
+`python3 scripts/import-3d.py tile1.glb tile2.glb ...` takes any number of tiles, stitches them,
+sorts the photos into woods, lawn, shore rock and sand and
 writes `src/stanley-cover.ts`, along with a roof colour (snapped to a small palette), height and
 roof shape for the 184 buildings it covers. Front walls are drawn at about 0.4 of a building's real
 height (2–10 m) so roofs stay visible. Woods block walking, except a 2 m fringe along paths, roads
