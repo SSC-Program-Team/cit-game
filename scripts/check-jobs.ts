@@ -8,7 +8,7 @@ import { JOBS, MISSIONS, OFFER, CHARSET, type JobDef } from '../src/jobs.ts';
 import { QUESTIONS, TOPIC_TIER, tierOf, type Form, type Topic } from '../src/questions.ts';
 import { GIGS, COURSES, EMPLOYERS, ITEMS, OFFENCES, COURSE_QUESTIONS, TASK_QUESTIONS } from '../src/economy.ts';
 import { FONT_CHARS } from '../src/font.ts';
-import { PLACES, solidTile } from '../src/world.ts';
+import { PLACES, solidTile, reachable, START, MAP_W } from '../src/world.ts';
 
 const errors: string[] = [];
 
@@ -96,7 +96,13 @@ for (const e of EMPLOYERS) {
   for (const n of e.needs) if (!COURSES.some((c) => c.id === n)) errors.push(`employer ${e.id}: unknown course ${n}`);
 }
 for (const o of Object.values(OFFENCES)) for (const k of ['law', 'offence', 'act', 'fix'] as const) fits(`offence ${o.id} ${k}`, o[k], 64);
-for (const p of PLACES) if (solidTile(p.tx, p.ty)) errors.push(`place ${p.id}: its tile ${p.tx},${p.ty} is solid`);
+const canReach = reachable(START.tx, START.ty);
+for (const p of PLACES) {
+  if (solidTile(p.tx, p.ty)) errors.push(`place ${p.id}: its tile ${p.tx},${p.ty} is solid`);
+  else if (!canReach[p.ty * MAP_W + p.tx]) errors.push(`place ${p.id}: cannot be walked to from the bus terminus`);
+}
+const placeIds = new Set<string>();
+for (const p of PLACES) { if (placeIds.has(p.id)) errors.push(`duplicate place ${p.id}`); placeIds.add(p.id); }
 for (const j of [...JOBS, ...MISSIONS]) if (!PLACES.some((p) => p.id === j.spot)) errors.push(`job ${j.id}: no place ${j.spot}`);
 
 if (errors.length) {

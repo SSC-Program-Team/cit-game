@@ -10,7 +10,7 @@ import { audio } from './audio';
 import { JOBS, MISSIONS, OFFER, type JobDef, type Crime, type Prop } from './jobs';
 import { GLYPHS } from './font';
 import {
-  TILE, MAP_W, MAP_H, PLACES, START, RELEASE, renderWorld, solidAt, solidTile, findPath, ground,
+  TILE, MAP_W, MAP_H, PLACES, START, RELEASE, renderWorld, solidAt, solidTile, findPath, ground, areaNear,
   type Place,
 } from './world';
 import { QUESTIONS, TOPIC_NAMES, FORM_RATE, type Form, type Question, type Tier, type Topic } from './questions';
@@ -143,7 +143,7 @@ const MISSION_WINDOW = 90;
 const MISSION_PAY = 2;
 const NO_SHOW_FEE = 100;
 const JAIL_MS = 30 * 60 * 1000;
-const SPEED = 92;
+const SPEED = 116;
 
 const WIRE = [
   'STANLEY MARKET STALLS OPEN TILL 7PM - TYPHOON SIGNAL 1 HOISTED',
@@ -180,18 +180,33 @@ let frames = 0;
 let tickTimer = 0;
 let worldImg: HTMLCanvasElement;
 const walkers: Walker[] = [];
-/** cars drive a road from one end to the other, wait, and come round again */
-type Car = { x: number; y: number; from: [number, number]; to: [number, number]; v: number; w: number; h: number; colour: string; wait: number };
-const car = (from: [number, number], to: [number, number], v: number, colour: string, wait: number): Car => ({
-  x: from[0] * TILE, y: from[1] * TILE, from, to, v, colour, wait,
-  w: from[0] === to[0] ? 12 : 22, h: from[0] === to[0] ? 22 : 12,
+/** cars wander the real road network: they pick a far road tile and drive there */
+type Car = { x: number; y: number; path: Array<{ x: number; y: number }>; colour: string; wait: number; dx: number; dy: number };
+const ROAD_TILES: Array<[number, number]> = [];
+for (let y = 0; y < MAP_H; y += 1) for (let x = 0; x < MAP_W; x += 1) if (ground[y][x] === '=') ROAD_TILES.push([x, y]);
+const roadAt = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < MAP_W && y < MAP_H && (ground[y][x] === '=' || ground[y][x] === 'e');
+function roadPath(from: [number, number], to: [number, number]): Array<{ x: number; y: number }> {
+  const key = (x: number, y: number): number => y * MAP_W + x;
+  const prev = new Map<number, number>([[key(...from), -1]]);
+  const q = [key(...from)];
+  const target = key(...to);
+  for (let i = 0; i < q.length && !prev.has(target); i += 1) {
+    const k = q[i]; const x = k % MAP_W, y = Math.floor(k / MAP_W);
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, ny = y + dy; const nk = key(nx, ny);
+      if (!roadAt(nx, ny) || prev.has(nk)) continue;
+      prev.set(nk, k); q.push(nk);
+    }
+  }
+  if (!prev.has(target)) return [];
+  const out: Array<{ x: number; y: number }> = [];
+  for (let k = target; k !== -1; k = prev.get(k)!) out.unshift({ x: (k % MAP_W) * TILE + 8, y: Math.floor(k / MAP_W) * TILE + 8 });
+  return out;
+}
+const cars: Car[] = ['#c8382f', '#e0e0e8', '#3a6ac8', '#3aa86a', '#e8c23a', '#2a2a30'].map((colour, i) => {
+  const [x, y] = ROAD_TILES[Math.floor((i + 0.5) / 6 * ROAD_TILES.length)] ?? [0, 0];
+  return { x: x * TILE + 8, y: y * TILE + 8, path: [], colour, wait: i, dx: 1, dy: 0 };
 });
-const cars: Car[] = [
-  car([52.5, 41], [52.5, -2], 70, '#c8382f', 0),
-  car([51.6, -2], [51.6, 40], 64, '#e0e0e8', 4),
-  car([54, 40.6], [84, 40.6], 60, '#3a6ac8', 7),
-  car([62, 9.6], [55, 9.6], 40, '#3aa86a', 2),
-];
 
 function say(title: string, line: string): void {
   const lines = wrap(line, 96);
@@ -1009,19 +1024,7 @@ function nearestPlace(): Place | null {
 }
 
 function areaName(): string {
-  const tx = player.x / TILE, ty = player.y / TILE;
-  if (ty >= 43 && tx >= 77) return 'stanley prison';
-  if (ty >= 43) return "st stephen's college";
-  if (ty >= 37) return 'tung tau wan road';
-  if (tx >= 55 && ty < 12) return 'stanley main beach';
-  if (tx >= 55 && ty < 20) return 'bus terminus';
-  if (tx >= 49) return 'stanley village road';
-  if (ty >= 33) return 'stanley main street';
-  if (tx < 15 && ty < 13) return 'ma hang';
-  if (tx < 28) return 'stanley plaza';
-  if (ty < 21) return 'stanley market road';
-  if (tx >= 35 && tx < 39) return 'stanley new street';
-  return 'stanley market';
+  return areaNear(player.x / TILE, player.y / TILE);
 }
 
 // ------------------------------------------------------------------ input ---
@@ -1145,14 +1148,12 @@ function move(dx: number, dy: number): boolean {
   return moved;
 }
 
-const WAYPOINTS: Array<[number, number]> = [
-  [8, 34], [22, 34], [36, 34], [48, 34], [36, 26], [42, 21], [14, 24], [24, 14], [36, 20], [58, 18],
-  [50, 10], [65, 9], [60, 41], [76, 41], [18, 40], [9, 20],
-];
+/** where people stroll: the promenade, the market, the plaza, the college, the beaches */
+const WAYPOINTS: Array<[number, number]> = PLACES.map((p) => [p.tx, p.ty]);
 
 function spawnWalkers(): void {
   const coats = ['#3b4a6b', '#6b3b4a', '#3b5a4a', '#8a6a3a', '#5a4a7a', '#7a7a7a', '#a84a3a'];
-  for (let i = 0; i < 9; i += 1) {
+  for (let i = 0; i < 22; i += 1) {
     const [tx, ty] = WAYPOINTS[i % WAYPOINTS.length];
     walkers.push({ x: tx * TILE + 8, y: ty * TILE + 12, path: [], coat: coats[i % coats.length], frame: 0, facing: 1, wait: i * 0.7 });
   }
@@ -1164,7 +1165,7 @@ function updateWalkers(dt: number): void {
       w.wait -= dt;
       if (w.wait > 0) continue;
       const [tx, ty] = WAYPOINTS[Math.floor(Math.random() * WAYPOINTS.length)];
-      w.path = findPath(w.x, w.y, tx * TILE + 8, ty * TILE + 8).slice(0, 40);
+      w.path = findPath(w.x, w.y, tx * TILE + 8, ty * TILE + 8).slice(0, 60);
       w.wait = 2 + Math.random() * 5;
       continue;
     }
@@ -1182,11 +1183,19 @@ function updateWalkers(dt: number): void {
 function updateCars(dt: number): void {
   for (const c of cars) {
     if (c.wait > 0) { c.wait -= dt; continue; }
-    const tx = c.to[0] * TILE, ty = c.to[1] * TILE;
-    const d = Math.hypot(tx - c.x, ty - c.y);
-    if (d < 2) { c.x = c.from[0] * TILE; c.y = c.from[1] * TILE; c.wait = 3 + Math.random() * 6; continue; }
-    c.x += ((tx - c.x) / d) * c.v * dt;
-    c.y += ((ty - c.y) / d) * c.v * dt;
+    if (!c.path.length) {
+      const [tx, ty] = ROAD_TILES[Math.floor(Math.random() * ROAD_TILES.length)];
+      c.path = roadPath([Math.floor(c.x / TILE), Math.floor(c.y / TILE)], [tx, ty]);
+      if (!c.path.length) { const [x, y] = ROAD_TILES[Math.floor(Math.random() * ROAD_TILES.length)]; c.x = x * TILE + 8; c.y = y * TILE + 8; }
+      c.wait = 1 + Math.random() * 3;
+      continue;
+    }
+    const t = c.path[0];
+    const d = Math.hypot(t.x - c.x, t.y - c.y);
+    if (d < 2) { c.path.shift(); continue; }
+    c.dx = (t.x - c.x) / d; c.dy = (t.y - c.y) / d;
+    c.x += c.dx * 60 * dt;
+    c.y += c.dy * 60 * dt;
   }
 }
 
@@ -1360,7 +1369,8 @@ function drawCity(): void {
   }
 
   // the bus at the terminus
-  const bx = 56 * TILE + 8 - cam.x, by = 15 * TILE + 4 - cam.y;
+  const busStop = PLACES.find((p) => p.id === 'bus')!;
+  const bx = busStop.tx * TILE - 40 - cam.x, by = busStop.ty * TILE - 30 - cam.y;
   ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(bx + 3, by + 3, 100, 22);
   ctx.fillStyle = '#e8c23a'; ctx.fillRect(bx, by, 100, 22);
   ctx.fillStyle = '#c84a2a'; ctx.fillRect(bx, by + 16, 100, 6);
@@ -1368,13 +1378,15 @@ function drawCity(): void {
   text('6 central', bx + 4, by - 9, '#e8e4d8');
 
   for (const c of cars) {
-    if (c.wait > 0) continue;
     const cx = Math.round(c.x - cam.x), cy = Math.round(c.y - cam.y);
-    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(cx - c.w / 2 + 2, cy - c.h / 2 + 2, c.w, c.h);
-    ctx.fillStyle = c.colour; ctx.fillRect(cx - c.w / 2, cy - c.h / 2, c.w, c.h);
+    if (cx < -30 || cy < -30 || cx > W + 30 || cy > H + 30) continue;
+    const vertical = Math.abs(c.dy) > Math.abs(c.dx);
+    const w = vertical ? 10 : 20, h = vertical ? 20 : 10;
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(cx - w / 2 + 2, cy - h / 2 + 2, w, h);
+    ctx.fillStyle = c.colour; ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
     ctx.fillStyle = '#1a2a3a';
-    if (c.w < c.h) ctx.fillRect(cx - c.w / 2 + 2, cy - c.h / 2 + 4, c.w - 4, 5);
-    else ctx.fillRect(cx - c.w / 2 + 4, cy - c.h / 2 + 2, 5, c.h - 4);
+    if (vertical) ctx.fillRect(cx - w / 2 + 2, cy + (c.dy < 0 ? -h / 2 + 3 : h / 2 - 8), w - 4, 5);
+    else ctx.fillRect(cx + (c.dx < 0 ? -w / 2 + 3 : w / 2 - 8), cy - h / 2 + 2, 5, h - 4);
   }
 
   // people, sorted by depth with the player
