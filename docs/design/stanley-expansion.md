@@ -29,46 +29,41 @@ style.
 
 ## 2. The map
 
-Redrawn on 2026-10-30 from real coordinates. Every landmark's latitude and longitude was taken
-from public sources and mapped to a tile, so directions between landmarks are right: Stanley Bay
-lies **south** of Main Street, Stanley Main Beach is **north-east** of the village on Tai Tam Bay,
-and the college and prison sit on the peninsula to the **south-east**. The mapping is piecewise —
-the village core is drawn larger than the hills and bays around it — so distances are compressed,
-but no landmark is on the wrong side of another. The anchor table lives at the top of
-`src/world.ts`.
+**Real Stanley, at real scale.** One tile is one metre (16 px). The ground, every road and path, the
+coastline, the prison walls and all 662 building outlines come from OpenStreetMap (© OpenStreetMap
+contributors, ODbL: credit them in the game's credits). The map covers about 1.4 × 1.3 km, from
+Ma Hang Estate in the north-west to Stanley Prison in the south-east.
 
-```
-  N            MA HANG          (hill)              STANLEY VILLAGE RD     MAIN BEACH ~ TAI TAM
-  ~ CARMEL RD  ESTATE                                  ║   BEACH RD ─────── water sports    BAY ~
-  ~   ║                     LIBRARY   PIXEL FIX       ║   BUS TERMINUS                        ~
-  ~ STANLEY PLAZA      ═══ STANLEY MARKET RD ═══════╣                                    ~
-  ~ TIN HAU   STORE    T-SHIRTS │NEW ST│ SILK PHONES  ║   STANLEY POLICE STATION       ~
-  ~ MURRAY HOUSE  TEA SHOP CAFE │ board│ BAKERY  OLD POLICE STN (supermarket)        ~
-  ~ ═══════════════ STANLEY MAIN ST (promenade) ═══════╣                          ~
-  ~~~~ BLAKE PIER ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ╚═ TUNG TAU WAN RD ═════╗  ~
-  ~~~~~~~~~~ STANLEY BAY ~~~~~~~~~~~~~~ ST STEPHEN'S   ST STEPHEN'S COLLEGE    ║ ~
-  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ BEACH           MILITARY CEMETERY   STANLEY PRISON
-```
+| Decision | Choice |
+|---|---|
+| Scale | 1 m per tile. Walking Stanley Plaza → SSC back gate (≈600 m) takes **5 minutes**; running (Shift or the run button) is 2.4× faster |
+| SSC back gate | Where the campus meets Wong Ma Kok Road beside Wong Ma Kok Road Playground |
+| Drawing | The map is about 22,500 × 20,500 px, so it is drawn in 512 px chunks as you walk; only nearby chunks are kept (fine on an iPad) |
+| Buildings | Drawn from their exact outlines: roof, front wall a few storeys high, windows, a door in the middle of the front, shop awnings in the village, name plates on landmarks |
+| Places | Every shop, employer and job is pinned to the door of a real building near where it belongs; landmarks (Murray House, Stanley Plaza, Tin Hau Temple, the library, SSC buildings) use their real buildings by name |
 
-| Landmark | Lat, lon | Source |
+**How the data was made.** In a browser, the OpenStreetMap map API was queried for the box
+22.2105–22.2235 N, 114.2045–114.2200 E, converted to whole metres from the map's top-left corner and
+simplified to 0.4–0.8 m. `npm run import-osm`-style regeneration: save that export as JSON and run
+`node --experimental-strip-types scripts/import-osm.ts file.json`, which writes `src/stanley-osm.ts`.
+
+Known limits: OSM building outlines seal off a few courtyards (places are only put where you can
+walk); buildings set at an angle show a stepped front wall, as any tile-based 3/4 view does.
+
+### 2.1 Green minibuses
+
+Two real routes run on the real roads, and you can ride them.
+
+| Route | Stops in the game | Fare |
 |---|---|---|
-| Ma Hang Estate | 22.2214, 114.2065 | Wikipedia |
-| Murray House | 22.2182, 114.2097 | Wikipedia (map centre) |
-| Stanley Market | 22.2188, 114.2120 | Wikipedia |
-| Old Stanley Police Station | 22.2183, 114.2131 | Wikipedia |
-| Stanley Main Beach | 22.2212, 114.2140 | Wikipedia |
-| Stanley Bay (centre) | 22.2162, 114.2112 | Wikipedia |
-| St Stephen's College | 22.2157, 114.2160 | Sygic travel listing |
-| St Stephen's Beach | 22.2130, 114.2148 | Wikipedia |
-| Stanley Prison | 22.2119, 114.2189 | Wikipedia |
+| GMB 40 (Stanley Village – Causeway Bay) | Stanley Beach Road terminus, Stanley Plaza | $3.1 |
+| GMB 52 (Aberdeen – Stanley Prison) | Ma Hang Estate, Stanley Plaza, St Stephen's College, Stanley Prison | $3.1 |
 
-Tin Hau Temple is placed from its description ("western end of Stanley Main Street, through Stanley
-Plaza"), Blake Pier from "next to Murray House", the library from its address (6 Stanley Market
-Road) and the new police station as "opposite the old one". The shop rows inside the market are
-invented. Private housing is drawn without names.
-
-Still worth a check against a Lands Department map before release: the exact line of Tung Tau Wan
-Road (drawn as straight segments), and the shape of the Tai Tam Bay coast.
+Walk to a stop, press E, pick where to go and pay as you board. You watch the ride from above
+(tap to skip) and get off at your stop; the in-game clock moves on a few minutes. The 52's $3.1 is
+the Transport Department's Ma Hang Estate – Stanley Prison section fare from 6 September 2026.
+The 40 publishes no fare for a hop inside Stanley, so the game uses the same $3.1: check before
+release.
 
 **Naming rule.** Real names are used for public places and landmarks: Stanley Plaza, Murray House,
 Blake Pier, Stanley Market, Stanley Public Library (Stanley Municipal Services Building, 6 Stanley

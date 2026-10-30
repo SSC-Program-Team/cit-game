@@ -23,6 +23,8 @@ export type Save = {
   minutes: number;
   /** world position in pixels */
   x: number;
+  /** map version the position belongs to (2 = the 1 m OSM map) */
+  mapv?: number;
   y: number;
   done: string[];
   mastery: Record<string, number>;
@@ -111,7 +113,8 @@ export function reset(): void {
 }
 
 export function addMoney(n: number): void {
-  state.money = Math.max(0, state.money + n);
+  // minibus fares come in ten-cent steps
+  state.money = Math.max(0, Math.round((state.money + n) * 10) / 10);
   save();
 }
 

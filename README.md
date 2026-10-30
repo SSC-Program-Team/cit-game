@@ -12,8 +12,8 @@ accept is a real networking task, scored.
 the market notice board, two employers that send work tasks in real time (and fire you), a computer
 shop, courses at Stanley Plaza, free study at the library, a warning-then-jail law system, and a
 62-question MC bank tagged F1–F6 (junior ICT/CIT, coding and AI up to F3; the five DSE ICT
-compulsory modules from F4), where harder questions pay more. The map is drawn from the real
-coordinates of Stanley's landmarks. The networking console jobs from v0.4 are still there.
+compulsory modules from F4), where harder questions pay more. The map is real Stanley at 1 m per tile, built from
+OpenStreetMap (© OpenStreetMap contributors, ODbL), with the GMB 40 and 52 green minibuses to ride. The networking console jobs from v0.4 are still there.
 
 **Read first:** [Stanley expansion plan](docs/design/stanley-expansion.md) — the decisions behind v0.5.
 
@@ -28,7 +28,7 @@ npm install && npm run build          # -> dist/
 rsync -rc --delete dist/ developer@172.100.0.211:/var/www/html/cit-game/
 ```
 
-WASD / arrows or tap to walk, **E** to use a place, **I** (or the `i` button) for your status,
+WASD / arrows or tap to walk (hold Shift or tap the run button to run), **E** to use a place, **I** (or the `i` button) for your status,
 **M** mutes. In a quiz, **A–D** or **1–4** answers and **Enter** moves on. You start at the bus
 terminus with a used laptop and $1,280.
 
@@ -42,6 +42,7 @@ terminus with a used laptop and $1,280.
 | Stanley Public Library | free practice by topic, with explanations |
 | Stanley Police Station | your record |
 | Bus shelter | go home, sleep, next day |
+| GMB 40 / 52 stops | ride a green minibus between Stanley Plaza, Ma Hang, the village, SSC and the prison ($3.1) |
 
 ## What v0.3 changed
 

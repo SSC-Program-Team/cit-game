@@ -10,9 +10,10 @@ import { audio } from './audio';
 import { JOBS, MISSIONS, OFFER, type JobDef, type Crime, type Prop } from './jobs';
 import { GLYPHS } from './font';
 import {
-  TILE, MAP_W, MAP_H, PLACES, START, RELEASE, renderWorld, solidAt, solidTile, findPath, ground, areaNear,
-  type Place,
+  TILE, MAP_W, MAP_H, PLACES, START, RELEASE, drawWorld, setWorldText, renderOverview, solidAt, solidTile,
+  walkableTile, findPath, isSea, areaNear, ROAD_LINES, walkDistance, roadRoute, type Place,
 } from './world';
+import { ROUTES, routesAt, type Route, type Stop } from './minibus';
 import { QUESTIONS, TOPIC_NAMES, FORM_RATE, type Form, type Question, type Tier, type Topic } from './questions';
 import {
   ITEMS, item, SHOP_STOCK, PIRATE_STOCK, NEED_NAMES, COURSES, COURSE_QUESTIONS, COURSE_PASS,
@@ -124,7 +125,7 @@ type Rect = { x: number; y: number; w: number; h: number };
 const inRect = (r: Rect, x: number, y: number, slop = 2): boolean =>
   x >= r.x - slop && x <= r.x + r.w + slop && y >= r.y - slop && y <= r.y + r.h + slop;
 
-const money = (n: number): string => `$${n.toLocaleString('en-US')}`;
+const money = (n: number): string => `$${n.toLocaleString('en-US', { maximumFractionDigits: 1 })}`;
 
 // ------------------------------------------------------------- the clock ---
 /** wall clock, shiftable by the __skip test hook so real-time work can be tested */
@@ -143,7 +144,14 @@ const MISSION_WINDOW = 90;
 const MISSION_PAY = 2;
 const NO_SHOW_FEE = 100;
 const JAIL_MS = 30 * 60 * 1000;
-const SPEED = 116;
+/**
+ * Walking pace in px/s. The map is 1 m per 16 px tile and the walk from Stanley Plaza to the SSC
+ * back gate is about 600 m, which the owner wants to take about five minutes: 600 * 16 / 300.
+ * Running (Shift, or the run button) is RUN times faster.
+ */
+const SPEED = 32;
+const RUN = 2.4;
+let running = false;
 
 const WIRE = [
   'STANLEY MARKET STALLS OPEN TILL 7PM - TYPHOON SIGNAL 1 HOISTED',
@@ -178,34 +186,24 @@ let declined = false;
 let toast: { text: string; colour: string; t: number } | null = null;
 let frames = 0;
 let tickTimer = 0;
-let worldImg: HTMLCanvasElement;
 const walkers: Walker[] = [];
-/** cars wander the real road network: they pick a far road tile and drive there */
-type Car = { x: number; y: number; path: Array<{ x: number; y: number }>; colour: string; wait: number; dx: number; dy: number };
-const ROAD_TILES: Array<[number, number]> = [];
-for (let y = 0; y < MAP_H; y += 1) for (let x = 0; x < MAP_W; x += 1) if (ground[y][x] === '=') ROAD_TILES.push([x, y]);
-const roadAt = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < MAP_W && y < MAP_H && (ground[y][x] === '=' || ground[y][x] === 'e');
-function roadPath(from: [number, number], to: [number, number]): Array<{ x: number; y: number }> {
-  const key = (x: number, y: number): number => y * MAP_W + x;
-  const prev = new Map<number, number>([[key(...from), -1]]);
-  const q = [key(...from)];
-  const target = key(...to);
-  for (let i = 0; i < q.length && !prev.has(target); i += 1) {
-    const k = q[i]; const x = k % MAP_W, y = Math.floor(k / MAP_W);
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = x + dx, ny = y + dy; const nk = key(nx, ny);
-      if (!roadAt(nx, ny) || prev.has(nk)) continue;
-      prev.set(nk, k); q.push(nk);
-    }
-  }
-  if (!prev.has(target)) return [];
-  const out: Array<{ x: number; y: number }> = [];
-  for (let k = target; k !== -1; k = prev.get(k)!) out.unshift({ x: (k % MAP_W) * TILE + 8, y: Math.floor(k / MAP_W) * TILE + 8 });
-  return out;
+/** cars drive the real road lines from end to end, then turn onto whichever road meets them */
+type Car = { x: number; y: number; line: number; i: number; dir: 1 | -1; colour: string; wait: number; dx: number; dy: number };
+const lineEnds = ROAD_LINES.map((l) => [l[0], l[l.length - 1]]);
+function nextLine(x: number, y: number, not: number): { line: number; dir: 1 | -1 } | null {
+  const near: Array<{ line: number; dir: 1 | -1 }> = [];
+  lineEnds.forEach(([a, b], i) => {
+    if (i === not) return;
+    if (Math.hypot(a.x - x, a.y - y) < 4 * TILE) near.push({ line: i, dir: 1 });
+    if (Math.hypot(b.x - x, b.y - y) < 4 * TILE) near.push({ line: i, dir: -1 });
+  });
+  return near.length ? near[Math.floor(Math.random() * near.length)] : null;
 }
-const cars: Car[] = ['#c8382f', '#e0e0e8', '#3a6ac8', '#3aa86a', '#e8c23a', '#2a2a30'].map((colour, i) => {
-  const [x, y] = ROAD_TILES[Math.floor((i + 0.5) / 6 * ROAD_TILES.length)] ?? [0, 0];
-  return { x: x * TILE + 8, y: y * TILE + 8, path: [], colour, wait: i, dx: 1, dy: 0 };
+const cars: Car[] = ['#c8382f', '#e0e0e8', '#3a6ac8', '#3aa86a', '#e8c23a', '#2a2a30', '#d86a3a', '#6a6a72',
+  '#e0e0e8', '#3a6ac8', '#c8382f', '#2a2a30'].map((colour, i) => {
+  const line = Math.floor((i / 12) * ROAD_LINES.length);
+  const p = ROAD_LINES[line]?.[0] ?? { x: 0, y: 0 };
+  return { x: p.x, y: p.y, line, i: 0, dir: 1, colour, wait: i * 0.5, dx: 1, dy: 0 };
 });
 
 function say(title: string, line: string): void {
@@ -923,6 +921,122 @@ function noShow(d: JobDef | undefined, what: string): void {
   showWire(news[0], false);
 }
 
+// --------------------------------------------------------------- minibus ---
+type Pt = { x: number; y: number };
+/** road routes between consecutive stops, worked out once */
+const legCache = new Map<string, Pt[]>();
+function leg(a: Stop, b: Stop): Pt[] {
+  const key = `${a.id}>${b.id}`;
+  let p = legCache.get(key);
+  if (!p) { p = roadRoute(a.x, a.y, b.x, b.y); legCache.set(key, p); }
+  return p;
+}
+function journey(r: Route, from: string, to: string): Pt[] {
+  const i = r.stops.findIndex((s) => s.id === from), j = r.stops.findIndex((s) => s.id === to);
+  if (i < 0 || j < 0 || i === j) return [];
+  const step = j > i ? 1 : -1;
+  const out: Pt[] = [];
+  for (let k = i; k !== j; k += step) out.push(...leg(r.stops[k], r.stops[k + step]));
+  return out;
+}
+
+type Ride = { route: Route; to: Stop; path: Pt[]; i: number; x: number; y: number; angle: number };
+let ride: Ride | null = null;
+/** minibuses running up and down their routes for the look of the place */
+type Shuttle = { route: Route; path: Pt[]; i: number; dir: 1 | -1; x: number; y: number; angle: number; wait: number };
+const shuttles: Shuttle[] = [];
+
+function startShuttles(): void {
+  for (const r of ROUTES) {
+    const path = journey(r, r.stops[0].id, r.stops[r.stops.length - 1].id);
+    if (path.length < 2) continue;
+    for (let n = 0; n < 2; n += 1) {
+      const i = Math.floor((n * path.length) / 2);
+      shuttles.push({ route: r, path, i, dir: n ? -1 : 1, x: path[i].x, y: path[i].y, angle: 0, wait: 0 });
+    }
+  }
+}
+
+function openMinibus(p: Place): void {
+  const items: MenuItem[] = [];
+  for (const r of routesAt(p.id)) {
+    for (const st of r.stops) {
+      if (st.id === p.id) continue;
+      items.push({
+        label: `gmb ${r.no} to ${st.name}`, right: money(r.fare),
+        sub: `green minibus ${r.no}. pay as you board.`,
+        off: state.money < r.fare, why: 'not enough money for the fare',
+        act: () => board(r, p.id, st),
+      });
+    }
+  }
+  items.push({ label: 'not now', act: () => { menu = null; } });
+  openMenu({ title: p.name, line: 'green minibuses stop here. pay as you board; the fare is the same however far you go in stanley.', items });
+}
+
+function board(r: Route, from: string, to: Stop): void {
+  const path = journey(r, from, to.id);
+  menu = null;
+  if (path.length < 2) { flash('the minibus is not running that way right now', '#ff9a6a'); return; }
+  addMoney(-r.fare);
+  audio.play('cash');
+  flash(`paid ${money(r.fare)} on the ${r.no}`, '#7be08a');
+  ride = { route: r, to, path, i: 0, x: path[0].x, y: path[0].y, angle: 0 };
+}
+
+function endRide(): void {
+  if (!ride) return;
+  const r = ride;
+  ride = null;
+  const p = PLACES.find((x) => x.id === r.to.id);
+  if (p) placePlayer(p.tx, p.ty);
+  // in-game time: about 25 km/h through the village, at least two minutes
+  addMinutes(Math.max(2, Math.round((r.path.length * 3) / 400)));
+  audio.play('door');
+  save();
+}
+
+function moveAlong(v: { path: Pt[]; i: number; x: number; y: number; angle: number }, dir: 1 | -1, dist: number): boolean {
+  while (dist > 0) {
+    const n = v.i + dir;
+    if (n < 0 || n >= v.path.length) return false;
+    const t = v.path[n];
+    const d = Math.hypot(t.x - v.x, t.y - v.y);
+    if (d > 0.01) v.angle = Math.atan2(t.y - v.y, t.x - v.x);
+    if (d <= dist) { v.x = t.x; v.y = t.y; v.i = n; dist -= d; } else { v.x += ((t.x - v.x) / d) * dist; v.y += ((t.y - v.y) / d) * dist; dist = 0; }
+  }
+  return true;
+}
+
+function updateMinibuses(dt: number): void {
+  for (const sh of shuttles) {
+    if (sh.wait > 0) { sh.wait -= dt; continue; }
+    if (!moveAlong(sh, sh.dir, 170 * dt)) { sh.dir = sh.dir === 1 ? -1 : 1; sh.wait = 6; }
+  }
+  if (ride && !moveAlong(ride, 1, 420 * dt)) endRide();
+}
+
+function drawMinibus(x: number, y: number, angle: number, no: string): void {
+  const sx = Math.round(x - cam.x), sy = Math.round(y - cam.y);
+  if (sx < -120 || sy < -120 || sx > W + 120 || sy > H + 120) return;
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.save(); ctx.translate(4, 5); ctx.rotate(angle);
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(-56, -18, 112, 36);
+  ctx.restore();
+  ctx.rotate(angle);
+  // a Hong Kong green minibus: cream body, green roof, red route number on the front sign
+  ctx.fillStyle = '#efe9d6'; ctx.fillRect(-56, -18, 112, 36);
+  ctx.fillStyle = '#2f8a4a'; ctx.fillRect(-48, -14, 92, 28);
+  ctx.fillStyle = '#3aa25a'; ctx.fillRect(-48, -14, 92, 4);
+  ctx.fillStyle = '#2a3a4a'; ctx.fillRect(40, -15, 12, 30);
+  ctx.fillStyle = '#f2eee0'; ctx.fillRect(-46, -8, 26, 16);
+  ctx.restore();
+  // the route number stays upright so it can be read
+  ctx.fillStyle = '#f2eee0'; ctx.fillRect(sx - 14, sy - 6, 28, 12);
+  text(no, sx - tw(no) / 2, sy - 4, '#c8323c');
+}
+
 // ------------------------------------------------------------------ places ---
 /** what a place offers right now: a console job, a callout, or nothing */
 function jobAt(p: Place): { def: JobDef; mission: boolean } | null {
@@ -936,7 +1050,7 @@ type Marker = { colour: string; label: string } | null;
 
 /** a small tag over every place you can use, so a new player can see where to go */
 const PLACE_ICONS: Partial<Record<Place['kind'], string>> = {
-  shop: '$', library: '#', course: '+', employer: 'w', police: 'p', bus: 'b', pirate: '$',
+  shop: '$', library: '#', course: '+', employer: 'w', police: 'p', bus: 'b', pirate: '$', minibus: 'm',
 };
 
 function markerFor(p: Place): Marker {
@@ -973,6 +1087,7 @@ function activate(p: Place): void {
     case 'library': openLibrary(); return;
     case 'police': openPolice(); return;
     case 'bus': openBus(); return;
+    case 'minibus': openMinibus(p); return;
     case 'employer': {
       const e = EMPLOYERS.find((x) => x.place === p.id);
       if (e) { openEmployer(e); return; }
@@ -1034,6 +1149,7 @@ function toGame(ev: { clientX: number; clientY: number }): { x: number; y: numbe
 }
 
 const statusRect: Rect = { x: 560, y: 15, w: 80, h: 20 };
+const runRect: Rect = { x: 574, y: 335, w: 58, h: 21 };
 
 function quizOptionRect(i: number): Rect {
   return { x: 24, y: quizLayout().optTop + i * 30, w: 592, h: 26 };
@@ -1053,6 +1169,7 @@ canvas.addEventListener('pointerdown', (ev) => {
     if (idx >= 0) job.choose(idx);
     return;
   }
+  if (ride) { endRide(); return; }
   if (quiz) {
     if (quiz.summary || quiz.picked !== null) { quiz.next(); return; }
     for (let i = 0; i < 4; i += 1) if (inRect(quizOptionRect(i), x, y)) { quiz.pick(i); return; }
@@ -1066,10 +1183,11 @@ canvas.addEventListener('pointerdown', (ev) => {
   }
   if (dialogue) { dialogue = null; return; }
   if (inRect(statusRect, x, y)) { openStatus(); return; }
+  if (inRect(runRect, x, y, 0)) { running = !running; audio.play('ui'); return; }
   const wx = x + cam.x, wy = y + cam.y;
   // a tap on a place walks there and opens it
   for (const p of PLACES) {
-    if (Math.hypot(wx - placeX(p), wy - (placeY(p) - 8)) <= 14) {
+    if (Math.hypot(wx - placeX(p), wy - (placeY(p) - 16)) <= 20) {
       path = findPath(player.x, player.y, placeX(p), placeY(p));
       pending = p;
       if (!path.length) activate(p);
@@ -1116,6 +1234,7 @@ window.addEventListener('keydown', (ev) => {
     if (n >= 0 && job.options[n]) job.choose(n);
     return;
   }
+  if (ride) { if (k === 'Enter' || k === ' ' || k === 'Escape') { endRide(); ev.preventDefault(); } return; }
   if (quiz) {
     if (k === 'Enter' || k === ' ') { quiz.next(); ev.preventDefault(); return; }
     let n = ['1', '2', '3', '4'].indexOf(k);
@@ -1148,14 +1267,14 @@ function move(dx: number, dy: number): boolean {
   return moved;
 }
 
-/** where people stroll: the promenade, the market, the plaza, the college, the beaches */
+/** people stroll near the places that matter: the promenade, the market, the plaza, the college */
 const WAYPOINTS: Array<[number, number]> = PLACES.map((p) => [p.tx, p.ty]);
 
 function spawnWalkers(): void {
   const coats = ['#3b4a6b', '#6b3b4a', '#3b5a4a', '#8a6a3a', '#5a4a7a', '#7a7a7a', '#a84a3a'];
-  for (let i = 0; i < 22; i += 1) {
+  for (let i = 0; i < 52; i += 1) {
     const [tx, ty] = WAYPOINTS[i % WAYPOINTS.length];
-    walkers.push({ x: tx * TILE + 8, y: ty * TILE + 12, path: [], coat: coats[i % coats.length], frame: 0, facing: 1, wait: i * 0.7 });
+    walkers.push({ x: (tx + (i % 5) - 2) * TILE + 8, y: (ty + (i % 3) - 1) * TILE + 12, path: [], coat: coats[i % coats.length], frame: 0, facing: 1, wait: i * 0.7 });
   }
 }
 
@@ -1164,8 +1283,14 @@ function updateWalkers(dt: number): void {
     if (!w.path.length) {
       w.wait -= dt;
       if (w.wait > 0) continue;
-      const [tx, ty] = WAYPOINTS[Math.floor(Math.random() * WAYPOINTS.length)];
-      w.path = findPath(w.x, w.y, tx * TILE + 8, ty * TILE + 8).slice(0, 60);
+      // a short wander from where they stand
+      let tx = 0, ty = 0;
+      for (let tries = 0; tries < 8; tries += 1) {
+        tx = Math.floor(w.x / TILE) + Math.floor(Math.random() * 40) - 20;
+        ty = Math.floor(w.y / TILE) + Math.floor(Math.random() * 30) - 15;
+        if (walkableTile(tx, ty)) break;
+      }
+      w.path = findPath(w.x, w.y, tx * TILE + 8, ty * TILE + 8).slice(0, 80);
       w.wait = 2 + Math.random() * 5;
       continue;
     }
@@ -1183,19 +1308,22 @@ function updateWalkers(dt: number): void {
 function updateCars(dt: number): void {
   for (const c of cars) {
     if (c.wait > 0) { c.wait -= dt; continue; }
-    if (!c.path.length) {
-      const [tx, ty] = ROAD_TILES[Math.floor(Math.random() * ROAD_TILES.length)];
-      c.path = roadPath([Math.floor(c.x / TILE), Math.floor(c.y / TILE)], [tx, ty]);
-      if (!c.path.length) { const [x, y] = ROAD_TILES[Math.floor(Math.random() * ROAD_TILES.length)]; c.x = x * TILE + 8; c.y = y * TILE + 8; }
-      c.wait = 1 + Math.random() * 3;
+    const line = ROAD_LINES[c.line];
+    if (!line) continue;
+    const ni = c.i + c.dir;
+    if (ni < 0 || ni >= line.length) {
+      const next = nextLine(c.x, c.y, c.line);
+      if (next) { c.line = next.line; c.dir = next.dir; c.i = next.dir === 1 ? 0 : ROAD_LINES[next.line].length - 1; }
+      else { c.dir = c.dir === 1 ? -1 : 1; c.wait = 2; }
       continue;
     }
-    const t = c.path[0];
+    const t = line[ni];
     const d = Math.hypot(t.x - c.x, t.y - c.y);
-    if (d < 2) { c.path.shift(); continue; }
+    if (d < 3) { c.i = ni; continue; }
     c.dx = (t.x - c.x) / d; c.dy = (t.y - c.y) / d;
-    c.x += c.dx * 60 * dt;
-    c.y += c.dy * 60 * dt;
+    // drive on the left, as in Hong Kong
+    c.x += c.dx * 110 * dt;
+    c.y += c.dy * 110 * dt;
   }
 }
 
@@ -1210,6 +1338,8 @@ function update(dt: number): void {
 
   updateWalkers(dt);
   updateCars(dt);
+  updateMinibuses(dt);
+  if (ride) return;
 
   if (job) { job.update(dt); return; }
   if (quiz || menu) return;
@@ -1247,7 +1377,7 @@ function update(dt: number): void {
 
   if (vx || vy) {
     const len = Math.hypot(vx, vy) || 1;
-    const step = SPEED * dt;
+    const step = SPEED * (running || keys.has('shift') ? RUN : 1) * dt;
     let moved = move((vx / len) * step, (vy / len) * step);
     if (!moved && path.length) {
       // snagged on a corner while following a path: snap to the waypoint
@@ -1258,7 +1388,7 @@ function update(dt: number): void {
     if (vx) player.facing = vx > 0 ? 1 : -1;
     if (moved) {
       player.walked += step;
-      player.frame = Math.floor(player.walked / 14) % 4;
+      player.frame = Math.floor(player.walked / 10) % 4;
       stepTimer += dt;
       if (stepTimer > 0.34) { stepTimer = 0; audio.play('step'); }
     }
@@ -1273,7 +1403,7 @@ function update(dt: number): void {
 function drawFigure(x: number, y: number, coat: string, frame: number, facing = 1): void {
   ctx.save();
   ctx.translate(Math.round(x), Math.round(y));
-  if (facing < 0) ctx.scale(-1, 1);
+  ctx.scale(facing < 0 ? -1.5 : 1.5, 1.5);
   const swing = [0, 1, 0, -1][Math.floor(frame) % 4];
   ctx.globalAlpha = 0.3; ctx.fillStyle = '#000';
   ctx.fillRect(-5, 1, 11, 3); ctx.globalAlpha = 1;
@@ -1294,7 +1424,7 @@ function drawPlayer(): void {
   ctx.globalAlpha = 0.45; ctx.fillStyle = '#000';
   ctx.beginPath(); ctx.ellipse(x, y + 1, 7, 3, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
   ctx.translate(x, y);
-  if (player.facing < 0) ctx.scale(-1, 1);
+  ctx.scale(player.facing < 0 ? -1.5 : 1.5, 1.5);
   const swing = [0, 1, 0, -1][player.frame];
   ctx.fillStyle = '#343a54';
   ctx.fillRect(-3, -5, 3, 5 - Math.max(0, swing));
@@ -1351,10 +1481,11 @@ function drawHud(): void {
 }
 
 function drawCity(): void {
-  cam.x = Math.max(0, Math.min(MAP_W * TILE - W, Math.round(player.x - W / 2)));
-  cam.y = Math.max(-35, Math.min(MAP_H * TILE - H + 28, Math.round(player.y - H / 2)));
+  const fx = ride ? ride.x : player.x, fy = ride ? ride.y : player.y;
+  cam.x = Math.max(0, Math.min(MAP_W * TILE - W, Math.round(fx - W / 2)));
+  cam.y = Math.max(-35, Math.min(MAP_H * TILE - H + 28, Math.round(fy - H / 2)));
   ctx.fillStyle = '#2a5f86'; ctx.fillRect(0, 0, W, H);
-  ctx.drawImage(worldImg, -cam.x, -cam.y);
+  drawWorld(ctx, cam.x, cam.y, W, H);
 
   // sea glints, stable for half a second at a time so they twinkle rather than flicker
   const t = performance.now() / 1000;
@@ -1365,28 +1496,42 @@ function drawCity(): void {
     const h2 = ((i * 15485863 + tick * 32452843) % 100019) / 100019;
     const wx = cam.x + h * W, wy = cam.y + h2 * H;
     const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
-    if (tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H && ground[ty][tx] === '~') ctx.fillRect(Math.round(wx - cam.x), Math.round(wy - cam.y), 3, 1);
+    if (isSea(tx, ty)) ctx.fillRect(Math.round(wx - cam.x), Math.round(wy - cam.y), 3, 1);
   }
 
   // the bus at the terminus
   const busStop = PLACES.find((p) => p.id === 'bus')!;
-  const bx = busStop.tx * TILE - 40 - cam.x, by = busStop.ty * TILE - 30 - cam.y;
-  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(bx + 3, by + 3, 100, 22);
-  ctx.fillStyle = '#e8c23a'; ctx.fillRect(bx, by, 100, 22);
-  ctx.fillStyle = '#c84a2a'; ctx.fillRect(bx, by + 16, 100, 6);
-  ctx.fillStyle = '#3a5a7a'; for (let i = 6; i < 94; i += 14) ctx.fillRect(bx + i, by + 4, 10, 8);
+  const bx = busStop.tx * TILE - 96 - cam.x, by = busStop.ty * TILE - 70 - cam.y;
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(bx + 4, by + 4, 192, 40);
+  ctx.fillStyle = '#e8c23a'; ctx.fillRect(bx, by, 192, 40);
+  ctx.fillStyle = '#f2e6a0'; ctx.fillRect(bx, by, 192, 4);
+  ctx.fillStyle = '#c84a2a'; ctx.fillRect(bx, by + 30, 192, 10);
+  ctx.fillStyle = '#3a5a7a'; for (let i = 8; i < 180; i += 22) ctx.fillRect(bx + i, by + 8, 16, 14);
   text('6 central', bx + 4, by - 9, '#e8e4d8');
 
   for (const c of cars) {
-    const cx = Math.round(c.x - cam.x), cy = Math.round(c.y - cam.y);
-    if (cx < -30 || cy < -30 || cx > W + 30 || cy > H + 30) continue;
+    const cx = Math.round(c.x - c.dy * 28 - cam.x), cy = Math.round(c.y + c.dx * 28 - cam.y);
+    if (cx < -80 || cy < -80 || cx > W + 80 || cy > H + 80) continue;
     const vertical = Math.abs(c.dy) > Math.abs(c.dx);
-    const w = vertical ? 10 : 20, h = vertical ? 20 : 10;
+    const w = vertical ? 30 : 64, h = vertical ? 64 : 30;
     ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(cx - w / 2 + 2, cy - h / 2 + 2, w, h);
     ctx.fillStyle = c.colour; ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
     ctx.fillStyle = '#1a2a3a';
-    if (vertical) ctx.fillRect(cx - w / 2 + 2, cy + (c.dy < 0 ? -h / 2 + 3 : h / 2 - 8), w - 4, 5);
-    else ctx.fillRect(cx + (c.dx < 0 ? -w / 2 + 3 : w / 2 - 8), cy - h / 2 + 2, 5, h - 4);
+    if (vertical) { ctx.fillRect(cx - w / 2 + 3, cy + (c.dy < 0 ? -h / 2 + 10 : h / 2 - 22), w - 6, 12); ctx.fillRect(cx - w / 2 + 3, cy + (c.dy < 0 ? h / 2 - 14 : -h / 2 + 6), w - 6, 8); }
+    else { ctx.fillRect(cx + (c.dx < 0 ? -w / 2 + 10 : w / 2 - 22), cy - h / 2 + 3, 12, h - 6); ctx.fillRect(cx + (c.dx < 0 ? w / 2 - 14 : -w / 2 + 6), cy - h / 2 + 3, 8, h - 6); }
+  }
+
+  for (const sh of shuttles) drawMinibus(sh.x, sh.y, sh.angle, sh.route.no);
+  if (ride) drawMinibus(ride.x, ride.y, ride.angle, ride.route.no);
+  // the notice board in the market bazaar
+  {
+    const b = PLACES.find((p) => p.id === 'board')!;
+    const bx = Math.round(placeX(b) - cam.x) - 20, by = Math.round(placeY(b) - cam.y) - 44;
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(bx + 3, by + 34, 42, 4);
+    ctx.fillStyle = '#4a3226'; ctx.fillRect(bx + 4, by + 22, 3, 14); ctx.fillRect(bx + 33, by + 22, 3, 14);
+    ctx.fillStyle = '#5a3e2a'; ctx.fillRect(bx, by, 40, 24);
+    ctx.fillStyle = '#b8864a'; ctx.fillRect(bx + 2, by + 2, 36, 19);
+    ['#f2eee4', '#ffe28a', '#a8d8ff', '#f2eee4', '#ffb0b0'].forEach((c2, i) => { ctx.fillStyle = c2; ctx.fillRect(bx + 4 + i * 7, by + 4 + (i % 2) * 4, 5, 7); });
   }
 
   // people, sorted by depth with the player
@@ -1396,15 +1541,15 @@ function drawCity(): void {
     if (!p.person || (p.kind === 'offer' && declined)) continue;
     sprites.push({ y: placeY(p) - 10, draw: () => drawFigure(placeX(p) - cam.x + 10, placeY(p) - cam.y - 10, p.person!, 0, -1) });
   }
-  sprites.push({ y: player.y, draw: drawPlayer });
+  if (!ride) sprites.push({ y: player.y, draw: drawPlayer });
   sprites.sort((a, b) => a.y - b.y).forEach((s) => s.draw());
 
   for (const p of PLACES) {
     const m = markerFor(p);
-    if (m) { drawMarker(placeX(p) - cam.x, placeY(p) - cam.y - 22, m); continue; }
+    if (m) { drawMarker(placeX(p) - cam.x, placeY(p) - cam.y - 36, m); continue; }
     const icon = PLACE_ICONS[p.kind];
     if (icon) {
-      const x = Math.round(placeX(p) - cam.x), y = Math.round(placeY(p) - cam.y - 20);
+      const x = Math.round(placeX(p) - cam.x), y = Math.round(placeY(p) - cam.y - 34);
       ctx.fillStyle = 'rgba(8,10,18,0.75)'; ctx.fillRect(x - 5, y - 9, 11, 10);
       text(icon, x - 2, y - 8, '#9ad0ff');
     }
@@ -1425,7 +1570,10 @@ function drawCity(): void {
   // prompt line
   ctx.fillStyle = '#0a0c14'; ctx.fillRect(0, 332, W, 28);
   ctx.fillStyle = '#232a3a'; ctx.fillRect(0, 332, W, 1);
-  if (near) {
+  if (ride) {
+    text(`on the gmb ${ride.route.no} to ${ride.to.name}`, 8, 342, '#7be08a');
+    text('tap to get off at your stop', 330, 342, '#6f7688');
+  } else if (near) {
     ctx.fillStyle = '#46e0e6'; ctx.fillRect(8, 339, 13, 14);
     text('e', 12, 342, '#08110c');
     text(near.name, 27, 342, '#ffffff');
@@ -1433,10 +1581,12 @@ function drawCity(): void {
     const j = jobAt(near);
     if (j?.mission && state.mission) text(`(callout $${j.def.pay * MISSION_PAY} - ${Math.ceil(state.mission.left)}s)`, after, 342, '#ff4a5f');
     else if (j) text(`(job $${j.def.pay})`, after, 342, '#ffc84a');
-    else text(`(${({ board: 'gigs', shop: 'buy gear', pirate: 'a man with discs', employer: 'work', library: 'study', course: 'courses', police: 'your record', prison: 'stay out', flavour: 'look', offer: 'a man in a cap', bus: 'go home', job: 'shop' } as Record<string, string>)[near.kind]})`, after, 342, '#9aa0b8');
+    else text(`(${({ minibus: 'ride', board: 'gigs', shop: 'buy gear', pirate: 'a man with discs', employer: 'work', library: 'study', course: 'courses', police: 'your record', prison: 'stay out', flavour: 'look', offer: 'a man in a cap', bus: 'go home', job: 'shop' } as Record<string, string>)[near.kind]})`, after, 342, '#9aa0b8');
   } else {
-    text('wasd / tap to walk   e use   i status   m mute', 8, 342, '#6f7688');
+    text('wasd / tap to walk   shift run   e use   i status', 8, 342, '#6f7688');
   }
+  ctx.fillStyle = running ? '#46e0e6' : '#232a3a'; ctx.fillRect(runRect.x, runRect.y, runRect.w, runRect.h);
+  text(running ? 'running' : 'walk', runRect.x + (runRect.w - tw(running ? 'running' : 'walk')) / 2, runRect.y + 7, running ? '#08110c' : '#9aa0b8');
 
   if (toast && !dialogue) {
     const w = Math.min(W - 20, tw(toast.text) + 20);
@@ -1775,11 +1925,14 @@ function frame(t: number): void {
 function start(): void {
   load();
   if (state.mission && !missionDef()) state.mission = null;
-  worldImg = renderWorld((g, s, x, y, colour) => { glyphs(g, s.toUpperCase(), x, y, colour); });
+  setWorldText((g, s, x, y, colour) => { glyphs(g, s.toUpperCase(), x, y, colour); });
   const tx = Math.floor(state.x / TILE), ty = Math.floor(state.y / TILE);
-  if (state.x < 0 || solidTile(tx, ty)) placePlayer(START.tx, START.ty);
+  // saves from the 8 m map have positions on a different scale
+  if (state.x < 0 || state.mapv !== 2 || solidTile(tx, ty)) placePlayer(START.tx, START.ty);
   else { player.x = state.x; player.y = state.y; }
+  state.mapv = 2;
   spawnWalkers();
+  setTimeout(startShuttles, 50);
   tickWork();
   if (state.mission) showWire(undefined, true);
   if (!state.jail && !dialogue) {
@@ -1812,4 +1965,9 @@ hooks.__reset = () => { reset(); location.reload(); };
 hooks.__items = ITEMS.map((i) => i.id);
 hooks.__day = DAY;
 /** the whole map as a PNG data URL, for checking the layout */
-hooks.__world = () => worldImg.toDataURL();
+hooks.__world = (scale = 2) => renderOverview(scale).toDataURL();
+/** metres on foot between two places, by id */
+hooks.__walk = (a: string, b: string) => {
+  const pa = PLACES.find((p) => p.id === a), pb = PLACES.find((p) => p.id === b);
+  return pa && pb ? walkDistance(pa, pb) : -1;
+};

@@ -8,7 +8,8 @@ import { JOBS, MISSIONS, OFFER, CHARSET, type JobDef } from '../src/jobs.ts';
 import { QUESTIONS, TOPIC_TIER, tierOf, type Form, type Topic } from '../src/questions.ts';
 import { GIGS, COURSES, EMPLOYERS, ITEMS, OFFENCES, COURSE_QUESTIONS, TASK_QUESTIONS } from '../src/economy.ts';
 import { FONT_CHARS } from '../src/font.ts';
-import { PLACES, solidTile, reachable, START, MAP_W } from '../src/world.ts';
+import { PLACES, solidTile, reachable, START, MAP_W, roadRoute } from '../src/world.ts';
+import { ROUTES } from '../src/minibus.ts';
 
 const errors: string[] = [];
 
@@ -100,6 +101,10 @@ const canReach = reachable(START.tx, START.ty);
 for (const p of PLACES) {
   if (solidTile(p.tx, p.ty)) errors.push(`place ${p.id}: its tile ${p.tx},${p.ty} is solid`);
   else if (!canReach[p.ty * MAP_W + p.tx]) errors.push(`place ${p.id}: cannot be walked to from the bus terminus`);
+}
+for (const r of ROUTES) for (let i = 0; i + 1 < r.stops.length; i += 1) {
+  const a = r.stops[i], b = r.stops[i + 1];
+  if (roadRoute(a.x, a.y, b.x, b.y).length < 2) errors.push(`gmb ${r.no}: no road from ${a.name} to ${b.name}`);
 }
 const placeIds = new Set<string>();
 for (const p of PLACES) { if (placeIds.has(p.id)) errors.push(`duplicate place ${p.id}`); placeIds.add(p.id); }
