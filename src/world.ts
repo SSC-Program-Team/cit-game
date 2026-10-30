@@ -35,6 +35,8 @@ export const Gr = {
   School: 11, Yard: 12, Road: 13, Lane: 14, Path: 15, Steps: 16, Building: 17, Wall: 18,
   /** open grass (lawns and meadows seen in the aerial photo), the edge of a wood, shore rock */
   Grass: 19, Scrub: 20, Rock: 21,
+  /** a moving stairway (Stanley Plaza): walkable, and it carries you along */
+  Escalator: 22,
 } as const;
 export type Gr = (typeof Gr)[keyof typeof Gr];
 
@@ -273,6 +275,23 @@ function destair(p: number[]): number[] {
   o.push(out[0][0], out[0][1]);
   return o;
 }
+/**
+ * Escalators, in metres. Stanley Plaza steps down the hill from the bus terminus deck to the
+ * amphitheatre by the waterfront; a pair of escalators runs straight down through it, cut through
+ * the building. `x` is the centre line; the west lane goes down (south), the east lane up.
+ */
+export type Escalator = { name: string; x: number; y0: number; y1: number; w: number };
+export const ESCALATORS: Escalator[] = [{ name: 'stanley plaza escalators', x: 404, y0: 345, y1: 423, w: 5 }];
+/** which way an escalator carries you at a world pixel: +1 south, -1 north, 0 not on one */
+export function escalatorAt(px: number, py: number): number {
+  const mx = px / 16, my = py / 16;
+  for (const e of ESCALATORS) {
+    if (my < e.y0 + 1.2 || my > e.y1 - 1.2 || Math.abs(mx - e.x) > e.w / 2 - 0.3) continue;
+    if (Math.abs(mx - e.x) < 0.3) return 0; // the median between the lanes
+    return mx < e.x ? 1 : -1;
+  }
+  return 0;
+}
 /** every building's tidied outline, by OSM index */
 const SHAPES: number[][] = OSM.buildings.map(([p]) => destair(regularize(p)));
 
@@ -435,6 +454,14 @@ const ROAD: Record<string, [Gr, number]> = {
   for (const [p, kind] of OSM.walls) {
     if (kind === 'retaining_wall') continue;
     traceLine(p, (k) => { if (grid[k] !== Gr.Sea && grid[k] !== Gr.Building) grid[k] = Gr.Wall; });
+  }
+  // 5a. escalators: cut a clear slot through whatever they pass
+  for (const e of ESCALATORS) {
+    for (let y = Math.floor(e.y0); y < Math.ceil(e.y1); y += 1) for (let x = Math.floor(e.x - e.w / 2); x < Math.ceil(e.x + e.w / 2); x += 1) {
+      const k = y * MAP_W + x;
+      grid[k] = y < e.y0 + 1.2 || y >= e.y1 - 1.2 ? Gr.Path : Gr.Escalator; // landings at both ends
+      bid[k] = -1;
+    }
   }
   // 5b. outside the aerial photo, open hillside gets invented copses, so it matches the wooded
   //     hills the photo shows (Stanley's slopes are mostly trees). Artistic, not surveyed.
@@ -665,6 +692,8 @@ export const PLACES: Place[] = [
     line: 'built in 1950 to remember the people who died here in the war.' },
   { id: 'museum', ...atBuilding('Hong Kong Correctional Services Museum', m8(156), m8(92)), name: 'correctional services museum', kind: 'flavour',
     line: 'prison history, by the prison. free entry.' },
+  { id: 'escalator', ...standAt(404, 342, 4), name: 'stanley plaza escalators', kind: 'flavour',
+    line: 'they run from the bus terminus down through the plaza to the waterfront. stand on the left lane to go down, the right to go up.' },
   { id: 'stbeach', ...at(117, 141), name: "st stephen's beach", kind: 'flavour',
     line: 'a quiet beach on the peninsula, below the college.' },
   { id: 'cemetery', ...at(132, 128), name: 'stanley military cemetery', kind: 'flavour',
@@ -843,7 +872,7 @@ export function setWorldText(fn: TextFn): void { textFn = fn; }
 const CHUNK = 32;
 const CPX = CHUNK * TILE;
 const chunks = new Map<number, { canvas: HTMLCanvasElement; used: number }>();
-const MAX_CHUNKS = 28;
+const MAX_CHUNKS = 48; // zoomed out, about 12 chunks show at once, plus the ring drawn ahead
 let frameNo = 0;
 
 const at_ = (x: number, y: number): number => (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H ? Gr.Sea : grid[y * MAP_W + x]);
@@ -904,7 +933,7 @@ const OVERVIEW: Record<number, [number, number, number]> = {
   [Gr.Plaza]: [205, 191, 158], [Gr.Pier]: [138, 106, 74], [Gr.Built]: [150, 175, 120], [Gr.School]: [120, 168, 96],
   [Gr.Yard]: [150, 150, 150], [Gr.Road]: [74, 76, 88], [Gr.Lane]: [92, 94, 104], [Gr.Path]: [196, 191, 180],
   [Gr.Steps]: [168, 163, 154], [Gr.Building]: [150, 140, 130], [Gr.Wall]: [168, 166, 172],
-  [Gr.Grass]: [104, 168, 82], [Gr.Scrub]: [72, 116, 58], [Gr.Rock]: [160, 138, 118],
+  [Gr.Grass]: [104, 168, 82], [Gr.Scrub]: [72, 116, 58], [Gr.Rock]: [160, 138, 118], [Gr.Escalator]: [200, 200, 210],
 };
 
 function shade(hex: string, k: number): string {
@@ -939,7 +968,7 @@ const BASE: Record<number, RGB> = {
 /** when two classes meet in a blend, the more 'man-made' one wins ties */
 const PRIORITY: Record<number, number> = {
   [Gr.Road]: 9, [Gr.Lane]: 8, [Gr.Steps]: 7, [Gr.Path]: 7, [Gr.Pier]: 7, [Gr.Wall]: 9, [Gr.Plaza]: 6, [Gr.Parking]: 6,
-  [Gr.Beach]: 3, [Gr.Sea]: 2,
+  [Gr.Beach]: 3, [Gr.Sea]: 2, [Gr.Escalator]: 10,
 };
 /** natural ground: where two of these meet, the edge wanders instead of following the grid */
 const NATURAL = new Set<number>([Gr.Hill, Gr.Grass, Gr.Wood, Gr.Scrub, Gr.Beach, Gr.Rock, Gr.Park, Gr.School, Gr.Cemetery, Gr.Sea]);
@@ -978,7 +1007,7 @@ for (let c = 0; c < 32; c += 1) {
   PRIO_A[c] = PRIORITY[c] ?? 0;
 }
 /** man-made strips hold their width under the blend (a 1 m footpath would otherwise thin out) */
-const PULL: Record<number, number> = { [Gr.Road]: 1.2, [Gr.Lane]: 1.25, [Gr.Path]: 1.35, [Gr.Steps]: 1.35, [Gr.Pier]: 1.35, [Gr.Wall]: 1.6 };
+const PULL: Record<number, number> = { [Gr.Escalator]: 2, [Gr.Road]: 1.2, [Gr.Lane]: 1.25, [Gr.Path]: 1.35, [Gr.Steps]: 1.35, [Gr.Pier]: 1.35, [Gr.Wall]: 1.6 };
 for (const [c, v] of Object.entries(PULL)) PULL_A[Number(c)] = v;
 
 /** slow noise for the grass, worked out once per 2x2 art pixels for the chunk being drawn */
@@ -1166,6 +1195,7 @@ function renderChunk(cx: number, cy: number): HTMLCanvasElement {
         case Gr.Pier: [r, g, b] = BASE[c]; if (gy % 3 === 0) { r -= 40; g -= 32; b -= 24; } else if (hash(gx >> 4, gy / 3 | 0, 80) < 0.3) { r -= 10; g -= 8; b -= 6; } break;
         case Gr.Wall: [r, g, b] = BASE[c]; if ((gy % 8) < 2) { r += 30; g += 30; b += 30; } else if ((gy % 8) > 5) { r -= 40; g -= 40; b -= 40; } break;
         case Gr.Yard: { [r, g, b] = BASE[c]; const v = (n - 0.5) * 8; r += v; g += v; b += v; break; }
+        case Gr.Escalator: r = 58; g = 61; b = 72; break; // the escalators are drawn over it
         default: [r, g, b] = TONES.meadow[1];
       }
       // a soft dark rim where grass meets paving or a road, like a kerb's shadow
@@ -1201,6 +1231,7 @@ function renderChunk(cx: number, cy: number): HTMLCanvasElement {
   const near = BUILDINGS.filter((b) => b.x1 >= tx0 - 2 && b.x0 <= tx0 + CHUNK + 2 && b.y1 >= ty0 - 2 && b.y0 <= ty0 + CHUNK + 2)
     .sort((p, q) => p.y1 - q.y1);
   for (const b of near) drawBuilding(lg, b);
+  for (const e of ESCALATORS) if (e.x + e.w >= tx0 && e.x - e.w <= tx0 + CHUNK && e.y1 >= ty0 && e.y0 <= ty0 + CHUNK) drawEscalator(lg, e);
   lg.restore();
 
   // ---- 4. double up to screen pixels, then the props and labels at full resolution
@@ -1211,19 +1242,52 @@ function renderChunk(cx: number, cy: number): HTMLCanvasElement {
   g.drawImage(lo, 0, 0, CPX, CPX);
   g.translate(-cx * CPX, -cy * CPX);
   for (let y = ty0 - 5; y < ty0 + CHUNK + 6; y += 1) for (let x = tx0 - 5; x < tx0 + CHUNK + 5; x += 1) drawProp(g, x, y);
-  for (const b of BUILDINGS) {
-    if (!b.name || !b.door || b.x1 < tx0 - 20 || b.x0 > tx0 + CHUNK + 20 || b.y1 < ty0 - 4 || b.y0 > ty0 + CHUNK + 4) continue;
-    if (/^(Block|House|No\.)/.test(b.name) || /[^\x20-\x7e]/.test(b.name)) continue;
-    const label2 = b.name.replace(' (Luke Yip Building)', '').replace('Hong Kong Correctional Services Museum', 'CSD Museum').toUpperCase();
-    const width = label2.length * 6 + 8;
-    if (width > (b.x1 - b.x0) * TILE + 24) continue;
-    const lx = Math.round(((b.x0 + b.x1) / 2) * TILE - width / 2);
-    const ly = Math.round((b.y1 - b.wall - 0.6) * TILE);
-    g.fillStyle = '#2a2420'; g.fillRect(lx - 1, ly - 1, width + 2, 12);
-    g.fillStyle = '#f8f4e8'; g.fillRect(lx, ly, width, 10);
-    textFn(g, label2, lx + 4, ly + 1, '#2a2a30');
-  }
   return c;
+}
+
+/** name plates for landmark buildings, in metres: main.ts draws them at screen size */
+export const BUILDING_LABELS: Array<{ text: string; x: number; y: number }> = BUILDINGS
+  .filter((b) => b.name && b.door && !/^(Block|House|No\.)/.test(b.name) && !/[^\x20-\x7e]/.test(b.name))
+  .map((b) => ({
+    text: b.name.replace(' (Luke Yip Building)', '').replace('Hong Kong Correctional Services Museum', 'CSD Museum').toLowerCase(),
+    x: (b.x0 + b.x1) / 2, y: b.y1 - b.wall - 0.6,
+  }));
+
+/** an escalator pair, in metres: glass balustrades, steel median, two lanes of steps, landings */
+function drawEscalator(g: CanvasRenderingContext2D, e: Escalator): void {
+  const px = 1 / ART, x0 = e.x - e.w / 2, len = e.y1 - e.y0;
+  g.fillStyle = 'rgba(0,0,0,0.3)'; g.fillRect(x0 + 0.4, e.y0 + 0.4, e.w, len); // it sits in a slot: shadow
+  g.fillStyle = '#3a3d48'; g.fillRect(x0, e.y0, e.w, len);
+  const lanes = [x0 + 0.45, e.x + 0.3];
+  const lw = e.w / 2 - 0.75;
+  for (const lx of lanes) {
+    // steps: light treads with dark risers and yellow safety edges
+    g.fillStyle = '#a9afb8'; g.fillRect(lx, e.y0 + 1.2, lw, len - 2.4);
+    g.fillStyle = '#6e737e';
+    for (let y = e.y0 + 1.2; y < e.y1 - 1.2; y += 0.4) g.fillRect(lx, y, lw, px);
+    g.fillStyle = '#e8c23a'; g.fillRect(lx, e.y0 + 1.2, px, len - 2.4); g.fillRect(lx + lw - px, e.y0 + 1.2, px, len - 2.4);
+    // black handrails either side
+    g.fillStyle = '#16171c'; g.fillRect(lx - 0.22, e.y0 + 0.9, 0.16, len - 1.8); g.fillRect(lx + lw + 0.06, e.y0 + 0.9, 0.16, len - 1.8);
+  }
+  // glass balustrades on the outside, a lit steel median between the lanes
+  g.fillStyle = 'rgba(170,215,235,0.75)'; g.fillRect(x0, e.y0 + 0.8, 0.22, len - 1.6); g.fillRect(x0 + e.w - 0.22, e.y0 + 0.8, 0.22, len - 1.6);
+  g.fillStyle = '#c8ccd4'; g.fillRect(e.x - 0.3, e.y0 + 0.8, 0.6, len - 1.6);
+  g.fillStyle = '#f2e6a0'; for (let y = e.y0 + 2; y < e.y1 - 2; y += 3) g.fillRect(e.x - px, y, 2 * px, 0.3);
+  // landings: checker plates with a yellow comb line and an arrow for each lane
+  for (const [ly, top] of [[e.y0, true], [e.y1 - 1.2, false]] as Array<[number, boolean]>) {
+    g.fillStyle = '#8d929c'; g.fillRect(x0, ly, e.w, 1.2);
+    g.fillStyle = '#a4a9b2';
+    for (let y = ly; y < ly + 1.2; y += 0.25) for (let x = x0 + (((y - ly) * 4) % 2) * 0.25; x < x0 + e.w; x += 0.5) g.fillRect(x, y, 0.25, 0.25);
+    g.fillStyle = '#e8c23a'; g.fillRect(x0, top ? ly + 1.2 - 2 * px : ly, e.w, 2 * px);
+    lanes.forEach((lx, i) => {
+      const down = i === 0, cx = lx + lw / 2, cy = ly + 0.6;
+      g.fillStyle = down ? '#ff8a4a' : '#7be08a';
+      g.beginPath();
+      if (down) { g.moveTo(cx - 0.45, cy - 0.25); g.lineTo(cx + 0.45, cy - 0.25); g.lineTo(cx, cy + 0.3); }
+      else { g.moveTo(cx - 0.45, cy + 0.25); g.lineTo(cx + 0.45, cy + 0.25); g.lineTo(cx, cy - 0.3); }
+      g.closePath(); g.fill();
+    });
+  }
 }
 
 // ------------------------------------------------------------ buildings ---
@@ -1285,6 +1349,10 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
   g.fill();
 
   g.save();
+  // nothing of a building is drawn over an escalator slot cut through it
+  g.beginPath(); g.rect(-1e4, -1e4, 3e4, 3e4);
+  for (const e of ESCALATORS) g.rect(e.x - e.w / 2, e.y0, e.w, e.y1 - e.y0);
+  g.clip('evenodd');
   path(p); g.clip();
 
   // ---- front walls

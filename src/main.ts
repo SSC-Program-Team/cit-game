@@ -11,7 +11,8 @@ import { JOBS, MISSIONS, OFFER, type JobDef, type Crime, type Prop } from './job
 import { GLYPHS } from './font';
 import {
   TILE, MAP_W, MAP_H, PLACES, START, RELEASE, drawWorld, setWorldText, renderOverview, solidAt, solidTile,
-  walkableTile, findPath, isSea, areaNear, ROAD_LINES, walkDistance, roadRoute, type Place,
+  walkableTile, findPath, isSea, areaNear, ROAD_LINES, walkDistance, roadRoute, BUILDING_LABELS, ESCALATORS,
+  escalatorAt, type Place,
 } from './world';
 import { ROUTES, routesAt, type Route, type Stop } from './minibus';
 import { QUESTIONS, TOPIC_NAMES, FORM_RATE, type Form, type Question, type Tier, type Topic } from './questions';
@@ -23,6 +24,21 @@ import {
 
 const W = 640;
 const H = 360;
+
+/**
+ * Zoom: world pixels to canvas pixels. 0.5 (the default) shows 80 x 45 m, four times what 1
+ * shows; the ground art pixels land one-to-one on canvas pixels, so it stays crisp. Z toggles.
+ */
+let zoom = (() => { try { return localStorage.getItem('cit-zoom') === '1' ? 1 : 0.5; } catch { return 0.5; } })();
+const viewW = (): number => W / zoom;
+const viewH = (): number => H / zoom;
+/** people are drawn a little larger when zoomed out, so they still read */
+const figScale = (): number => (zoom < 1 ? 2 : 1.5);
+function toggleZoom(): void {
+  zoom = zoom < 1 ? 1 : 0.5;
+  try { localStorage.setItem('cit-zoom', String(zoom)); } catch { /* private mode */ }
+  audio.play('ui');
+}
 
 (window as unknown as { __cit: typeof state }).__cit = state;
 
@@ -1018,7 +1034,7 @@ function updateMinibuses(dt: number): void {
 
 function drawMinibus(x: number, y: number, angle: number, no: string): void {
   const sx = Math.round(x - cam.x), sy = Math.round(y - cam.y);
-  if (sx < -120 || sy < -120 || sx > W + 120 || sy > H + 120) return;
+  if (sx < -120 || sy < -120 || sx > viewW() + 120 || sy > viewH() + 120) return;
   ctx.save();
   ctx.translate(sx, sy);
   ctx.save(); ctx.translate(4, 5); ctx.rotate(angle);
@@ -1049,9 +1065,6 @@ function jobAt(p: Place): { def: JobDef; mission: boolean } | null {
 type Marker = { colour: string; label: string } | null;
 
 /** a small tag over every place you can use, so a new player can see where to go */
-const PLACE_ICONS: Partial<Record<Place['kind'], string>> = {
-  shop: '$', library: '#', course: '+', employer: 'w', police: 'p', bus: 'b', pirate: '$', minibus: 'm',
-};
 
 function markerFor(p: Place): Marker {
   const j = jobAt(p);
@@ -1150,6 +1163,7 @@ function toGame(ev: { clientX: number; clientY: number }): { x: number; y: numbe
 
 const statusRect: Rect = { x: 560, y: 15, w: 80, h: 20 };
 const runRect: Rect = { x: 574, y: 335, w: 58, h: 21 };
+const zoomRect: Rect = { x: 510, y: 335, w: 58, h: 21 };
 
 function quizOptionRect(i: number): Rect {
   return { x: 24, y: quizLayout().optTop + i * 30, w: 592, h: 26 };
@@ -1184,10 +1198,11 @@ canvas.addEventListener('pointerdown', (ev) => {
   if (dialogue) { dialogue = null; return; }
   if (inRect(statusRect, x, y)) { openStatus(); return; }
   if (inRect(runRect, x, y, 0)) { running = !running; audio.play('ui'); return; }
-  const wx = x + cam.x, wy = y + cam.y;
-  // a tap on a place walks there and opens it
+  if (inRect(zoomRect, x, y, 0)) { toggleZoom(); return; }
+  const wx = x / zoom + cam.x, wy = y / zoom + cam.y;
+  // a tap on a place (or its label) walks there and opens it
   for (const p of PLACES) {
-    if (Math.hypot(wx - placeX(p), wy - (placeY(p) - 16)) <= 20) {
+    if (Math.hypot(wx - placeX(p), wy - (placeY(p) - 16)) <= 12 / zoom) {
       path = findPath(player.x, player.y, placeX(p), placeY(p));
       pending = p;
       if (!path.length) activate(p);
@@ -1251,6 +1266,7 @@ window.addEventListener('keydown', (ev) => {
   if (k === 'e' || k === 'E' || k === 'Enter') { if (dialogue) dialogue = null; else if (near) activate(near); return; }
   if (k === 'Escape' || k === ' ') { if (dialogue) { dialogue = null; ev.preventDefault(); } return; }
   if (k === 'i' || k === 'I' || k === 'Tab') { openStatus(); ev.preventDefault(); return; }
+  if (k === 'z' || k === 'Z') { toggleZoom(); return; }
   keys.add(k.toLowerCase());
   if (k.startsWith('Arrow')) ev.preventDefault();
 });
@@ -1375,6 +1391,13 @@ function update(dt: number): void {
     } else { vx = (t.x - player.x) / d; vy = (t.y - player.y) / d; }
   }
 
+  // on an escalator the steps carry you, whether or not you walk too (about 1.5 m/s, like a real one)
+  const carry = escalatorAt(player.x, player.y);
+  if (carry) {
+    move(0, carry * 24 * dt);
+    state.x = player.x; state.y = player.y;
+  }
+
   if (vx || vy) {
     const len = Math.hypot(vx, vy) || 1;
     const step = SPEED * (running || keys.has('shift') ? RUN : 1) * dt;
@@ -1403,7 +1426,8 @@ function update(dt: number): void {
 function drawFigure(x: number, y: number, coat: string, frame: number, facing = 1): void {
   ctx.save();
   ctx.translate(Math.round(x), Math.round(y));
-  ctx.scale(facing < 0 ? -1.5 : 1.5, 1.5);
+  const fs = figScale();
+  ctx.scale(facing < 0 ? -fs : fs, fs);
   const swing = [0, 1, 0, -1][Math.floor(frame) % 4];
   ctx.globalAlpha = 0.3; ctx.fillStyle = '#000';
   ctx.fillRect(-5, 1, 11, 3); ctx.globalAlpha = 1;
@@ -1421,10 +1445,11 @@ function drawPlayer(): void {
   const x = Math.round(player.x - cam.x);
   const y = Math.round(player.y - cam.y);
   ctx.save();
+  const fs = figScale();
   ctx.globalAlpha = 0.45; ctx.fillStyle = '#000';
-  ctx.beginPath(); ctx.ellipse(x, y + 1, 7, 3, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+  ctx.beginPath(); ctx.ellipse(x, y + 1, 7 * fs / 1.5, 3 * fs / 1.5, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
   ctx.translate(x, y);
-  ctx.scale(player.facing < 0 ? -1.5 : 1.5, 1.5);
+  ctx.scale(player.facing < 0 ? -fs : fs, fs);
   const swing = [0, 1, 0, -1][player.frame];
   ctx.fillStyle = '#343a54';
   ctx.fillRect(-3, -5, 3, 5 - Math.max(0, swing));
@@ -1480,23 +1505,67 @@ function drawHud(): void {
   if (audio.muted) text('m', 560, 21, '#6f7688');
 }
 
+/** colour per kind of place, for the entrance pads and labels */
+const KIND_COLOUR: Partial<Record<Place['kind'], string>> = {
+  job: '#ffc84a', employer: '#ffc84a', shop: '#7be08a', pirate: '#d8a0ff', minibus: '#46d07a', bus: '#ff9a4a',
+  library: '#9ad0ff', course: '#c8a0ff', police: '#6aa0ff', prison: '#ff6a6a', board: '#ffe28a', offer: '#d8a0ff',
+  flavour: '#e8e4d8',
+};
+const KIND_ICON: Partial<Record<Place['kind'], string>> = {
+  job: '!', employer: 'w', shop: '$', pirate: '?', minibus: 'm', bus: 'b', library: '#', course: '+', police: 'p',
+  prison: 'x', board: 'n', offer: '?', flavour: 'i',
+};
+
+/** a green minibus stop: a pole and the green-and-white sign with its route numbers */
+function drawStopSign(p: Place): void {
+  const x = Math.round(placeX(p) - cam.x) + 14, y = Math.round(placeY(p) - cam.y);
+  const nos = routesAt(p.id).map((r) => r.no).join(' ');
+  const w = Math.max(18, tw(nos) + 6);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(x + 1, y - 1, 6, 3);
+  ctx.fillStyle = '#c8ccd4'; ctx.fillRect(x, y - 30, 2, 30);
+  ctx.fillStyle = '#1f6e3a'; ctx.fillRect(x - w / 2 + 1, y - 46, w, 16);
+  ctx.fillStyle = '#f2eee4'; ctx.fillRect(x - w / 2 + 2, y - 45, w - 2, 5);
+  ctx.fillStyle = '#1f6e3a'; ctx.fillRect(x - w / 2 + 4, y - 44, w - 6, 3);
+  text(nos, x + 1 - tw(nos) / 2, y - 39, '#ffffff');
+}
+
 function drawCity(): void {
+  const VW = viewW(), VH = viewH();
   const fx = ride ? ride.x : player.x, fy = ride ? ride.y : player.y;
-  cam.x = Math.max(0, Math.min(MAP_W * TILE - W, Math.round(fx - W / 2)));
-  cam.y = Math.max(-35, Math.min(MAP_H * TILE - H + 28, Math.round(fy - H / 2)));
+  cam.x = Math.max(0, Math.min(MAP_W * TILE - VW, Math.round(fx - VW / 2)));
+  cam.y = Math.max(-35 / zoom, Math.min(MAP_H * TILE - VH + 28 / zoom, Math.round(fy - VH / 2)));
+  // keep the camera on whole canvas pixels so the art does not shimmer
+  cam.x = Math.round(cam.x * zoom) / zoom; cam.y = Math.round(cam.y * zoom) / zoom;
   ctx.fillStyle = '#2a5f86'; ctx.fillRect(0, 0, W, H);
-  drawWorld(ctx, cam.x, cam.y, W, H);
+  const t = performance.now() / 1000;
+
+  // ---- everything in world pixels, scaled by the zoom
+  ctx.save();
+  ctx.scale(zoom, zoom);
+  drawWorld(ctx, cam.x, cam.y, VW, VH);
 
   // sea glints, stable for half a second at a time so they twinkle rather than flicker
-  const t = performance.now() / 1000;
   const tick = Math.floor(t * 2);
   ctx.fillStyle = 'rgba(230,245,255,0.55)';
-  for (let i = 0; i < 70; i += 1) {
+  for (let i = 0; i < 140; i += 1) {
     const h = ((i * 7919 + tick * 104729) % 100003) / 100003;
     const h2 = ((i * 15485863 + tick * 32452843) % 100019) / 100019;
-    const wx = cam.x + h * W, wy = cam.y + h2 * H;
+    const wx = cam.x + h * VW, wy = cam.y + h2 * VH;
     const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
-    if (isSea(tx, ty)) ctx.fillRect(Math.round(wx - cam.x), Math.round(wy - cam.y), 3, 1);
+    if (isSea(tx, ty)) ctx.fillRect(Math.round(wx - cam.x), Math.round(wy - cam.y), 6, 2);
+  }
+
+  // escalator steps, moving: down on the west lane, up on the east
+  for (const e of ESCALATORS) {
+    const ex = e.x * TILE - cam.x, top = (e.y0 + 1.2) * TILE - cam.y, bot = (e.y1 - 1.2) * TILE - cam.y;
+    if (ex < -100 || ex > VW + 100 || bot < -50 || top > VH + 50) continue;
+    const lw = (e.w / 2 - 0.75) * TILE;
+    const lanes: Array<[number, number]> = [[(e.x - e.w / 2 + 0.45) * TILE - cam.x, 1], [(e.x + 0.3) * TILE - cam.x, -1]];
+    const off = (t * 24) % 6.4;
+    for (const [lx, dir] of lanes) {
+      ctx.fillStyle = 'rgba(40,44,54,0.8)';
+      for (let y = top + (dir > 0 ? off : 6.4 - off); y < bot; y += 6.4) ctx.fillRect(Math.round(lx + 2), Math.round(y), Math.round(lw - 4), 2);
+    }
   }
 
   // the bus at the terminus
@@ -1507,11 +1576,10 @@ function drawCity(): void {
   ctx.fillStyle = '#f2e6a0'; ctx.fillRect(bx, by, 192, 4);
   ctx.fillStyle = '#c84a2a'; ctx.fillRect(bx, by + 30, 192, 10);
   ctx.fillStyle = '#3a5a7a'; for (let i = 8; i < 180; i += 22) ctx.fillRect(bx + i, by + 8, 16, 14);
-  text('6 central', bx + 4, by - 9, '#e8e4d8');
 
   for (const c of cars) {
     const cx = Math.round(c.x - c.dy * 28 - cam.x), cy = Math.round(c.y + c.dx * 28 - cam.y);
-    if (cx < -80 || cy < -80 || cx > W + 80 || cy > H + 80) continue;
+    if (cx < -80 || cy < -80 || cx > VW + 80 || cy > VH + 80) continue;
     const vertical = Math.abs(c.dy) > Math.abs(c.dx);
     const w = vertical ? 30 : 64, h = vertical ? 64 : 30;
     ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(cx - w / 2 + 2, cy - h / 2 + 2, w, h);
@@ -1523,20 +1591,38 @@ function drawCity(): void {
 
   for (const sh of shuttles) drawMinibus(sh.x, sh.y, sh.angle, sh.route.no);
   if (ride) drawMinibus(ride.x, ride.y, ride.angle, ride.route.no);
+
+  // entrances: a glowing pad on the ground at every place you can use, pulsing gently
+  const pulse = 0.55 + 0.25 * Math.sin(t * 3);
+  for (const p of PLACES) {
+    const x = Math.round(placeX(p) - cam.x), y = Math.round(placeY(p) - cam.y);
+    if (x < -40 || y < -40 || x > VW + 40 || y > VH + 40) continue;
+    const col = KIND_COLOUR[p.kind] ?? '#e8e4d8';
+    ctx.globalAlpha = 0.28 * pulse; ctx.fillStyle = col; ctx.fillRect(x - 14, y - 8, 28, 12);
+    ctx.globalAlpha = pulse; ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.strokeRect(x - 13, y - 7, 26, 10);
+    // a chevron pointing in, towards the door
+    ctx.fillStyle = col;
+    ctx.fillRect(x - 4, y - 14, 2, 2); ctx.fillRect(x + 2, y - 14, 2, 2); ctx.fillRect(x - 2, y - 16, 4, 2);
+    ctx.globalAlpha = 1;
+    if (p.kind === 'minibus') drawStopSign(p);
+  }
+
   // the notice board in the market bazaar
   {
     const b = PLACES.find((p) => p.id === 'board')!;
-    const bx = Math.round(placeX(b) - cam.x) - 20, by = Math.round(placeY(b) - cam.y) - 44;
-    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(bx + 3, by + 34, 42, 4);
-    ctx.fillStyle = '#4a3226'; ctx.fillRect(bx + 4, by + 22, 3, 14); ctx.fillRect(bx + 33, by + 22, 3, 14);
-    ctx.fillStyle = '#5a3e2a'; ctx.fillRect(bx, by, 40, 24);
-    ctx.fillStyle = '#b8864a'; ctx.fillRect(bx + 2, by + 2, 36, 19);
-    ['#f2eee4', '#ffe28a', '#a8d8ff', '#f2eee4', '#ffb0b0'].forEach((c2, i) => { ctx.fillStyle = c2; ctx.fillRect(bx + 4 + i * 7, by + 4 + (i % 2) * 4, 5, 7); });
+    const bx2 = Math.round(placeX(b) - cam.x) - 20, by2 = Math.round(placeY(b) - cam.y) - 44;
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(bx2 + 3, by2 + 34, 42, 4);
+    ctx.fillStyle = '#4a3226'; ctx.fillRect(bx2 + 4, by2 + 22, 3, 14); ctx.fillRect(bx2 + 33, by2 + 22, 3, 14);
+    ctx.fillStyle = '#5a3e2a'; ctx.fillRect(bx2, by2, 40, 24);
+    ctx.fillStyle = '#b8864a'; ctx.fillRect(bx2 + 2, by2 + 2, 36, 19);
+    ['#f2eee4', '#ffe28a', '#a8d8ff', '#f2eee4', '#ffb0b0'].forEach((c2, i) => { ctx.fillStyle = c2; ctx.fillRect(bx2 + 4 + i * 7, by2 + 4 + (i % 2) * 4, 5, 7); });
   }
 
   // people, sorted by depth with the player
   type Sprite = { y: number; draw: () => void };
-  const sprites: Sprite[] = walkers.map((w) => ({ y: w.y, draw: () => drawFigure(w.x - cam.x, w.y - cam.y, w.coat, w.frame, w.facing) }));
+  const sprites: Sprite[] = walkers
+    .filter((w) => w.x > cam.x - 60 && w.x < cam.x + VW + 60 && w.y > cam.y - 60 && w.y < cam.y + VH + 60)
+    .map((w) => ({ y: w.y, draw: () => drawFigure(w.x - cam.x, w.y - cam.y, w.coat, w.frame, w.facing) }));
   for (const p of PLACES) {
     if (!p.person || (p.kind === 'offer' && declined)) continue;
     sprites.push({ y: placeY(p) - 10, draw: () => drawFigure(placeX(p) - cam.x + 10, placeY(p) - cam.y - 10, p.person!, 0, -1) });
@@ -1544,20 +1630,55 @@ function drawCity(): void {
   if (!ride) sprites.push({ y: player.y, draw: drawPlayer });
   sprites.sort((a, b) => a.y - b.y).forEach((s) => s.draw());
 
-  for (const p of PLACES) {
-    const m = markerFor(p);
-    if (m) { drawMarker(placeX(p) - cam.x, placeY(p) - cam.y - 36, m); continue; }
-    const icon = PLACE_ICONS[p.kind];
-    if (icon) {
-      const x = Math.round(placeX(p) - cam.x), y = Math.round(placeY(p) - cam.y - 34);
-      ctx.fillStyle = 'rgba(8,10,18,0.75)'; ctx.fillRect(x - 5, y - 9, 11, 10);
-      text(icon, x - 2, y - 8, '#9ad0ff');
-    }
-  }
   if (path.length) {
     const last = path[path.length - 1];
-    ctx.strokeStyle = 'rgba(70,224,230,0.8)';
-    ctx.strokeRect(Math.round(last.x - cam.x) - 4.5, Math.round(last.y - cam.y) - 4.5, 9, 6);
+    ctx.strokeStyle = 'rgba(70,224,230,0.8)'; ctx.lineWidth = 2;
+    ctx.strokeRect(Math.round(last.x - cam.x) - 9, Math.round(last.y - cam.y) - 9, 18, 12);
+  }
+  ctx.restore();
+
+  // ---- labels at screen size, so they stay readable however far out we are
+  const S = (wx: number): number => Math.round((wx - cam.x) * zoom);
+  const T = (wy: number): number => Math.round((wy - cam.y) * zoom);
+  const taken: Rect[] = [];
+  const free = (r: Rect): boolean => !taken.some((q) => r.x < q.x + q.w && q.x < r.x + r.w && r.y < q.y + q.h && q.y < r.y + r.h);
+  text('6 central', S(bx + cam.x + 4), T(by + cam.y) - 9, '#e8e4d8');
+  // places first: a chip with the icon and the name, in the place's colour
+  for (const p of PLACES) {
+    const x = S(placeX(p)), y = T(placeY(p)) - Math.round(20 * zoom) - 12;
+    if (x < -60 || y < -20 || x > W + 60 || y > H + 20) continue;
+    const m = markerFor(p);
+    if (m) { drawMarker(x, y - 2, m); taken.push({ x: x - 8, y: y - 14, w: 16, h: 14 }); continue; }
+    const col = KIND_COLOUR[p.kind] ?? '#e8e4d8';
+    const label = zoom < 1 && p.name.length > 22 ? `${p.name.slice(0, 21)}.` : p.name;
+    const w = tw(label) + 18;
+    const r = { x: x - w / 2, y: y - 10, w, h: 11 };
+    if (!free(r)) {
+      // crowded: just the icon
+      const ri = { x: x - 5, y: y - 10, w: 11, h: 11 };
+      if (!free(ri)) continue;
+      ctx.fillStyle = 'rgba(8,10,18,0.85)'; ctx.fillRect(ri.x, ri.y, ri.w, ri.h);
+      text(KIND_ICON[p.kind] ?? 'i', ri.x + 3, ri.y + 2, col);
+      taken.push(ri);
+      continue;
+    }
+    ctx.fillStyle = 'rgba(8,10,18,0.85)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.fillStyle = col; ctx.fillRect(r.x, r.y, 11, r.h);
+    text(KIND_ICON[p.kind] ?? 'i', r.x + 3, r.y + 2, '#08110c');
+    text(label, r.x + 14, r.y + 2, '#f2eee4');
+    taken.push(r);
+  }
+  // then landmark name plates, where there is room
+  for (const l of BUILDING_LABELS) {
+    const x = S(l.x * TILE), y = T(l.y * TILE);
+    if (x < -80 || y < -10 || x > W + 80 || y > H + 10) continue;
+    const w = tw(l.text) + 8;
+    const r = { x: x - w / 2, y: y - 5, w, h: 10 };
+    if (!free(r)) continue;
+    ctx.fillStyle = '#2a2420'; ctx.fillRect(r.x - 1, r.y - 1, r.w + 2, r.h + 2);
+    ctx.fillStyle = '#f8f4e8'; ctx.fillRect(r.x, r.y, r.w, r.h);
+    text(l.text, r.x + 4, r.y + 2, '#2a2a30');
+    taken.push(r);
   }
 
   // evening and night: a cool grade, deeper after dark
@@ -1583,8 +1704,11 @@ function drawCity(): void {
     else if (j) text(`(job $${j.def.pay})`, after, 342, '#ffc84a');
     else text(`(${({ minibus: 'ride', board: 'gigs', shop: 'buy gear', pirate: 'a man with discs', employer: 'work', library: 'study', course: 'courses', police: 'your record', prison: 'stay out', flavour: 'look', offer: 'a man in a cap', bus: 'go home', job: 'shop' } as Record<string, string>)[near.kind]})`, after, 342, '#9aa0b8');
   } else {
-    text('wasd / tap to walk   shift run   e use   i status', 8, 342, '#6f7688');
+    text('wasd / tap to walk   shift run   e use   i status   z zoom', 8, 342, '#6f7688');
   }
+  ctx.fillStyle = '#232a3a'; ctx.fillRect(zoomRect.x, zoomRect.y, zoomRect.w, zoomRect.h);
+  const zl = zoom < 1 ? 'zoom in' : 'zoom out';
+  text(zl, zoomRect.x + (zoomRect.w - tw(zl)) / 2, zoomRect.y + 7, '#9aa0b8');
   ctx.fillStyle = running ? '#46e0e6' : '#232a3a'; ctx.fillRect(runRect.x, runRect.y, runRect.w, runRect.h);
   text(running ? 'running' : 'walk', runRect.x + (runRect.w - tw(running ? 'running' : 'walk')) / 2, runRect.y + 7, running ? '#08110c' : '#9aa0b8');
 
