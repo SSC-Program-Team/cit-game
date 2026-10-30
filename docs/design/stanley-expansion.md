@@ -257,10 +257,11 @@ owner will provide the question bank; the map has been redrawn from real coordin
 8. **Seasons (proposal).** The leaderboard resets each term, so a student who joins late still has
    a chance.
 
-### 9.2 Open questions
+### 9.2 Answered on 2026-10-30
 
-1. Who builds and hosts the server, and how do students log in (school Microsoft or Google
-   accounts)?
-2. Is "the server" one school, one class, or every school playing together?
-3. Do the real-time work tasks (every 5 hours) stay as they are, now that play is free?
-4. Seasons: yes or no, and how long?
+- **Log-in:** Google accounts, but not yet: build without accounts for now.
+- **The server:** one for the whole school; everyone plays together.
+- **Seasons:** none for now; the leaderboard never resets.
+
+Still open: who builds and hosts the server, and whether the real-time work tasks (every 5 hours)
+stay as they are now that play is free.
