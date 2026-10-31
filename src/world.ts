@@ -10,6 +10,7 @@ import { ROUTES } from './minibus.ts';
 import { COVER, ROOF } from './stanley-cover.ts';
 import { SHAPE_3D, EXTRA_3D } from './stanley-shapes.ts';
 import { PHOTOS, PHOTO_PX } from './stanley-photos.ts';
+import { PLAZA_ESCALATORS, plazaTile, deckAt, drawPlaza, drawPlazaProps, shopDoor, PLAZA_SPOTS, PLAZA_BOX, FLOOR_NAMES } from './plaza.ts';
 
 export const TILE = 16;
 export const MAP_W = OSM.w;
@@ -46,6 +47,8 @@ export type Gr = (typeof Gr)[keyof typeof Gr];
 export const grid = new Uint8Array(N);
 /** building index per tile, -1 for none */
 export const bid = new Int32Array(N).fill(-1);
+/** the ground Stanley Plaza stands on (plaza.ts draws it, not the tile painter) */
+const PLAZA_MASK = new Uint8Array(N);
 /** tiles of a mapped road, path or steps: never built over or fenced off */
 const mapped = new Uint8Array(N);
 
@@ -280,12 +283,11 @@ function destair(p: number[]): number[] {
   return o;
 }
 /**
- * Escalators, in metres. Stanley Plaza steps down the hill from the bus terminus deck to the
- * amphitheatre by the waterfront; a pair of escalators runs straight down through it, cut through
- * the building. `x` is the centre line; the west lane goes down (south), the east lane up.
+ * Escalators, in metres: Stanley Plaza's, one pair per floor (see plaza.ts). `x` is the centre
+ * line; the west lane goes down (south), the east lane up; y0..y1 includes a landing at each end.
  */
 export type Escalator = { name: string; x: number; y0: number; y1: number; w: number };
-export const ESCALATORS: Escalator[] = [{ name: 'stanley plaza escalators', x: 404, y0: 345, y1: 423, w: 5 }];
+export const ESCALATORS: Escalator[] = PLAZA_ESCALATORS;
 /** which way an escalator carries you at a world pixel: +1 south, -1 north, 0 not on one */
 export function escalatorAt(px: number, py: number): number {
   const mx = px / 16, my = py / 16;
@@ -325,6 +327,12 @@ const real3d = (i: number): [number[], number, number] | undefined => {
   // hillside, so the 3D map only sees part of it as a building); they still take the real height
   return r && LANDMARK_NAMES.has(OSM.buildings[i][2]) ? [OSM.buildings[i][0], r[1], r[2]] : r;
 };
+/**
+ * Stanley Plaza's main block is not drawn as a building: plaza.ts lays it out as floors you walk
+ * on. Its outline is kept, as the ground the plaza covers.
+ */
+const PLAZA_I = OSM.buildings.findIndex(([p, , n]) => n === 'Stanley Plaza' && p.some((v, j) => j % 2 === 1 && v > 420));
+const PLAZA_POLY: number[] = PLAZA_I >= 0 ? OSM.buildings[PLAZA_I][0] : [];
 const SHAPES: number[][] = ALL_BUILDINGS.map(([p], i) => destair(regularize(real3d(i)?.[0] ?? p)));
 
 const AREA_CODE: Record<string, Gr> = {
@@ -483,20 +491,12 @@ const ROAD: Record<string, [Gr, number]> = {
   }
   // 4. buildings. A mapped road, path or steps is never built over: where one runs under a
   //    building (a passage, a deck, a covered walk) it stays open, and the building is drawn over you
-  SHAPES.forEach((p, i) => fillPoly(p, (k) => { if (grid[k] !== Gr.Sea && !mapped[k]) { grid[k] = Gr.Building; bid[k] = i; } }));
+  SHAPES.forEach((p, i) => i !== PLAZA_I && fillPoly(p, (k) => { if (grid[k] !== Gr.Sea && !mapped[k]) { grid[k] = Gr.Building; bid[k] = i; } }));
   // 5. walls and fences (retaining walls are only a change of level). Where one crosses a mapped
   //    path there is a gate in real life: the path stays open
   for (const [p, kind] of OSM.walls) {
     if (kind === 'retaining_wall') continue;
     traceLine(p, (k) => { if (grid[k] !== Gr.Sea && grid[k] !== Gr.Building && !mapped[k]) grid[k] = Gr.Wall; });
-  }
-  // 5a. escalators: cut a clear slot through whatever they pass
-  for (const e of ESCALATORS) {
-    for (let y = Math.floor(e.y0); y < Math.ceil(e.y1); y += 1) for (let x = Math.floor(e.x - e.w / 2); x < Math.ceil(e.x + e.w / 2); x += 1) {
-      const k = y * MAP_W + x;
-      grid[k] = y < e.y0 + 1.2 || y >= e.y1 - 1.2 ? Gr.Path : Gr.Escalator; // landings at both ends
-      bid[k] = -1;
-    }
   }
   // 5b. outside the aerial photo, open hillside gets invented copses, so it matches the wooded
   //     hills the photo shows (Stanley's slopes are mostly trees). Artistic, not surveyed.
@@ -518,6 +518,19 @@ const ROAD: Record<string, [Gr, number]> = {
       for (let dy = -2; dy <= 2; dy += 1) for (let dx = -2; dx <= 2; dx += 1) edge[(y + dy) * MAP_W + x + dx] = 1;
     }
     for (let k = 0; k < N; k += 1) if (edge[k] && grid[k] === Gr.Wood) grid[k] = Gr.Scrub;
+  }
+  // 6a. Stanley Plaza: floors, the shopfront walls between them (solid), balustrades, escalators
+  //     and stairs (plaza.ts). The rest of the ground it stands on: the piazza below the bottom
+  //     floor, the walkway out of the west end of 1/F, and planted banks everywhere else
+  fillPoly(PLAZA_POLY, (k) => { PLAZA_MASK[k] = 1; });
+  for (let y = PLAZA_BOX.y0; y <= PLAZA_BOX.y1; y += 1) for (let x = PLAZA_BOX.x0; x <= PLAZA_BOX.x1; x += 1) {
+    const k = y * MAP_W + x;
+    const t = plazaTile(x, y);
+    if (!t && !PLAZA_MASK[k]) continue;
+    PLAZA_MASK[k] = 1;
+    bid[k] = -1;
+    grid[k] = t === 'deck' ? Gr.Plaza : t === 'rail' ? Gr.Wall : t === 'face' ? Gr.Building : t === 'escalator' ? Gr.Escalator : t === 'stairs' ? Gr.Steps
+      : y >= 410 ? Gr.Plaza : x < 382 && y >= 395 && y < 405 ? Gr.Path : Gr.Wood;
   }
   // 7. no stranded pockets: any open area people can't reach from the streets (woods or a fence all
   //    round) gets a scrub trail cut through the trees, or a gate in the fence, to the nearest place
@@ -629,6 +642,8 @@ export type Building = {
   wallColour?: string;
   /** its real look, cut from the 3D map: [atlas x, y, w, h, game x, y, wall] (see stanley-photos.ts) */
   photo?: [number, number, number, number, number, number, number];
+  /** not drawn as a building (Stanley Plaza's main block: plaza.ts draws it) */
+  hidden?: boolean;
 };
 
 
@@ -687,6 +702,7 @@ export const BUILDINGS: Building[] = ALL_BUILDINGS.map(([, kind, name, extra], i
     roof: lm.roof ?? real?.[0] ?? roofs[Math.floor(hash(Math.round(x0), Math.round(y0), 5) * roofs.length)],
     pitched: lm.pitched ?? pitched, height,
     facade: lm.facade ?? 'windows', terrace: lm.terrace ?? false, chimneys: lm.chimneys ?? 0, wallColour: lm.wall, photo,
+    hidden: i === PLAZA_I,
   };
 });
 
@@ -758,6 +774,20 @@ function atDoor(x: number, y: number): { tx: number; ty: number } {
   taken.add(best);
   return standAt(best.door!.x, best.door!.y + 1.5, 6);
 }
+/** stand at a named shop's door in Stanley Plaza */
+function plazaDoor(name: string): { tx: number; ty: number } {
+  const d = shopDoor(name);
+  return d ? standAt(d.x, d.y, 3) : standAt(414, 400);
+}
+/** spots on every floor of Stanley Plaza for shoppers to wander between (world pixels) */
+export const PLAZA_POINTS = PLAZA_SPOTS.map((p) => ({ x: p.x * TILE, y: p.y * TILE }));
+/** which floor of Stanley Plaza a point (metres) is on, or '' outside it */
+export function plazaFloor(mx: number, my: number): string {
+  const d = deckAt(mx, my);
+  if (d) return FLOOR_NAMES[d.level];
+  const k = Math.floor(my) * MAP_W + Math.floor(mx);
+  return PLAZA_MASK[k] && my >= 405 ? FLOOR_NAMES[0] : '';
+}
 /** metres from the 8 m tile coordinates the first layout used */
 const m8 = (t: number): number => t * 8 + 4;
 const at = (tx8: number, ty8: number): { tx: number; ty: number } => standAt(m8(tx8), m8(ty8));
@@ -780,8 +810,8 @@ export const PLACES: Place[] = [
     line: 'the stall holders share one router.' },
   { id: 'store', ...shopAt(80, 60), name: 'the store', kind: 'job',
     line: 'a corner store with a card machine.' },
-  { id: 'plaza', ...atBuilding('Stanley Plaza', m8(46), m8(47)), name: 'stanley plaza', kind: 'course',
-    line: 'the training centre on the first floor runs short courses.' },
+  { id: 'plaza', ...plazaDoor('training centre'), name: 'stanley plaza training centre', kind: 'course',
+    line: 'a training centre on 1/f of stanley plaza. it runs short courses.' },
   { id: 'murray', ...atBuilding('Murray House', m8(52), m8(66)), name: 'tide restaurant', kind: 'employer',
     line: 'a restaurant in murray house. the manager is strict.' },
   { id: 'cafe', ...shopAt(64, 58), name: 'bayview cafe', kind: 'employer',
@@ -812,8 +842,12 @@ export const PLACES: Place[] = [
     line: 'built in 1950 to remember the people who died here in the war.' },
   { id: 'museum', ...atBuilding('Hong Kong Correctional Services Museum', m8(156), m8(92)), name: 'correctional services museum', kind: 'flavour',
     line: 'prison history, by the prison. free entry.' },
-  { id: 'escalator', ...standAt(404, 342, 4), name: 'stanley plaza escalators', kind: 'flavour',
-    line: 'they run from the bus terminus down through the plaza to the waterfront. stand on the left lane to go down, the right to go up.' },
+  { id: 'escalator', ...standAt(408, 412, 3), name: 'stanley plaza escalators', kind: 'flavour',
+    line: 'they zig-zag up the terraces, a floor at a time: g/f, 1/f, 2/f, 3/f, then the bus deck on 4/f. left lane down, right lane up.' },
+  { id: 'plazaview', ...standAt(412, 357, 3), name: 'stanley plaza viewing deck', kind: 'flavour',
+    line: '4/f, the top of the plaza. the whole of stanley bay, murray house and blake pier below you.' },
+  { id: 'pirateship', ...standAt(388, 422, 3), name: 'pirate ship playground', kind: 'flavour',
+    line: 'a wooden ship on the piazza, facing the bay. stanley was a fishing village long before the plaza.' },
   { id: 'stbeach', ...at(117, 141), name: "st stephen's beach", kind: 'flavour',
     line: 'a quiet beach on the peninsula, below the college.' },
   { id: 'cemetery', ...at(132, 128), name: 'stanley military cemetery', kind: 'flavour',
@@ -977,6 +1011,8 @@ const NAMES: Array<[string, number, number]> = [
 
 /** the name of the nearest named place, for the status bar */
 export function areaNear(tx: number, ty: number): string {
+  const floor = plazaFloor(tx, ty);
+  if (floor) return `stanley plaza, ${floor}`;
   let best = '';
   let bd = Infinity;
   for (const [name, x, y] of NAMES) {
@@ -1091,7 +1127,7 @@ export function drawWorld(ctx: CanvasRenderingContext2D, camX: number, camY: num
 /** buildings whose picture overlaps a box (world pixels) */
 export function buildingsNear(x0: number, y0: number, x1: number, y1: number): Building[] {
   const a = x0 / TILE, b = y0 / TILE, c = x1 / TILE, d = y1 / TILE;
-  return BUILDINGS.filter((B) => B.x1 >= a && B.x0 <= c && B.y1 >= b && B.y0 - B.wall <= d);
+  return BUILDINGS.filter((B) => !B.hidden && B.x1 >= a && B.x0 <= c && B.y1 >= b && B.y0 - B.wall <= d);
 }
 /** is a person whose feet are at (px, py) world pixels behind this building's picture? */
 export function behindBuilding(B: Building, px: number, py: number): boolean {
@@ -1436,10 +1472,10 @@ function renderChunk(cx: number, cy: number): HTMLCanvasElement {
   }
 
   // ---- 3. buildings, from their outlines, back to front
-  const near = BUILDINGS.filter((b) => b.x1 >= tx0 - 2 && b.x0 <= tx0 + CHUNK + 2 && b.y1 >= ty0 - 2 && b.y0 <= ty0 + CHUNK + 2)
+  const near = BUILDINGS.filter((b) => !b.hidden && b.x1 >= tx0 - 2 && b.x0 <= tx0 + CHUNK + 2 && b.y1 >= ty0 - 2 && b.y0 <= ty0 + CHUNK + 2)
     .sort((p, q) => p.y1 - q.y1);
   for (const b of near) drawBuilding(lg, b);
-  for (const e of ESCALATORS) if (e.x + e.w >= tx0 && e.x - e.w <= tx0 + CHUNK && e.y1 >= ty0 && e.y0 <= ty0 + CHUNK) drawEscalator(lg, e);
+  drawPlaza(lg, tx0, ty0, tx0 + CHUNK, ty0 + CHUNK);
   if (tx0 < 740 && tx0 + CHUNK > 590 && ty0 < 570 && ty0 + CHUNK > 420) drawMarket(lg, tx0, ty0);
   lg.restore();
 
@@ -1451,6 +1487,7 @@ function renderChunk(cx: number, cy: number): HTMLCanvasElement {
   g.drawImage(lo, 0, 0, CPX, CPX);
   g.translate(-cx * CPX, -cy * CPX);
   for (let y = ty0 - 5; y < ty0 + CHUNK + 6; y += 1) for (let x = tx0 - 5; x < tx0 + CHUNK + 5; x += 1) drawProp(g, x, y);
+  drawPlazaProps(g, tx0 - 5, ty0 - 5, tx0 + CHUNK + 5, ty0 + CHUNK + 5, textFn);
   return c;
 }
 
@@ -1645,48 +1682,12 @@ function drawStall(g: CanvasRenderingContext2D, st: Stall): void {
 
 /** name plates for landmark buildings, in metres: main.ts draws them at screen size */
 export const BUILDING_LABELS: Array<{ text: string; x: number; y: number }> = BUILDINGS
-  .filter((b) => b.name && b.door && !/^(Block|House|No\.)/.test(b.name) && !/[^\x20-\x7e]/.test(b.name))
+  .filter((b) => b.name && b.door && b.name !== 'Stanley Plaza' && !/^(Block|House|No\.)/.test(b.name) && !/[^\x20-\x7e]/.test(b.name))
   .map((b) => ({
     text: b.name.replace(' (Luke Yip Building)', '').replace('Hong Kong Correctional Services Museum', 'CSD Museum').toLowerCase(),
     x: (b.x0 + b.x1) / 2, y: b.y1 - b.wall - 0.6,
   }));
-
-/** an escalator pair, in metres: glass balustrades, steel median, two lanes of steps, landings */
-function drawEscalator(g: CanvasRenderingContext2D, e: Escalator): void {
-  const px = 1 / ART, x0 = e.x - e.w / 2, len = e.y1 - e.y0;
-  g.fillStyle = 'rgba(0,0,0,0.3)'; g.fillRect(x0 + 0.4, e.y0 + 0.4, e.w, len); // it sits in a slot: shadow
-  g.fillStyle = '#3a3d48'; g.fillRect(x0, e.y0, e.w, len);
-  const lanes = [x0 + 0.45, e.x + 0.3];
-  const lw = e.w / 2 - 0.75;
-  for (const lx of lanes) {
-    // steps: light treads with dark risers and yellow safety edges
-    g.fillStyle = '#a9afb8'; g.fillRect(lx, e.y0 + 1.2, lw, len - 2.4);
-    g.fillStyle = '#6e737e';
-    for (let y = e.y0 + 1.2; y < e.y1 - 1.2; y += 0.4) g.fillRect(lx, y, lw, px);
-    g.fillStyle = '#e8c23a'; g.fillRect(lx, e.y0 + 1.2, px, len - 2.4); g.fillRect(lx + lw - px, e.y0 + 1.2, px, len - 2.4);
-    // black handrails either side
-    g.fillStyle = '#16171c'; g.fillRect(lx - 0.22, e.y0 + 0.9, 0.16, len - 1.8); g.fillRect(lx + lw + 0.06, e.y0 + 0.9, 0.16, len - 1.8);
-  }
-  // glass balustrades on the outside, a lit steel median between the lanes
-  g.fillStyle = 'rgba(170,215,235,0.75)'; g.fillRect(x0, e.y0 + 0.8, 0.22, len - 1.6); g.fillRect(x0 + e.w - 0.22, e.y0 + 0.8, 0.22, len - 1.6);
-  g.fillStyle = '#c8ccd4'; g.fillRect(e.x - 0.3, e.y0 + 0.8, 0.6, len - 1.6);
-  g.fillStyle = '#f2e6a0'; for (let y = e.y0 + 2; y < e.y1 - 2; y += 3) g.fillRect(e.x - px, y, 2 * px, 0.3);
-  // landings: checker plates with a yellow comb line and an arrow for each lane
-  for (const [ly, top] of [[e.y0, true], [e.y1 - 1.2, false]] as Array<[number, boolean]>) {
-    g.fillStyle = '#8d929c'; g.fillRect(x0, ly, e.w, 1.2);
-    g.fillStyle = '#a4a9b2';
-    for (let y = ly; y < ly + 1.2; y += 0.25) for (let x = x0 + (((y - ly) * 4) % 2) * 0.25; x < x0 + e.w; x += 0.5) g.fillRect(x, y, 0.25, 0.25);
-    g.fillStyle = '#e8c23a'; g.fillRect(x0, top ? ly + 1.2 - 2 * px : ly, e.w, 2 * px);
-    lanes.forEach((lx, i) => {
-      const down = i === 0, cx = lx + lw / 2, cy = ly + 0.6;
-      g.fillStyle = down ? '#ff8a4a' : '#7be08a';
-      g.beginPath();
-      if (down) { g.moveTo(cx - 0.45, cy - 0.25); g.lineTo(cx + 0.45, cy - 0.25); g.lineTo(cx, cy + 0.3); }
-      else { g.moveTo(cx - 0.45, cy + 0.25); g.lineTo(cx + 0.45, cy + 0.25); g.lineTo(cx, cy - 0.3); }
-      g.closePath(); g.fill();
-    });
-  }
-}
+BUILDING_LABELS.push({ text: 'stanley plaza', x: 414, y: 383 });
 
 // ------------------------------------------------------------ buildings ---
 const WALL_COLOUR: Record<BuildingStyle, string> = {
@@ -1749,10 +1750,6 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building, shadow = true): 
   }
 
   g.save();
-  // nothing of a building is drawn over an escalator slot cut through it
-  g.beginPath(); g.rect(-1e4, -1e4, 3e4, 3e4);
-  for (const e of ESCALATORS) g.rect(e.x - e.w / 2, e.y0, e.w, e.y1 - e.y0);
-  g.clip('evenodd');
   if (photoImg && B.photo) {
     // its real look: roof and south walls as the 3D map shows them, already cut to shape
     const [ax, ay, w, hh, gx, gy] = B.photo;
@@ -2134,6 +2131,7 @@ function woodCrowns(g: CanvasRenderingContext2D, x: number, y: number): void {
 }
 
 function drawProp(g: CanvasRenderingContext2D, x: number, y: number): void {
+  if (x >= 0 && y >= 0 && x < MAP_W && y < MAP_H && PLAZA_MASK[y * MAP_W + x]) return; // plaza.ts draws its own
   if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return;
   const code = grid[y * MAP_W + x];
   const px = x * TILE, py = y * TILE;
