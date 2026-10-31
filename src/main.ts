@@ -12,7 +12,7 @@ import { GLYPHS } from './font';
 import {
   TILE, MAP_W, MAP_H, PLACES, START, RELEASE, drawWorld, setWorldText, renderOverview, solidAt, solidTile,
   walkableTile, findPath, isSea, areaNear, ROAD_LINES, walkDistance, roadRoute, BUILDING_LABELS, ESCALATORS,
-  escalatorAt, setBuildingPhotos, MARKET_POINTS, type Place,
+  escalatorAt, setBuildingPhotos, MARKET_POINTS, buildingsNear, behindBuilding, drawBuildingOver, type Place,
 } from './world';
 import { ROUTES, routesAt, type Route, type Stop } from './minibus';
 import { QUESTIONS, TOPIC_NAMES, FORM_RATE, type Form, type Question, type Tier, type Topic } from './questions';
@@ -1297,9 +1297,34 @@ function walkable(x: number, y: number): boolean { return !solidAt(x, y); }
 
 function move(dx: number, dy: number): boolean {
   let moved = false;
-  if (dx && walkable(player.x + dx, player.y)) { player.x += dx; moved = true; }
-  if (dy && walkable(player.x, player.y + dy)) { player.y += dy; moved = true; }
+  if (dx) {
+    if (walkable(player.x + dx, player.y)) { player.x += dx; moved = true; }
+    else if (!dy) moved = slide(dx, 0);
+  }
+  if (dy) {
+    if (walkable(player.x, player.y + dy)) { player.y += dy; moved = true; }
+    else if (!dx) moved = slide(0, dy) || moved;
+  }
   return moved;
+}
+
+/**
+ * Blocked walking straight at a corner or a door frame: if the way is open a few pixels to one
+ * side, ease that way instead of stopping dead. This is what stops people snagging on edges.
+ */
+function slide(dx: number, dy: number): boolean {
+  const step = Math.abs(dx || dy);
+  for (let o = 1; o <= 9; o += 1) {
+    for (const sgn of [1, -1]) {
+      const ox = dy ? sgn * o : 0, oy = dx ? sgn * o : 0;
+      if (!walkable(player.x + ox + dx, player.y + oy + dy)) continue;
+      const mx = Math.sign(ox) * Math.min(step, o), my = Math.sign(oy) * Math.min(step, o);
+      if (!walkable(player.x + mx, player.y + my)) continue;
+      player.x += mx; player.y += my;
+      return true;
+    }
+  }
+  return false;
 }
 
 /** people stroll near the places that matter: the promenade, the market, the plaza, the college */
@@ -1473,13 +1498,13 @@ function drawFigure(x: number, y: number, coat: string, frame: number, facing = 
   ctx.restore();
 }
 
-function drawPlayer(): void {
+function drawPlayer(alpha = 1): void {
   const x = Math.round(player.x - cam.x);
   const y = Math.round(player.y - cam.y);
   ctx.save();
   const fs = figScale();
-  ctx.globalAlpha = 0.45; ctx.fillStyle = '#000';
-  ctx.beginPath(); ctx.ellipse(x, y + 1, 7 * fs / 1.5, 3 * fs / 1.5, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+  ctx.globalAlpha = 0.45 * alpha; ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.ellipse(x, y + 1, 7 * fs / 1.5, 3 * fs / 1.5, 0, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = alpha;
   ctx.translate(x, y);
   ctx.scale(player.facing < 0 ? -fs : fs, fs);
   const swing = [0, 1, 0, -1][player.frame];
@@ -1659,8 +1684,26 @@ function drawCity(): void {
     if (!p.person || (p.kind === 'offer' && declined)) continue;
     sprites.push({ y: placeY(p) - 10, draw: () => drawFigure(placeX(p) - cam.x + 10, placeY(p) - cam.y - 10, p.person!, 0, -1) });
   }
-  if (!ride) sprites.push({ y: player.y, draw: drawPlayer });
+  if (!ride) sprites.push({ y: player.y, draw: () => drawPlayer() });
+  // anyone standing behind a building (on the ground its picture covers) is hidden by it: the
+  // building joins the depth sort at its front edge, so people in front still stand in front
+  const feet: Array<[number, number]> = walkers.map((w) => [w.x, w.y]);
+  if (!ride) feet.push([player.x, player.y]);
+  const over = new Set<ReturnType<typeof buildingsNear>[number]>();
+  let playerBehind = false;
+  const nearB = buildingsNear(cam.x - 40, cam.y - 40, cam.x + VW + 40, cam.y + VH + 200);
+  for (const [fx, fy] of feet) {
+    if (fx < cam.x - 40 || fx > cam.x + VW + 40 || fy < cam.y - 40 || fy > cam.y + VH + 200) continue;
+    for (const B of nearB) {
+      if (behindBuilding(B, fx, fy)) { over.add(B); if (fx === player.x && fy === player.y) playerBehind = true; }
+    }
+  }
+  for (const B of over) {
+    sprites.push({ y: B.y1 * TILE - 0.5, draw: () => { ctx.save(); ctx.translate(-cam.x, -cam.y); drawBuildingOver(ctx, B); ctx.restore(); } });
+  }
   sprites.sort((a, b) => a.y - b.y).forEach((s) => s.draw());
+  // behind a building, you still see yourself: a faint outline through it
+  if (playerBehind && !ride) { drawPlayer(0.4); ctx.globalAlpha = 1; }
 
   if (path.length) {
     const last = path[path.length - 1];
@@ -2066,11 +2109,13 @@ function drawPrison(): void {
 
 // ------------------------------------------------------------------- loop ---
 let last = performance.now();
+/** test hook only: run the game this many steps per frame */
+let timeScale = 1;
 function frame(t: number): void {
   const dt = Math.min(0.05, (t - last) / 1000);
   last = t;
   frames += 1;
-  update(dt);
+  for (let i = 0; i < timeScale; i += 1) update(dt);
   // everything is drawn in 640x360 units; the canvas has PXR real pixels per unit
   ctx.setTransform(PXR, 0, 0, PXR, 0, 0);
   ctx.imageSmoothingEnabled = false;
@@ -2122,6 +2167,9 @@ hooks.__skip = (hours: number) => { skew += hours * HOUR; tickWork(); };
 hooks.__goto = (id: string) => { const p = PLACES.find((x) => x.id === id); if (p) { placePlayer(p.tx, p.ty); activate(p); } };
 hooks.__reset = () => { reset(); location.reload(); };
 hooks.__tp = (x: number, y: number) => placePlayer(x, y);
+hooks.__speed = (n: number) => { timeScale = Math.max(1, Math.min(40, Math.round(n))); };
+hooks.__route = (tx: number, ty: number) => { pending = null; path = findPath(player.x, player.y, tx * TILE + 8, ty * TILE + 12); return path.length; };
+hooks.__pos = () => ({ x: player.x, y: player.y, moving: path.length > 0 });
 hooks.__items = ITEMS.map((i) => i.id);
 hooks.__day = DAY;
 /** the whole map as a PNG data URL, for checking the layout */

@@ -46,6 +46,8 @@ export type Gr = (typeof Gr)[keyof typeof Gr];
 export const grid = new Uint8Array(N);
 /** building index per tile, -1 for none */
 export const bid = new Int32Array(N).fill(-1);
+/** tiles of a mapped road, path or steps: never built over or fenced off */
+const mapped = new Uint8Array(N);
 
 /** is this metre in the village core, where open ground is paved rather than garden */
 const core = (x: number, y: number): boolean => (x >= 460 && x <= 845 && y >= 300 && y <= 700) || (x >= 280 && x <= 470 && y >= 260 && y <= 490);
@@ -462,6 +464,7 @@ const ROAD: Record<string, [Gr, number]> = {
     stampLine(p, width, (k) => {
       if (grid[k] === Gr.Sea) { if (code === Gr.Path) grid[k] = Gr.Pier; return; }
       grid[k] = code;
+      mapped[k] = 1;
     });
   }
   // 3b. pavements: open ground beside a road becomes footway (OSM rarely maps them)
@@ -478,12 +481,14 @@ const ROAD: Record<string, [Gr, number]> = {
       if (side[k] && (g === Gr.Hill || g === Gr.Grass || g === Gr.Park || g === Gr.Built || g === Gr.School || g === Gr.Yard)) grid[k] = Gr.Path;
     }
   }
-  // 4. buildings
-  SHAPES.forEach((p, i) => fillPoly(p, (k) => { if (grid[k] !== Gr.Sea) { grid[k] = Gr.Building; bid[k] = i; } }));
-  // 5. walls and fences (retaining walls are only a change of level)
+  // 4. buildings. A mapped road, path or steps is never built over: where one runs under a
+  //    building (a passage, a deck, a covered walk) it stays open, and the building is drawn over you
+  SHAPES.forEach((p, i) => fillPoly(p, (k) => { if (grid[k] !== Gr.Sea && !mapped[k]) { grid[k] = Gr.Building; bid[k] = i; } }));
+  // 5. walls and fences (retaining walls are only a change of level). Where one crosses a mapped
+  //    path there is a gate in real life: the path stays open
   for (const [p, kind] of OSM.walls) {
     if (kind === 'retaining_wall') continue;
-    traceLine(p, (k) => { if (grid[k] !== Gr.Sea && grid[k] !== Gr.Building) grid[k] = Gr.Wall; });
+    traceLine(p, (k) => { if (grid[k] !== Gr.Sea && grid[k] !== Gr.Building && !mapped[k]) grid[k] = Gr.Wall; });
   }
   // 5a. escalators: cut a clear slot through whatever they pass
   for (const e of ESCALATORS) {
@@ -513,6 +518,70 @@ const ROAD: Record<string, [Gr, number]> = {
       for (let dy = -2; dy <= 2; dy += 1) for (let dx = -2; dx <= 2; dx += 1) edge[(y + dy) * MAP_W + x + dx] = 1;
     }
     for (let k = 0; k < N; k += 1) if (edge[k] && grid[k] === Gr.Wood) grid[k] = Gr.Scrub;
+  }
+  // 7. no stranded pockets: any open area people can't reach from the streets (woods or a fence all
+  //    round) gets a scrub trail cut through the trees, or a gate in the fence, to the nearest place
+  //    they can. Prison yards stay shut.
+  {
+    const blocked = (g: number): boolean => g === Gr.Sea || g === Gr.Building || g === Gr.Wall;
+    const crossable = (g: number): boolean => g === Gr.Sea || g === Gr.Building;
+    const comp = new Int32Array(N).fill(-1);
+    const q = new Int32Array(N);
+    const sizes: number[] = [], yard: boolean[] = [];
+    for (let s0 = 0; s0 < N; s0 += 1) {
+      if (comp[s0] >= 0 || blocked(grid[s0]) || grid[s0] === Gr.Wood) continue;
+      const id = sizes.length;
+      let h = 0, t = 0, y = false;
+      q[t++] = s0; comp[s0] = id;
+      while (h < t) {
+        const k = q[h++];
+        if (grid[k] === Gr.Yard) y = true;
+        const x = k % MAP_W;
+        for (const n of [x > 0 ? k - 1 : -1, x < MAP_W - 1 ? k + 1 : -1, k - MAP_W, k + MAP_W]) {
+          if (n < 0 || n >= N || comp[n] >= 0 || blocked(grid[n]) || grid[n] === Gr.Wood) continue;
+          comp[n] = id; q[t++] = n;
+        }
+      }
+      sizes.push(t); yard.push(y);
+    }
+    const main = comp[412 * MAP_W + 752]; // the bus terminus
+    const prev = new Int32Array(N);
+    const cost = new Uint16Array(N);
+    for (let id = 0; id < sizes.length; id += 1) {
+      if (id === main || sizes[id] < 40 || yard[id]) continue;
+      // 0-1 search out from the pocket: open ground is free, a tree costs one; stop at the streets
+      const dq = new Int32Array(160000);
+      let head = 80000, tail = 80000;
+      const seen = new Map<number, number>();
+      for (let k = 0; k < N; k += 1) if (comp[k] === id) { dq[tail++] = k; seen.set(k, 0); prev[k] = -1; }
+      let hit = -1;
+      while (head < tail && seen.size < 150000) {
+        const k = dq[head++];
+        if (comp[k] === main) { hit = k; break; }
+        const c = seen.get(k)!;
+        const x = k % MAP_W;
+        for (const n of [x > 0 ? k - 1 : -1, x < MAP_W - 1 ? k + 1 : -1, k - MAP_W, k + MAP_W]) {
+          if (n < 0 || n >= N || crossable(grid[n])) continue;
+          // a tree costs one, a fence five (a gate is the last resort), open ground nothing
+          const step = grid[n] === Gr.Wood ? 1 : grid[n] === Gr.Wall ? 5 : 0;
+          const nc = c + step;
+          if (seen.has(n) && seen.get(n)! <= nc) continue;
+          seen.set(n, nc); prev[n] = k; cost[n] = nc;
+          if (step) dq[tail++] = n; else dq[--head] = n;
+          if (head <= 0 || tail >= dq.length) break;
+        }
+      }
+      if (hit < 0) continue;
+      // cut the trail (or the gate) two metres wide
+      for (let k = hit; k >= 0; k = prev[k]) {
+        for (const n of [k, k + 1, k + MAP_W, k - 1, k - MAP_W]) {
+          if (n < 0 || n >= N) continue;
+          if (grid[n] === Gr.Wood) grid[n] = Gr.Scrub;
+          else if (grid[n] === Gr.Wall && (n === k || n === k + 1 || n === k + MAP_W)) grid[n] = Gr.Path;
+        }
+        if (prev[k] === -1) break;
+      }
+    }
   }
 }
 
@@ -768,38 +837,91 @@ export const RELEASE = at(150, 133);
 
 // -------------------------------------------------------------- pathing ---
 /** breadth-first path over tiles near the start; returns tile centres in pixels, excluding the start */
+/** can the player's feet slide straight from one point to another (world pixels)? */
+export function clearLine(ax: number, ay: number, bx: number, by: number): boolean {
+  const d = Math.hypot(bx - ax, by - ay);
+  const n = Math.ceil(d / 3);
+  for (let i = 1; i <= n; i += 1) if (solidAt(ax + ((bx - ax) * i) / n, ay + ((by - ay) * i) / n)) return false;
+  return true;
+}
+
+/**
+ * A walking route between two world-pixel points: A* over the 1 m grid in eight directions (no
+ * cutting corners), then straightened into as few lines as the feet can actually walk. If the
+ * exact spot cannot be reached (a roof, a fenced yard), it goes as close as it can instead of
+ * refusing, so a tap always does something.
+ */
 export function findPath(sx: number, sy: number, gx: number, gy: number): Array<{ x: number; y: number }> {
   const s = { x: Math.floor(sx / TILE), y: Math.floor(sy / TILE) };
   let g = { x: Math.floor(gx / TILE), y: Math.floor(gy / TILE) };
   if (solidTile(g.x, g.y)) { const d = standAt(g.x, g.y, 8); g = { x: d.tx, y: d.ty }; }
-  // search a window around both ends, not the whole map
-  const pad = 40;
+  // search a generous window around both ends, not the whole map
+  const pad = 90;
   const wx0 = Math.max(0, Math.min(s.x, g.x) - pad), wy0 = Math.max(0, Math.min(s.y, g.y) - pad);
   const ww = Math.min(MAP_W, Math.max(s.x, g.x) + pad) - wx0, wh = Math.min(MAP_H, Math.max(s.y, g.y) + pad) - wy0;
-  const prev = new Int32Array(ww * wh).fill(-2);
-  const q = new Int32Array(ww * wh);
+  const M = ww * wh;
+  const cost = new Float32Array(M).fill(Infinity);
+  const prev = new Int32Array(M).fill(-1);
+  const closed = new Uint8Array(M);
   const key = (x: number, y: number): number => (y - wy0) * ww + (x - wx0);
-  let head = 0, tail = 0;
+  const h = (x: number, y: number): number => { const dx = Math.abs(x - g.x), dy = Math.abs(y - g.y); return Math.max(dx, dy) + 0.414 * Math.min(dx, dy); };
+  const free = (x: number, y: number): boolean => x >= wx0 && y >= wy0 && x < wx0 + ww && y < wy0 + wh && !solidTile(x, y);
+  // a small binary heap of [f, key]
+  const heap: number[] = [];
+  const push = (f: number, k: number): void => {
+    heap.push(f, k);
+    let i = heap.length / 2 - 1;
+    while (i > 0) { const p = (i - 1) >> 1; if (heap[p * 2] <= heap[i * 2]) break; [heap[p * 2], heap[i * 2]] = [heap[i * 2], heap[p * 2]]; [heap[p * 2 + 1], heap[i * 2 + 1]] = [heap[i * 2 + 1], heap[p * 2 + 1]]; i = p; }
+  };
+  const pop = (): number => {
+    const k = heap[1];
+    const lk = heap.pop()!, lf = heap.pop()!; // the last pair: key on top, then its f
+    if (heap.length) {
+      heap[0] = lf; heap[1] = lk;
+      let i = 0;
+      const n = heap.length / 2;
+      for (;;) { const l = i * 2 + 1, r = l + 1; let m = i; if (l < n && heap[l * 2] < heap[m * 2]) m = l; if (r < n && heap[r * 2] < heap[m * 2]) m = r; if (m === i) break; [heap[m * 2], heap[i * 2]] = [heap[i * 2], heap[m * 2]]; [heap[m * 2 + 1], heap[i * 2 + 1]] = [heap[i * 2 + 1], heap[m * 2 + 1]]; i = m; }
+    }
+    return k;
+  };
   const sk = key(s.x, s.y), gk = key(g.x, g.y);
-  q[tail++] = sk; prev[sk] = -1;
-  while (head < tail) {
-    const k = q[head++];
-    if (k === gk) break;
+  cost[sk] = 0; push(h(s.x, s.y), sk);
+  let best = sk, bestH = h(s.x, s.y);
+  const DIRS: Array<[number, number, number]> = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, 1.414], [1, -1, 1.414], [-1, 1, 1.414], [-1, -1, 1.414]];
+  while (heap.length) {
+    const k = pop();
+    if (closed[k]) continue;
+    closed[k] = 1;
+    if (k === gk) { best = k; break; }
     const x = (k % ww) + wx0, y = Math.floor(k / ww) + wy0;
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const hk = h(x, y);
+    if (hk < bestH) { bestH = hk; best = k; }
+    for (const [dx, dy, c] of DIRS) {
       const nx = x + dx, ny = y + dy;
-      if (nx < wx0 || ny < wy0 || nx >= wx0 + ww || ny >= wy0 + wh || solidTile(nx, ny)) continue;
+      if (!free(nx, ny)) continue;
+      if (dx && dy && (!free(x + dx, y) || !free(x, y + dy))) continue; // no squeezing past a corner
       const nk = key(nx, ny);
-      if (prev[nk] !== -2) continue;
-      prev[nk] = k; q[tail++] = nk;
+      const nc = cost[k] + c;
+      if (nc >= cost[nk]) continue;
+      cost[nk] = nc; prev[nk] = k;
+      push(nc + h(nx, ny), nk);
     }
   }
-  if (prev[gk] === -2) return [];
-  const path: Array<{ x: number; y: number }> = [];
-  for (let k = gk; k !== -1 && k !== sk; k = prev[k]) {
-    path.unshift({ x: ((k % ww) + wx0) * TILE + TILE / 2, y: (Math.floor(k / ww) + wy0) * TILE + TILE / 2 + 4 });
+  if (best === sk) return [];
+  const pts: Array<{ x: number; y: number }> = [];
+  for (let k = best; k !== -1 && k !== sk; k = prev[k]) {
+    pts.unshift({ x: ((k % ww) + wx0) * TILE + TILE / 2, y: (Math.floor(k / ww) + wy0) * TILE + TILE / 2 + 4 });
   }
-  return path;
+  // straighten: from each point, jump to the farthest later point the feet can reach in a line
+  const out: Array<{ x: number; y: number }> = [];
+  let ax = sx, ay = sy, i = 0;
+  while (i < pts.length) {
+    let j = pts.length - 1;
+    while (j > i && !clearLine(ax, ay, pts[j].x, pts[j].y)) j -= 1;
+    out.push(pts[j]);
+    ax = pts[j].x; ay = pts[j].y; i = j + 1;
+  }
+  return out;
 }
 
 /** every tile reachable on foot from a start tile */
@@ -958,6 +1080,34 @@ export function drawWorld(ctx: CanvasRenderingContext2D, camX: number, camY: num
     const old = [...chunks.entries()].sort((a, b) => a[1].used - b[1].used).slice(0, chunks.size - MAX_CHUNKS);
     for (const [k] of old) chunks.delete(k);
   }
+}
+
+// ------------------------------------------------- walking behind buildings ---
+/**
+ * The game shows each building's front wall by lifting its roof north by the wall height, so the
+ * picture of a building covers ground north of where it stands. Someone standing on that ground is
+ * behind the building: it should be drawn over them. These let main.ts do that.
+ */
+/** buildings whose picture overlaps a box (world pixels) */
+export function buildingsNear(x0: number, y0: number, x1: number, y1: number): Building[] {
+  const a = x0 / TILE, b = y0 / TILE, c = x1 / TILE, d = y1 / TILE;
+  return BUILDINGS.filter((B) => B.x1 >= a && B.x0 <= c && B.y1 >= b && B.y0 - B.wall <= d);
+}
+/** is a person whose feet are at (px, py) world pixels behind this building's picture? */
+export function behindBuilding(B: Building, px: number, py: number): boolean {
+  const mx = px / TILE, my = py / TILE;
+  if (mx < B.x0 || mx > B.x1 || my > B.y1 || my < B.y0 - B.wall - 1) return false;
+  if (pipM(mx, my, B.poly)) return true; // in a passage under it: covered over
+  // some part of the building, lifted by up to its wall height, covers this spot
+  for (let t = 0.25; t <= B.wall + 1.2; t += 0.5) if (pipM(mx, my + t, B.poly)) return true;
+  return false;
+}
+/** draw one building over whatever is already there (the context is in world pixels) */
+export function drawBuildingOver(g: CanvasRenderingContext2D, B: Building): void {
+  g.save();
+  g.scale(TILE, TILE);
+  drawBuilding(g, B, false);
+  g.restore();
 }
 
 /** the atlas of buildings' real looks: drawn instead of the generic style once it has loaded */
@@ -1581,7 +1731,7 @@ const outlines = new Map<Building, number[]>();
  * south-facing edge, back to front, and the roof sits on top of them, lifted by the same height.
  * Everything is kept inside the footprint, so a building never paints over the ground around it.
  */
-function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
+function drawBuilding(g: CanvasRenderingContext2D, B: Building, shadow = true): void {
   let p = outlines.get(B);
   if (!p) { p = simplifyRing(B.poly, 0.35); outlines.set(B, p); }
   const px = 1 / ART;
@@ -1592,9 +1742,11 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
     g.closePath();
   };
   // cast shadow to the south-east, longer for taller buildings
-  g.fillStyle = 'rgba(12,20,16,0.26)';
-  path(p.map((v, i) => v + (i % 2 ? 0.4 : 0.5 + h * 0.3)));
-  g.fill();
+  if (shadow) {
+    g.fillStyle = 'rgba(12,20,16,0.26)';
+    path(p.map((v, i) => v + (i % 2 ? 0.4 : 0.5 + h * 0.3)));
+    g.fill();
+  }
 
   g.save();
   // nothing of a building is drawn over an escalator slot cut through it
