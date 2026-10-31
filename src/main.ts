@@ -12,7 +12,7 @@ import { GLYPHS } from './font';
 import {
   TILE, MAP_W, MAP_H, PLACES, START, RELEASE, drawWorld, setWorldText, renderOverview, solidAt, solidTile,
   walkableTile, findPath, isSea, areaNear, ROAD_LINES, walkDistance, roadRoute, BUILDING_LABELS, ESCALATORS,
-  escalatorAt, setBuildingPhotos, type Place,
+  escalatorAt, setBuildingPhotos, MARKET_POINTS, type Place,
 } from './world';
 import { ROUTES, routesAt, type Route, type Stop } from './minibus';
 import { QUESTIONS, TOPIC_NAMES, FORM_RATE, type Form, type Question, type Tier, type Topic } from './questions';
@@ -186,7 +186,7 @@ const WIRE = [
   'BAYVIEW CAFE NEEDS HELP WITH ITS WI-FI AND INSTAGRAM',
 ];
 
-type Walker = { x: number; y: number; path: Array<{ x: number; y: number }>; coat: string; frame: number; facing: number; wait: number };
+type Walker = { x: number; y: number; path: Array<{ x: number; y: number }>; coat: string; frame: number; facing: number; wait: number; shopper?: boolean };
 
 let player = { x: 0, y: 0, frame: 0, walked: 0, facing: 1 };
 let path: Array<{ x: number; y: number }> = [];
@@ -1300,6 +1300,12 @@ function spawnWalkers(): void {
     const [tx, ty] = WAYPOINTS[i % WAYPOINTS.length];
     walkers.push({ x: (tx + (i % 5) - 2) * TILE + 8, y: (ty + (i % 3) - 1) * TILE + 12, path: [], coat: coats[i % coats.length], frame: 0, facing: 1, wait: i * 0.7 });
   }
+  // shoppers: they browse up and down the market lanes and stay there
+  const bright = ['#e86a6a', '#f2c84a', '#6ab0e8', '#f2eee4', '#7ad08a', '#c08ae8', '#e8a060', '#4a4a5a'];
+  for (let i = 0; i < 30 && MARKET_POINTS.length; i += 1) {
+    const p = MARKET_POINTS[(i * 37) % MARKET_POINTS.length];
+    walkers.push({ x: p.x, y: p.y + 6, path: [], coat: bright[i % bright.length], frame: 0, facing: i % 2 ? 1 : -1, wait: i * 0.4, shopper: true });
+  }
 }
 
 function updateWalkers(dt: number): void {
@@ -1307,8 +1313,15 @@ function updateWalkers(dt: number): void {
     if (!w.path.length) {
       w.wait -= dt;
       if (w.wait > 0) continue;
-      // a short wander from where they stand
+      // a short wander from where they stand (shoppers: to another stall nearby)
       let tx = 0, ty = 0;
+      if (w.shopper) {
+        const near = MARKET_POINTS.filter((p) => Math.hypot(p.x - w.x, p.y - w.y) < 30 * TILE);
+        const p = near[Math.floor(Math.random() * near.length)] ?? MARKET_POINTS[0];
+        w.path = findPath(w.x, w.y, p.x + (Math.random() - 0.5) * 24, p.y + 6).slice(0, 80);
+        w.wait = 1.5 + Math.random() * 6; // stopping to look at the stalls
+        continue;
+      }
       for (let tries = 0; tries < 8; tries += 1) {
         tx = Math.floor(w.x / TILE) + Math.floor(Math.random() * 40) - 20;
         ty = Math.floor(w.y / TILE) + Math.floor(Math.random() * 30) - 15;

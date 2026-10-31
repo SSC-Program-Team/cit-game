@@ -1330,46 +1330,61 @@ const PITCHES: Pitch[] = (() => {
   return out;
 })();
 
-/** stall fronts and canvas roofs along the market lanes: [x, y, angle, kind, seed] in metres */
-type MarketBit = { x: number; y: number; a: number; kind: 'goods' | 'tarp'; len: number; seed: number };
-const MARKET: MarketBit[] = (() => {
-  const out: MarketBit[] = [];
+/**
+ * The market lanes, as people describe them: a warren of narrow, largely covered lanes lined on
+ * both sides with small open-fronted stalls, selling silk dresses and Chinese clothes, T-shirts,
+ * paintings, bags, toys and souvenirs (chopsticks, fans, lanterns, seals). Stalls stand shoulder to
+ * shoulder, each 2.4 m wide, facing the lane; translucent roof panels cover most of the lane.
+ */
+type StallKind = 'dress' | 'tshirt' | 'paint' | 'souvenir' | 'bags' | 'toys';
+const STALL_KINDS: StallKind[] = ['dress', 'dress', 'tshirt', 'paint', 'souvenir', 'souvenir', 'bags', 'toys'];
+/** a stall: its front centre (metres), the lane direction (ux, uy) and the way it faces out (ox, oy) */
+type Stall = { x: number; y: number; ux: number; uy: number; ox: number; oy: number; kind: StallKind; seed: number; depth: number };
+type RoofPanel = { x: number; y: number; ux: number; uy: number; len: number; width: number };
+const STALLS: Stall[] = [];
+const ROOF_PANELS: RoofPanel[] = [];
+/** points along the market lanes (world pixels), for shoppers to wander between */
+export const MARKET_POINTS: Array<{ x: number; y: number }> = [];
+{
   const lanes = new Set(['Stanley New Street', 'Stanley Market Road', 'Stanley Main Street']);
-  const inMarket = (x: number, y: number): boolean => x >= 600 && x <= 725 && y >= 432 && y <= 552;
+  const inMarket = (x: number, y: number): boolean => x >= 585 && x <= 725 && y >= 432 && y <= 552;
+  const free = (x: number, y: number): boolean => {
+    const g = at_(Math.floor(x), Math.floor(y));
+    return g !== Gr.Building && g !== Gr.Road && g !== Gr.Sea && g !== Gr.Wall;
+  };
   for (const [p, h, name] of OSM.roads) {
     if (!lanes.has(name)) continue;
     const half = (ROAD[h]?.[1] ?? 3) / 2;
     for (let i = 0; i + 3 < p.length; i += 2) {
       const ax = p[i], ay = p[i + 1], bx = p[i + 2], by = p[i + 3];
       const len = Math.hypot(bx - ax, by - ay);
-      if (len < 1) continue;
+      if (len < 2) continue;
       const ux = (bx - ax) / len, uy = (by - ay) / len, nx = -uy, ny = ux;
-      const a = Math.atan2(uy, ux);
-      for (let t = 1; t < len - 1; t += 2) {
+      let roofOn = true;
+      for (let t = 1.3; t < len - 1.2; t += 2.5) {
         const x = ax + ux * t, y = ay + uy * t;
         if (!inMarket(x, y)) continue;
-        const seed = hash(Math.round(x * 2), Math.round(y * 2), 64);
-        // a stall front on each side where there is a shop to have one
+        MARKET_POINTS.push({ x: x * 16, y: y * 16 });
         for (const side of [-1, 1]) {
-          // the shop front: the first building within 5 m of the lane's edge
-          let d = 0;
-          for (let q = 0.5; q <= 5 && !d; q += 0.5) {
-            if (at_(Math.floor(x + nx * side * (half + q)), Math.floor(y + ny * side * (half + q))) === Gr.Building) d = q;
-          }
-          if (!d) continue;
-          const off = half + Math.max(0.35, d - 0.5); // goods spill out in front of the shop
-          out.push({ x: x + nx * side * off, y: y + ny * side * off, a: side < 0 ? a + Math.PI : a, kind: 'goods', len: 1.8, seed: (seed * 7) % 1 });
+          const ox = nx * side, oy = ny * side;
+          const fx = x + ox * (half + 0.1), fy = y + oy * (half + 0.1);
+          // a full booth (2.2 m deep) where the ground is open; where a shop comes right up to the
+          // lane, a shallow display (0.9 m) in front of it instead
+          const clear = (d: number): boolean => [[-1.2, 0.2], [1.2, 0.2], [-1.2, d], [1.2, d], [0, d / 2]].every(([s, dd]) => free(fx + ux * s + ox * dd, fy + uy * s + oy * dd));
+          const depth = clear(2.2) ? 2.2 : clear(0.9) ? 0.9 : 0;
+          if (!depth) continue;
+          const seed = hash(Math.round(fx * 4), Math.round(fy * 4), 65);
+          STALLS.push({ x: fx, y: fy, ux, uy, ox, oy, kind: STALL_KINDS[Math.floor(seed * STALL_KINDS.length)], seed, depth });
         }
-        // canvas roofs across the lane, with gaps to let the light in
-        if (Math.round(t) % 4 === 1) out.push({ x, y, a, kind: 'tarp', len: half * 2 + 1.6, seed });
+        // roof panels over the lane, most of the way along, a gap now and then for light
+        if (roofOn) ROOF_PANELS.push({ x, y, ux, uy, len: 2.5, width: half * 2 + 0.6 });
+        roofOn = hash(Math.round(t * 3), i, 66) > 0.22;
       }
     }
   }
-  return out;
-})();
+}
 
 const GOODS = ['#c8463a', '#e0a83a', '#3a7ac8', '#f2eee4', '#3aa86a', '#d86a8a', '#8a3ac8', '#e8d890', '#2a2a30'];
-const TARPS: Array<[string, string]> = [['#3a6ac8', '#f2eee4'], ['#c84a3a', '#f2eee4'], ['#3a8a5a', '#e8e4d8'], ['#e0a83a', '#c8463a']];
 
 /** the market, in metres: bazaar pitches and lane stalls in this chunk */
 function drawMarket(g: CanvasRenderingContext2D, tx0: number, ty0: number): void {
@@ -1387,30 +1402,95 @@ function drawMarket(g: CanvasRenderingContext2D, tx0: number, ty0: number): void
     g.fillStyle = shade(roof, 1.3); g.fillRect(pt.x, pt.y + 2.4 - 2 * px, pt.w, 2 * px); // the roof's front edge
     g.fillStyle = shade(roof, 0.6); g.fillRect(pt.x + pt.w - px, pt.y, px, 2.4); // the line between pitches
   }
-  // the lanes: stall fronts first, canvas over them
-  for (const kind of ['goods', 'tarp'] as const) {
-    for (const m of MARKET) {
-      if (m.kind !== kind || !near(m.x, m.y)) continue;
-      g.save();
-      g.translate(m.x, m.y); g.rotate(m.a);
-      if (kind === 'goods') {
-        // clothes and souvenirs on rails, with the rail in front
-        g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(-m.len / 2 + 0.1, -0.2, m.len, 0.6);
-        for (let k = 0; k < 6; k += 1) {
-          g.fillStyle = GOODS[Math.floor((m.seed * 131 + k * 5) % GOODS.length)];
-          g.fillRect(-m.len / 2 + k * (m.len / 6), -0.35, m.len / 6 - px, 0.55);
-        }
-        g.fillStyle = '#3a3a40'; g.fillRect(-m.len / 2, -0.4, m.len, px);
-      } else {
-        const [c1, c2] = TARPS[Math.floor(m.seed * TARPS.length)];
-        g.globalAlpha = 0.88;
-        for (let k = 0; k < 6; k += 1) { g.fillStyle = k % 2 ? c2 : c1; g.fillRect(-0.7 + k * (1.4 / 6), -m.len / 2, 1.4 / 6, m.len); }
-        g.globalAlpha = 1;
-        g.fillStyle = 'rgba(0,0,0,0.18)'; g.fillRect(-0.7, -m.len / 2, 1.4, 2 * px);
-      }
-      g.restore();
-    }
+  // the lane stalls, each in its own frame: x along the lane, y from the front (0) back (1.6 m)
+  for (const st of STALLS) {
+    if (!near(st.x, st.y)) continue;
+    g.save();
+    g.transform(st.ux, st.uy, st.ox, st.oy, st.x, st.y);
+    drawStall(g, st);
+    g.restore();
   }
+  // translucent corrugated roofing over the lanes
+  for (const r of ROOF_PANELS) {
+    if (!near(r.x, r.y)) continue;
+    g.save();
+    g.transform(r.ux, r.uy, -r.uy, r.ux, r.x, r.y);
+    g.fillStyle = 'rgba(232,238,232,0.42)'; g.fillRect(-r.len / 2, -r.width / 2, r.len, r.width);
+    g.fillStyle = 'rgba(255,255,255,0.35)';
+    for (let k = -r.width / 2; k < r.width / 2; k += 0.5) g.fillRect(-r.len / 2, k, r.len, px);
+    g.fillStyle = 'rgba(60,70,64,0.45)'; g.fillRect(-r.len / 2, -r.width / 2, px, r.width); // the joint between panels
+    g.restore();
+  }
+}
+
+const SILKS = ['#c8283a', '#e0b030', '#2f8a6a', '#2a3a8a', '#e86a9a', '#f2eee4', '#8a2a8a'];
+/** one stall, in its own frame (metres): x across its 2.4 m width, y from the lane (0) to the back */
+function drawStall(g: CanvasRenderingContext2D, st: Stall): void {
+  const px = 1 / ART;
+  const r = (k: number): number => hash(Math.floor(st.seed * 1e4), k, 67);
+  const colours = (k: number): string => SILKS[Math.floor(r(k) * SILKS.length)];
+  const D = st.depth;
+  const roof = ['#2f6b4f', '#3a5a7a', '#7a3a32', '#5a5a5a', '#2f6b4f'][Math.floor(r(1) * 5)];
+  const canvas = ['#c8283a', '#2a5a9a', '#e0a030', '#2f8a5a', '#f2eee4'][Math.floor(r(3) * 5)];
+  g.fillStyle = 'rgba(0,0,0,0.28)'; g.fillRect(-1.2, 0.25, 2.4, D);
+  // inside, in shade, with goods on the back wall and (in most) the stallholder
+  g.fillStyle = '#3e352e'; g.fillRect(-1.2, 0.3, 2.4, D - 0.3);
+  if (D > 1) {
+    for (let k = 0; k < 8; k += 1) { g.fillStyle = colours(k + 20); g.fillRect(-1.1 + k * 0.28, D - 0.45, 0.22, 0.32); }
+    if (r(5) < 0.7) {
+      // the stallholder on a stool, seen from above: shoulders, then head
+      const vx = -0.6 + r(6) * 1.2;
+      g.fillStyle = ['#3b4a6b', '#7a3a3a', '#3b5a4a', '#8a6a3a', '#5a4a7a', '#2a5a7a'][Math.floor(r(7) * 6)];
+      g.fillRect(vx - 0.3, D - 1.05, 0.6, 0.35);
+      g.fillStyle = '#2a2b3a'; g.fillRect(vx - 0.16, D - 1.2, 0.32, 0.26);
+      g.fillStyle = '#e0b088'; g.fillRect(vx - 0.12, D - 0.98, 0.24, 0.1);
+    }
+    // the booth roof over the back, and the partition to the next stall
+    g.fillStyle = roof; g.fillRect(-1.2, D - 0.35, 2.4, 0.35);
+    g.fillStyle = shade(roof, 1.25); g.fillRect(-1.2, D - 0.35, 2.4, px);
+  }
+  g.fillStyle = shade(roof, 0.7); g.fillRect(1.2 - px, 0.25, px, D - 0.25);
+  // a canvas awning out over the front, scalloped edge, goods hanging from it
+  g.fillStyle = canvas; g.fillRect(-1.2, -0.25, 2.4, 0.5);
+  g.fillStyle = shade(canvas, 0.8); for (let x = -1.2; x < 1.2; x += 0.3) g.fillRect(x, -0.25, 0.15, 0.5);
+  g.fillStyle = shade(canvas, 0.65); for (let x = -1.2; x < 1.2; x += 0.3) g.fillRect(x + 0.05, -0.3, 0.2, px * 2);
+  // goods at the front, on the counter and hanging just inside the awning
+  g.save(); g.translate(0, 0.28);
+  switch (st.kind) {
+    case 'dress': // silk dresses on a rail across the front, more on the back wall
+      for (let k = 0; k < 9; k += 1) { g.fillStyle = colours(k + 2); g.fillRect(-1.1 + k * 0.245, 0.05, 0.2, 0.42); g.fillStyle = 'rgba(255,255,255,0.35)'; g.fillRect(-1.1 + k * 0.245, 0.05, px, 0.42); }
+      g.fillStyle = '#c8a24a'; g.fillRect(-1.15, 0.03, 2.3, px);
+      break;
+    case 'tshirt': // folded T-shirts in piles, a few hung up
+      for (let k = 0; k < 6; k += 1) {
+        g.fillStyle = ['#f2f2ee', '#2a2a30', '#9a9aa2', '#f2f2ee'][k % 4]; g.fillRect(-1.1 + k * 0.37, 0.12, 0.32, 0.32);
+        g.fillStyle = colours(k + 4); g.fillRect(-1.0 + k * 0.37, 0.2, 0.12, 0.12); // the print
+      }
+      break;
+    case 'paint': // paintings propped up and hung: frames round little landscapes
+      for (let k = 0; k < 4; k += 1) {
+        const x = -1.1 + k * 0.56;
+        g.fillStyle = '#7a5a3a'; g.fillRect(x, 0.05, 0.5, 0.42);
+        g.fillStyle = r(k + 6) < 0.5 ? '#7ab0d8' : '#e8b860'; g.fillRect(x + 0.05, 0.1, 0.4, 0.17);
+        g.fillStyle = r(k + 9) < 0.5 ? '#4a8a4a' : '#c84a3a'; g.fillRect(x + 0.05, 0.27, 0.4, 0.15);
+      }
+      break;
+    case 'souvenir': // a table of chopsticks, fans and seals, red lanterns hung above
+      g.fillStyle = '#8a5a3a'; g.fillRect(-1.15, 0.08, 2.3, 0.4);
+      for (let k = 0; k < 12; k += 1) { g.fillStyle = ['#c8283a', '#e0b030', '#f2eee4', '#2f8a6a', '#3a2a20'][Math.floor(r(k + 12) * 5)]; g.fillRect(-1.1 + (k % 6) * 0.38, 0.12 + Math.floor(k / 6) * 0.18, 0.26, 0.12); }
+      for (let k = 0; k < 4; k += 1) { g.fillStyle = '#d8282a'; g.fillRect(-0.95 + k * 0.6, -0.12, 0.22, 0.22); g.fillStyle = '#f2c84a'; g.fillRect(-0.88 + k * 0.6, -0.14, 0.08, 0.04); }
+      break;
+    case 'bags': // bags and luggage hung on the front and stacked behind
+      for (let k = 0; k < 6; k += 1) { g.fillStyle = ['#7a4a2a', '#2a2a30', '#a8784a', '#c8283a', '#3a5a7a'][Math.floor(r(k + 14) * 5)]; g.fillRect(-1.1 + k * 0.37, 0.08, 0.3, 0.3); g.fillStyle = 'rgba(0,0,0,0.3)'; g.fillRect(-1.05 + k * 0.37, 0.06, 0.2, px * 2); }
+      break;
+    case 'toys': // a jumble of bright toys and trinkets
+      for (let k = 0; k < 16; k += 1) { g.fillStyle = ['#e0402a', '#f2c83a', '#3a8ae0', '#4ac06a', '#e86ab0', '#f2eee4'][Math.floor(r(k + 16) * 6)]; g.fillRect(-1.1 + (k % 8) * 0.28, 0.1 + Math.floor(k / 8) * 0.2, 0.2, 0.15); }
+      break;
+  }
+  g.restore();
+  // the stall's sign on the awning: a red board with gold characters (just strokes)
+  g.fillStyle = '#a8282a'; g.fillRect(0.55, -0.22, 0.55, 0.2);
+  g.fillStyle = '#e8c84a'; g.fillRect(0.62, -0.17, 0.1, 0.1); g.fillRect(0.78, -0.17, 0.1, 0.1); g.fillRect(0.94, -0.17, 0.08, 0.1);
 }
 
 /** name plates for landmark buildings, in metres: main.ts draws them at screen size */
