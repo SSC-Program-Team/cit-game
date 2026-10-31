@@ -10,6 +10,7 @@ import { ROUTES } from './minibus.ts';
 import { COVER, ROOF } from './stanley-cover.ts';
 import { SHAPE_3D, EXTRA_3D } from './stanley-shapes.ts';
 import { PHOTOS, PHOTO_PX } from './stanley-photos.ts';
+import { onPier, drawPier, PIER_END, PIER_BOX } from './pier.ts';
 import { PLAZA_ESCALATORS, plazaTile, deckAt, drawPlaza, drawPlazaProps, shopDoor, PLAZA_SPOTS, PLAZA_BOX, FLOOR_NAMES, LIFT_STOPS } from './plaza.ts';
 
 export const TILE = 16;
@@ -333,6 +334,9 @@ const real3d = (i: number): [number[], number, number] | undefined => {
  */
 const PLAZA_I = OSM.buildings.findIndex(([p, , n]) => n === 'Stanley Plaza' && p.some((v, j) => j % 2 === 1 && v > 420));
 const PLAZA_POLY: number[] = PLAZA_I >= 0 ? OSM.buildings[PLAZA_I][0] : [];
+/** Blake Pier's pavilion roof is drawn by pier.ts, as the open iron structure it is */
+const PAVILION_I = OSM.buildings.findIndex(([p, k]) => k === 'roof' && p[0] === 443 && p[1] === 610);
+const HIDDEN = new Set([PLAZA_I, PAVILION_I]);
 const SHAPES: number[][] = ALL_BUILDINGS.map(([p], i) => destair(regularize(real3d(i)?.[0] ?? p)));
 
 const AREA_CODE: Record<string, Gr> = {
@@ -491,7 +495,7 @@ const ROAD: Record<string, [Gr, number]> = {
   }
   // 4. buildings. A mapped road, path or steps is never built over: where one runs under a
   //    building (a passage, a deck, a covered walk) it stays open, and the building is drawn over you
-  SHAPES.forEach((p, i) => i !== PLAZA_I && fillPoly(p, (k) => { if (grid[k] !== Gr.Sea && !mapped[k]) { grid[k] = Gr.Building; bid[k] = i; } }));
+  SHAPES.forEach((p, i) => !HIDDEN.has(i) && fillPoly(p, (k) => { if (grid[k] !== Gr.Sea && !mapped[k]) { grid[k] = Gr.Building; bid[k] = i; } }));
   // 5. walls and fences (retaining walls are only a change of level). Where one crosses a mapped
   //    path there is a gate in real life: the path stays open
   for (const [p, kind] of OSM.walls) {
@@ -531,6 +535,12 @@ const ROAD: Record<string, [Gr, number]> = {
     bid[k] = -1;
     grid[k] = t === 'deck' ? Gr.Plaza : t === 'rail' ? Gr.Wall : t === 'face' ? Gr.Building : t === 'escalator' ? Gr.Escalator : t === 'stairs' ? Gr.Steps : t === 'lift' ? Gr.Building
       : y >= 410 ? Gr.Plaza : x < 382 && y >= 395 && y < 405 ? Gr.Path : Gr.Wood;
+  }
+  // 6b. Blake Pier: the approach and the pavilion deck, over the sea (pier.ts)
+  for (let y = PIER_BOX.y0; y <= PIER_BOX.y1; y += 1) for (let x = PIER_BOX.x0; x <= PIER_BOX.x1; x += 1) {
+    const k = y * MAP_W + x;
+    if (onPier(x + 0.5, y + 0.5)) { grid[k] = Gr.Pier; bid[k] = -1; PLAZA_MASK[k] = 1; }
+    else if (grid[k] === Gr.Pier || (bid[k] === PAVILION_I && PAVILION_I >= 0)) { grid[k] = Gr.Sea; bid[k] = -1; }
   }
   // 7. no stranded pockets: any open area people can't reach from the streets (woods or a fence all
   //    round) gets a scrub trail cut through the trees, or a gate in the fence, to the nearest place
@@ -702,7 +712,7 @@ export const BUILDINGS: Building[] = ALL_BUILDINGS.map(([, kind, name, extra], i
     roof: lm.roof ?? real?.[0] ?? roofs[Math.floor(hash(Math.round(x0), Math.round(y0), 5) * roofs.length)],
     pitched: lm.pitched ?? pitched, height,
     facade: lm.facade ?? 'windows', terrace: lm.terrace ?? false, chimneys: lm.chimneys ?? 0, wallColour: lm.wall, photo,
-    hidden: i === PLAZA_I,
+    hidden: HIDDEN.has(i),
   };
 });
 
@@ -786,7 +796,7 @@ export function plazaFloor(mx: number, my: number): string {
   const d = deckAt(mx, my);
   if (d) return FLOOR_NAMES[d.level];
   const k = Math.floor(my) * MAP_W + Math.floor(mx);
-  return PLAZA_MASK[k] && my >= 405 ? FLOOR_NAMES[0] : '';
+  return PLAZA_MASK[k] && my >= 405 && mx <= PLAZA_BOX.x1 && my <= PLAZA_BOX.y1 ? FLOOR_NAMES[0] : '';
 }
 /** metres from the 8 m tile coordinates the first layout used */
 const m8 = (t: number): number => t * 8 + 4;
@@ -822,7 +832,7 @@ export const PLACES: Place[] = [
     line: 'warm bread and a receipt printer that misbehaves.' },
   { id: 'tinhau', ...atBuilding('Tin Hau Temple', m8(43), m8(54)), name: 'tin hau temple', kind: 'flavour',
     line: 'its bell is dated 1767. it stood at the west end of stanley main street long before the plaza.' },
-  { id: 'pier', ...at(56, 77), name: 'blake pier', kind: 'flavour',
+  { id: 'pier', ...standAt(PIER_END.x, PIER_END.y, 3), name: 'blake pier', kind: 'flavour',
     line: 'moved here from central in 2006, like murray house before it.' },
   { id: 'oldpolice', ...shopAt(94, 64), name: 'old stanley police station', kind: 'flavour',
     line: 'built 1859, the oldest police station building in hong kong. now a supermarket.' },
@@ -1478,7 +1488,8 @@ function renderChunk(cx: number, cy: number): HTMLCanvasElement {
   const near = BUILDINGS.filter((b) => !b.hidden && b.x1 >= tx0 - 2 && b.x0 <= tx0 + CHUNK + 2 && b.y1 >= ty0 - 2 && b.y0 <= ty0 + CHUNK + 2)
     .sort((p, q) => p.y1 - q.y1);
   for (const b of near) drawBuilding(lg, b);
-  drawPlaza(lg, tx0, ty0, tx0 + CHUNK, ty0 + CHUNK);
+  drawPier(lg, tx0, ty0, tx0 + CHUNK, ty0 + CHUNK);
+  drawPlaza(lg, tx0, ty0, tx0 + CHUNK, ty0 + CHUNK, (x, y) => y >= 405 && PLAZA_MASK[y * MAP_W + x] === 1 && grid[y * MAP_W + x] === Gr.Plaza && !deckAt(x + 0.5, y + 0.5));
   if (tx0 < 740 && tx0 + CHUNK > 590 && ty0 < 570 && ty0 + CHUNK > 420) drawMarket(lg, tx0, ty0);
   lg.restore();
 
@@ -1592,6 +1603,21 @@ function drawMarket(g: CanvasRenderingContext2D, tx0: number, ty0: number): void
     g.fillStyle = shade(roof, 1.3); g.fillRect(pt.x, pt.y + 2.4 - 2 * px, pt.w, 2 * px); // the roof's front edge
     g.fillStyle = shade(roof, 0.6); g.fillRect(pt.x + pt.w - px, pt.y, px, 2.4); // the line between pitches
   }
+  // the lane floor: worn concrete with a paler strip down the middle and cast-iron drain covers
+  ROOF_PANELS.forEach((r, i) => {
+    if (!near(r.x, r.y)) return;
+    g.save();
+    g.transform(r.ux, r.uy, -r.uy, r.ux, r.x, r.y);
+    g.fillStyle = '#9c988e'; g.fillRect(-r.len / 2, -r.width / 2 + 0.3, r.len + 0.02, r.width - 0.6); // concrete
+    g.fillStyle = 'rgba(120,114,104,0.35)'; if (i % 2) g.fillRect(-r.len / 2 + 0.4, -0.9, 1.1, 0.5); // stains
+    g.fillStyle = '#c4c0b6'; g.fillRect(-r.len / 2, -0.45, r.len + 0.02, 0.9); // the paler strip down the middle
+    if (i % 3 === 1) {
+      g.fillStyle = '#4a4a4c'; g.fillRect(-0.4, -r.width / 2 + 1.2, 0.8, 0.8);
+      g.fillStyle = '#6a6a6c'; for (let k = 0; k < 4; k += 1) g.fillRect(-0.35 + k * 0.2, -r.width / 2 + 1.25, px, 0.7);
+    }
+    if (i % 4 === 2) { g.fillStyle = '#3c3c40'; g.fillRect(-0.5, 0.6, 1, 1); g.fillStyle = '#58585c'; g.fillRect(-0.4, 0.7, 0.8, 0.8); g.fillStyle = '#3c3c40'; for (let k = 0; k < 3; k += 1) g.fillRect(-0.4, 0.8 + k * 0.25, 0.8, px); }
+    g.restore();
+  });
   // the lane stalls, each in its own frame: x along the lane, y from the front (0) back (1.6 m)
   for (const st of STALLS) {
     if (!near(st.x, st.y)) continue;
@@ -1600,15 +1626,34 @@ function drawMarket(g: CanvasRenderingContext2D, tx0: number, ty0: number): void
     drawStall(g, st);
     g.restore();
   }
-  // translucent corrugated roofing over the lanes
+  // paper lanterns strung down the lane, under the roof
+  ROOF_PANELS.forEach((r, i) => {
+    if (i % 3 !== 0 || !near(r.x, r.y)) return;
+    g.save();
+    g.transform(r.ux, r.uy, -r.uy, r.ux, r.x, r.y);
+    const c = ['#e8505a', '#f0a0c0', '#e8505a', '#b08ae0'][i % 4];
+    g.fillStyle = 'rgba(0,0,0,0.2)'; g.beginPath(); g.ellipse(0.25, 0.35, 0.35, 0.25, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = c; g.beginPath(); g.ellipse(0, -0.2, 0.35, 0.3, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.35)'; g.fillRect(-0.1, -0.4, 0.1, 0.35);
+    g.fillStyle = '#2a2a2a'; g.fillRect(-0.15, -0.55, 0.3, 0.08); g.fillRect(-0.15, 0.05, 0.3, 0.08);
+    g.restore();
+  });
+  // the arched roof over the lanes: translucent corrugated sheet on steel ribs, lightest along the
+  // crown and darker towards the eaves, as in the real market
   for (const r of ROOF_PANELS) {
     if (!near(r.x, r.y)) continue;
     g.save();
     g.transform(r.ux, r.uy, -r.uy, r.ux, r.x, r.y);
-    g.fillStyle = 'rgba(232,238,232,0.42)'; g.fillRect(-r.len / 2, -r.width / 2, r.len, r.width);
-    g.fillStyle = 'rgba(255,255,255,0.35)';
-    for (let k = -r.width / 2; k < r.width / 2; k += 0.5) g.fillRect(-r.len / 2, k, r.len, px);
-    g.fillStyle = 'rgba(60,70,64,0.45)'; g.fillRect(-r.len / 2, -r.width / 2, px, r.width); // the joint between panels
+    const hw = r.width / 2;
+    for (let k = -hw; k < hw; k += 0.25) {
+      const c = 1 - Math.abs(k + 0.125) / hw; // 1 at the crown, 0 at the eaves
+      g.fillStyle = `rgba(${Math.round(200 + 40 * c)},${Math.round(212 + 34 * c)},${Math.round(214 + 30 * c)},${(0.12 + 0.3 * (1 - c)).toFixed(2)})`;
+      g.fillRect(-r.len / 2, k, r.len, 0.25);
+    }
+    g.fillStyle = 'rgba(255,255,255,0.16)';
+    for (let x = -r.len / 2 + 0.3; x < r.len / 2; x += 0.6) g.fillRect(x, -hw, px, r.width); // the corrugations, across
+    g.fillStyle = 'rgba(70,74,80,0.7)'; g.fillRect(-r.len / 2, -hw, 0.15, r.width); // a steel rib, arching across
+    g.fillStyle = 'rgba(70,74,80,0.45)'; g.fillRect(-r.len / 2, -px / 2, r.len, px); g.fillRect(-r.len / 2, -hw, r.len, px); g.fillRect(-r.len / 2, hw - px, r.len, px);
     g.restore();
   }
 }
@@ -1644,6 +1689,17 @@ function drawStall(g: CanvasRenderingContext2D, st: Stall): void {
   g.fillStyle = canvas; g.fillRect(-1.2, -0.25, 2.4, 0.5);
   g.fillStyle = shade(canvas, 0.8); for (let x = -1.2; x < 1.2; x += 0.3) g.fillRect(x, -0.25, 0.15, 0.5);
   g.fillStyle = shade(canvas, 0.65); for (let x = -1.2; x < 1.2; x += 0.3) g.fillRect(x + 0.05, -0.3, 0.2, px * 2);
+  // goods hung out into the lane from the awning: bags, scarves, a T-shirt, beads
+  for (let k = 0; k < 4; k += 1) {
+    if (r(40 + k) > 0.65) continue;
+    const hx = -1.05 + k * 0.6, kind = Math.floor(r(50 + k) * 4);
+    g.fillStyle = 'rgba(0,0,0,0.22)'; g.fillRect(hx + 0.1, -0.5, 0.4, 0.35);
+    g.fillStyle = colours(60 + k);
+    if (kind === 0) { g.fillRect(hx, -0.75, 0.42, 0.4); g.fillStyle = '#2a2a2a'; g.fillRect(hx + 0.1, -0.82, 0.22, px); } // a bag on its strap
+    else if (kind === 1) { g.fillRect(hx + 0.1, -0.8, 0.14, 0.55); g.fillStyle = colours(70 + k); g.fillRect(hx + 0.26, -0.8, 0.14, 0.5); } // scarves
+    else if (kind === 2) { g.fillRect(hx, -0.72, 0.48, 0.42); g.fillRect(hx - 0.1, -0.72, 0.68, 0.14); } // a T-shirt
+    else { for (let b = 0; b < 4; b += 1) { g.fillStyle = colours(80 + b); g.fillRect(hx + b * 0.11, -0.78, px, 0.48); } } // strings of beads
+  }
   // goods at the front, on the counter and hanging just inside the awning
   g.save(); g.translate(0, 0.28);
   switch (st.kind) {

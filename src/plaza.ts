@@ -26,20 +26,25 @@ export const FACE = 5;
  */
 export type Deck = { level: number; x0: number; x1: number; y0: number; y1: number; open: string; roof?: boolean };
 export const DECKS: Deck[] = [
-  // the block on top of 5/F's shops (the deli, the youth centre)
+  // the tower on top: the Stanley Plaza sign, over 5/F's café
   { level: 6, x0: 405, x1: 421, y0: 343, y1: 346, open: '', roof: true },
-  // 5/F: level with Carmel Road, the bus stop and the coach park
-  { level: 5, x0: 401, x1: 425, y0: 351, y1: 357, open: 'ne' },
-  // 4/F: the observation deck, over Stanley Bay
-  { level: 4, x0: 395, x1: 431, y0: 362, y1: 369, open: '' },
-  // 3/F: the bank, an optician, a grill with tables out on the terrace
+  // 5/F: level with Carmel Road, the bus stop and the coach park; mostly open deck
+  { level: 5, x0: 399, x1: 427, y0: 351, y1: 357, open: 'ne' },
+  // 4/F: the observation deck over Stanley Bay; a pet shop, a vet and a dog bakery café
+  { level: 4, x0: 395, x1: 433, y0: 362, y1: 369, open: '' },
+  // 3/F: the bank, a travel agent, an optician, a big Chinese restaurant at the east end
   { level: 3, x0: 390, x1: 437, y0: 374, y1: 381, open: '' },
-  // 2/F: the supermarket, a kids' play centre; a bridge to the car park on the east
+  // 2/F: the supermarket (the biggest shop), a wine shop and grocers; a bridge to the car park
   { level: 2, x0: 386, x1: 442, y0: 386, y1: 393, open: 'e' },
-  // 1/F: fried chicken, pizza, the training centre; the walkway to Ma Hang Estate leaves the west end
+  // 1/F: boutiques and restaurants, the training centre; the walkway to Ma Hang Estate at the west end.
+  // It curves round the piazza: the wings step forward on both sides, so the G/F shopfronts below
+  // wrap round it in a crescent, as on the real plan
   { level: 1, x0: 382, x1: 451, y0: 398, y1: 405, open: 'w' },
-  // 1/F east wing, over the G/F restaurants on the piazza
+  { level: 1, x0: 382, x1: 395, y0: 398, y1: 412, open: '' },
+  { level: 1, x0: 382, x1: 389, y0: 398, y1: 419, open: '' },
   { level: 1, x0: 421, x1: 458, y0: 398, y1: 418, open: 'n' },
+  { level: 1, x0: 433, x1: 458, y0: 398, y1: 423, open: '' },
+  { level: 1, x0: 443, x1: 458, y0: 398, y1: 428, open: '' },
 ];
 
 export const FLOOR_NAMES = ['g/f', '1/f', '2/f', '3/f', '4/f', '5/f'];
@@ -66,8 +71,8 @@ export const FLIGHTS: Flight[] = [
   { kind: 'escalator', upper: D(4), x: 426, w: 5 }, // 3/F to 4/F, east
   { kind: 'escalator', upper: D(5), x: 422, w: 5 }, // 4/F to 5/F
   // stairs at the other ends, for going straight through
-  { kind: 'stairs', upper: D(1), x: 386.5, w: 3 },
-  { kind: 'stairs', upper: D(1) + 1, x: 453.5, w: 3 },
+  { kind: 'stairs', upper: D(1) + 2, x: 385.5, w: 3 },
+  { kind: 'stairs', upper: D(1) + 5, x: 447.5, w: 3 },
   { kind: 'stairs', upper: D(2), x: 390.5, w: 3 },
   { kind: 'stairs', upper: D(3), x: 434.5, w: 3 },
   { kind: 'stairs', upper: D(4), x: 398.5, w: 3 },
@@ -109,33 +114,44 @@ const cutsOf = (di: number): Array<[number, number]> =>
 export type Shop = { level: number; x0: number; x1: number; y: number; colour: string; name: string; open: boolean; tables: boolean };
 const SIGN = ['#2a5a8a', '#a8323a', '#2f7a52', '#c8902a', '#5a3a7a', '#1f6f7a', '#8a4a2a', '#3a3a44'];
 /**
- * What is on each floor follows the real directory (a café, burger places and pizza round the
- * piazza; fried chicken and a surf shop on 1/F; the supermarket and a kids' play centre on 2/F; a
- * bank, an optician and a grill on 3/F; a waffle bar and the management office on 4/F; a deli and a
- * youth centre on 5/F). The names are invented, as for every private business in the game.
+ * What is on each floor follows the plaza's own directory board (shop numbers and kinds, west to
+ * east): G/F a café by the escalator, burgers, a bakery, a deli, a salad bar, a bistro, fries and
+ * gelato round the piazza; 1/F boutiques, a Shanghainese and an Indian restaurant; 2/F a wine shop,
+ * the supermarket (the biggest shop), grocers and a coffee roaster; 3/F the bank, a travel agent, an
+ * optician, a photo shop and a big Chinese restaurant; 4/F a home store, a pet shop and a dog bakery
+ * café; 5/F a café. The names are invented, as for every private business in the game.
+ * `x2` makes one shop of every bay from x to x2.
  */
-const NAMED: Array<{ level: number; x: number; name: string; colour: string; tables?: boolean }> = [
-  { level: 0, x: 391, name: 'burger bar', colour: '#c8302a' },
-  { level: 0, x: 398, name: 'harbour coffee', colour: '#1f6a4a', tables: true },
-  { level: 0, x: 409, name: 'the corner bistro', colour: '#3a3a44', tables: true },
-  { level: 0, x: 414, name: 'pizza and doughnuts', colour: '#e07a3a' },
-  { level: 0, x: 425, name: 'burger grill', colour: '#8a2a2a', tables: true },
-  { level: 0, x: 431, name: 'gelato', colour: '#e07aa0' },
-  { level: 0, x: 440, name: 'souvenirs', colour: '#c8902a' },
-  { level: 0, x: 446, name: 'pet shop', colour: '#2f7a52' },
-  { level: 1, x: 395, name: 'fried chicken', colour: '#b02a2a' },
-  { level: 1, x: 410, name: 'training centre', colour: '#2a4a8a' },
-  { level: 1, x: 425, name: 'surf shop', colour: '#1f6f9a' },
-  { level: 1, x: 438, name: 'pizza', colour: '#a8323a' },
-  { level: 2, x: 394, name: 'kids play centre', colour: '#e0a020' },
-  { level: 2, x: 406, name: 'supermarket', colour: '#1f7a3a' },
-  { level: 2, x: 425, name: 'hair salon', colour: '#5a3a7a' },
-  { level: 3, x: 403, name: 'bank', colour: '#a8282a' },
-  { level: 3, x: 409, name: 'optician', colour: '#2a5a8a' },
-  { level: 3, x: 421, name: 'grill house', colour: '#3a2a22', tables: true },
-  { level: 4, x: 408, name: 'waffle bar', colour: '#c8902a', tables: true },
-  { level: 4, x: 414, name: 'management office', colour: '#3a3a44' },
-  { level: 5, x: 408, name: 'gourmet deli', colour: '#2f5a3a' },
+const NAMED: Array<{ level: number; x: number; x2?: number; name: string; colour: string; tables?: boolean }> = [
+  { level: 0, x: 391, name: 'harbour coffee', colour: '#1f6a4a', tables: true },
+  { level: 0, x: 398, name: 'burger bar', colour: '#c8302a' },
+  { level: 0, x: 409, name: 'bakery', colour: '#c8902a' },
+  { level: 0, x: 414, name: 'deli', colour: '#3a3a44' },
+  { level: 0, x: 424, name: 'salad bar', colour: '#5a9a3a' },
+  { level: 0, x: 430, name: 'the corner bistro', colour: '#2a2a30', tables: true },
+  { level: 0, x: 436, name: 'fries', colour: '#d8502a' },
+  { level: 0, x: 441, name: 'gelato', colour: '#e07aa0', tables: true },
+  { level: 1, x: 387, name: 'shanghai noodles', colour: '#a8282a', tables: true },
+  { level: 1, x: 395, name: 'boutique', colour: '#5a3a7a' },
+  { level: 1, x: 401, name: 'kids clothes', colour: '#e0a020' },
+  { level: 1, x: 407, name: 'training centre', colour: '#2a4a8a' },
+  { level: 1, x: 413, name: 'home store', colour: '#8a6a4a' },
+  { level: 1, x: 422, name: 'surf shop', colour: '#1f6f9a' },
+  { level: 1, x: 427, name: 'indian restaurant', colour: '#c8601a', tables: true },
+  { level: 1, x: 438, name: 'flower shop', colour: '#3a8a4a' },
+  { level: 2, x: 393, name: 'wine shop', colour: '#6a1a2a' },
+  { level: 2, x: 403, x2: 416, name: 'supermarket', colour: '#1f4fa8' },
+  { level: 2, x: 422, name: 'organic grocer', colour: '#4a8a3a' },
+  { level: 2, x: 430, name: 'coffee roaster', colour: '#4a2e1e', tables: true },
+  { level: 3, x: 402, name: 'bank', colour: '#a8282a' },
+  { level: 3, x: 408, name: 'travel agent', colour: '#2a6a9a' },
+  { level: 3, x: 413, name: 'optician', colour: '#2a5a8a' },
+  { level: 3, x: 421, name: 'photo shop', colour: '#c8902a' },
+  { level: 3, x: 430, name: 'chinese restaurant', colour: '#8a1a1a', tables: true },
+  { level: 4, x: 400, name: 'home and gifts', colour: '#7a5a8a' },
+  { level: 4, x: 408, name: 'pet shop', colour: '#2f7a52' },
+  { level: 4, x: 414, name: 'dog bakery cafe', colour: '#c8803a', tables: true },
+  { level: 5, x: 408, name: 'stanley cafe', colour: '#2a2a30', tables: true },
   { level: 5, x: 417, name: 'youth centre', colour: '#1f6f7a' },
 ];
 export const SHOPS: Shop[] = (() => {
@@ -152,7 +168,7 @@ export const SHOPS: Shop[] = (() => {
         const w = (s1 - s0) / n;
         for (let i = 0; i < n; i += 1) {
           const x0 = s0 + i * w, x1 = x0 + w;
-          const named = NAMED.find((s) => s.level === d.level - 1 && s.x >= x0 && s.x < x1);
+          const named = NAMED.find((s) => s.level === d.level - 1 && (s.x2 !== undefined ? s.x < x1 && s.x2 > x0 : s.x >= x0 && s.x < x1));
           const h = Math.abs(Math.sin(x0 * 12.9898 + d.level * 78.233) * 43758.5453) % 1;
           out.push({
             level: d.level - 1, x0, x1, y: d.y1, colour: named?.colour ?? SIGN[Math.floor(h * SIGN.length)],
@@ -162,7 +178,14 @@ export const SHOPS: Shop[] = (() => {
       }
     }
   });
-  return out;
+  // a shop that takes several bays is one shop
+  const merged: Shop[] = [];
+  for (const s of out) {
+    const last = merged[merged.length - 1];
+    if (last && s.name && last.name === s.name && last.y === s.y && Math.abs(last.x1 - s.x0) < 0.01) last.x1 = s.x1;
+    else merged.push(s);
+  }
+  return merged;
 })();
 /** where to stand in front of a named shop's door, in metres */
 export function shopDoor(name: string): { x: number; y: number } | undefined {
@@ -235,11 +258,26 @@ const rnd = (x: number, y: number, s: number): number => {
  * Draw the plaza into a chunk: the context is scaled to metres (8 art pixels each) and clipped to
  * the chunk by its canvas. x0..y1 is the chunk's box, to skip the plaza when it is not in it.
  */
-export function drawPlaza(g: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number): void {
+export function drawPlaza(g: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number,
+  isPiazza: (x: number, y: number) => boolean = () => false): void {
   if (x1 < PLAZA_BOX.x0 || x0 > PLAZA_BOX.x1 || y1 < PLAZA_BOX.y0 || y0 > PLAZA_BOX.y1) return;
   const px = 1 / 8;
-  // ---- the piazza (G/F): big pale granite slabs with a darker band leading to the amphitheatre
-  pirateShip(g, 381, 413);
+  // ---- the piazza (G/F): pale stone slabs in courses, with bands of dark grey stone sweeping round
+  //      the amphitheatre (its centre is about (423, 456))
+  for (let y = Math.max(y0, PLAZA_BOX.y0); y < Math.min(y1, PLAZA_BOX.y1 + 1); y += 1) {
+    for (let x = Math.max(x0, PLAZA_BOX.x0); x < Math.min(x1, PLAZA_BOX.x1 + 1); x += 1) {
+      if (!isPiazza(x, y)) continue;
+      for (let sy = 0; sy < 1; sy += 0.5) for (let sx = 0; sx < 1; sx += 0.5) {
+        const r = Math.hypot(x + sx + 0.25 - 423, (y + sy + 0.25 - 456) * 1.15);
+        const band = r % 7 < 0.75;
+        g.fillStyle = band ? '#8f8b85' : rnd(x * 2 + sx * 2, y * 2 + sy * 2, 9) < 0.2 ? '#e2ddd2' : '#d8d1c3';
+        g.fillRect(x + sx, y + sy, 0.5, 0.5);
+      }
+      g.fillStyle = 'rgba(150,140,125,0.55)';
+      g.fillRect(x, y, 1, px); g.fillRect(x + ((y % 2) ? 0.5 : 0), y, px, 1);
+    }
+  }
+  pirateShip(g, 385, 427);
 
   // ---- decks, lowest first
   const order = DECKS.map((d, i) => i).sort((a, b) => DECKS[a].level - DECKS[b].level);
@@ -277,27 +315,30 @@ export function drawPlaza(g: CanvasRenderingContext2D, x0: number, y0: number, x
   // ---- front walls: one row of shopfronts under each deck's south edge
   DECKS.forEach((d, di) => {
     for (const [a, b] of faceRuns(di)) {
-      g.fillStyle = '#e6dfd0'; g.fillRect(a, d.y1 + 0.5, b - a, FACE - 0.5); // plain render where there is no shop
-      g.fillStyle = '#9a9286'; g.fillRect(a, d.y1 + FACE - 0.25, b - a, 0.25);
+      louvres(g, a, b - a, d.y1 + 0.5, FACE - 0.75); // timber screens where there is no shop
+      g.fillStyle = '#2e2e34'; g.fillRect(a, d.y1 + FACE - 0.25, b - a, 0.25);
     }
   });
   for (const s of SHOPS) shopfront(g, s);
   DECKS.forEach((d, di) => {
     for (const [a, b] of faceRuns(di)) {
       // the deck's edge: a slab with a dark line under it, then the shadow it throws on the floor below
-      g.fillStyle = '#efe9dc'; g.fillRect(a, d.y1, b - a, 0.375);
-      g.fillStyle = '#8a8478'; g.fillRect(a, d.y1 + 0.375, b - a, px);
+      g.fillStyle = '#3a3a40'; g.fillRect(a, d.y1, b - a, 0.375); // the dark steel edge of the deck
+      g.fillStyle = '#5a5a62'; g.fillRect(a, d.y1, b - a, px);
+      g.fillStyle = 'rgba(255,214,140,0.5)'; for (let x = a + 1; x < b - 0.5; x += 3) g.fillRect(x, d.y1 + 0.375, 0.25, px); // downlights
       g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(a, d.y1 + FACE, b - a, 0.5);
       g.fillStyle = 'rgba(0,0,0,0.1)'; g.fillRect(a, d.y1 + FACE + 0.5, b - a, 0.5);
       // a glass balustrade along the edge of the deck above, gapped where a flight comes up
       // (a roof has a parapet instead)
       const cuts = cutsOf(di);
       if (d.roof) { g.fillStyle = '#d8d0c0'; g.fillRect(a, d.y1 - 0.5, b - a, 0.5); continue; }
+      // a timber-slat balustrade on a steel rail, as on the real terraces
       for (let x = a; x < b; x += 0.25) {
         if (cuts.some(([c0, c1]) => x + 0.25 > c0 && x < c1)) continue;
-        g.fillStyle = 'rgba(176,218,236,0.7)'; g.fillRect(x, d.y1 - 0.5, 0.25, 0.375);
-        g.fillStyle = '#eef3f6'; g.fillRect(x, d.y1 - 0.5, 0.25, px);
-        if (Math.abs((x * 4) % 6) < 0.01) { g.fillStyle = '#7c8690'; g.fillRect(x, d.y1 - 0.5, px, 0.5); }
+        g.fillStyle = '#7a4a28'; g.fillRect(x, d.y1 - 0.5, 0.25, 0.5);
+        g.fillStyle = '#a86a3a'; g.fillRect(x, d.y1 - 0.375, 0.25, px);
+        g.fillStyle = '#2e2e34'; g.fillRect(x, d.y1 - 0.5, 0.25, px);
+        if (Math.abs((x * 4) % 8) < 0.01) g.fillRect(x, d.y1 - 0.5, px, 0.5);
       }
     }
     // balustrades along the closed sides
@@ -346,8 +387,8 @@ function liftShaft(g: CanvasRenderingContext2D, x0: number, t: number, w: number
 function sideRails(g: CanvasRenderingContext2D, d: Deck): void {
   const px = 1 / 8;
   const rail = (x: number, y: number, w: number, h: number): void => {
-    g.fillStyle = 'rgba(176,218,236,0.7)'; g.fillRect(x, y, w, h);
-    g.fillStyle = '#eef3f6'; if (w > h) g.fillRect(x, y, w, px); else g.fillRect(x, y, px, h);
+    g.fillStyle = '#7a4a28'; g.fillRect(x, y, w, h);
+    g.fillStyle = '#2e2e34'; if (w > h) g.fillRect(x, y, w, px); else g.fillRect(x, y, px, h);
     g.fillStyle = 'rgba(0,0,0,0.12)'; if (w > h) g.fillRect(x, y + h, w, px); else g.fillRect(x + w, y, px, h);
   };
   for (let y = d.y0; y < d.y1; y += 1) for (let x = d.x0; x < d.x1; x += 1) {
@@ -363,43 +404,67 @@ function sideRails(g: CanvasRenderingContext2D, d: Deck): void {
   }
 }
 
-/** one shop bay in the wall under a deck: pilasters, a sign, a blue glass canopy, the shopfront */
-function shopfront(g: CanvasRenderingContext2D, s: Shop): void {
-  const px = 1 / 8, t = s.y, w = s.x1 - s.x0;
-  g.fillStyle = '#e6dfd0'; g.fillRect(s.x0, t + 0.5, w, FACE - 0.5); // the rendered wall
-  g.fillStyle = '#d2c9b6'; g.fillRect(s.x0, t + 0.5, 0.375, FACE - 0.5); g.fillRect(s.x1 - 0.375, t + 0.5, 0.375, FACE - 0.5); // pilasters
-  // the sign: a coloured board with light "lettering"
-  g.fillStyle = s.colour; g.fillRect(s.x0 + 0.625, t + 0.75, w - 1.25, 0.625);
-  g.fillStyle = 'rgba(255,248,230,0.85)';
-  const letters = Math.max(2, Math.floor((w - 2) / 0.5));
-  for (let i = 0; i < letters; i += 1) if (Math.abs(Math.sin((s.x0 + i) * 3.7)) > 0.25) g.fillRect(s.x0 + 1 + i * 0.5, t + 0.875, 0.375, 0.375);
-  // the canopy: Stanley Plaza's blue glass, over the shop door
-  g.fillStyle = '#4f86ba'; g.fillRect(s.x0 + 0.25, t + 1.5, w - 0.5, 0.375);
-  g.fillStyle = '#9cc6e8'; g.fillRect(s.x0 + 0.25, t + 1.5, w - 0.5, px);
-  g.fillStyle = 'rgba(0,0,0,0.18)'; g.fillRect(s.x0 + 0.5, t + 1.875, w - 1, 0.25);
-  // the shopfront: dark glass with mullions, a lit interior where the shop is open
-  const gx = s.x0 + 0.5, gw = w - 1, gy = t + 2.125, gh = FACE - 2.375;
-  g.fillStyle = s.open ? '#3d5a66' : '#2c3e4a'; g.fillRect(gx, gy, gw, gh);
-  if (s.open) {
-    // shelves and people's shapes inside, warm light
-    g.fillStyle = 'rgba(240,214,150,0.35)'; g.fillRect(gx, gy + gh * 0.45, gw, gh * 0.55);
-    for (let x = gx + 0.375; x < gx + gw - 0.5; x += 0.75) {
-      const h = Math.abs(Math.sin(x * 9.1 + s.y)) % 1;
-      g.fillStyle = ['#e8c86a', '#d86a5a', '#7ab0d8', '#f2eee4'][Math.floor(h * 4)];
-      g.fillRect(x, gy + gh * 0.55 + (h > 0.5 ? 0.125 : 0), 0.375, 0.25);
+/** the plaza's timber louvre cladding: warm slats in a dark steel frame, with lit poster boxes */
+function louvres(g: CanvasRenderingContext2D, x0: number, w: number, y0: number, h: number, posters = true): void {
+  const px = 1 / 8;
+  g.fillStyle = '#5a3820'; g.fillRect(x0, y0, w, h);
+  for (let y = y0; y < y0 + h; y += 0.25) {
+    g.fillStyle = Math.round((y - y0) * 4) % 2 ? '#8a5530' : '#a8683a';
+    g.fillRect(x0, y, w, 0.125);
+  }
+  g.fillStyle = '#2e2e34';
+  for (let x = x0; x <= x0 + w; x += 2) g.fillRect(Math.min(x, x0 + w - px), y0, px, h);
+  g.fillRect(x0, y0, w, px);
+  if (posters && w >= 3) {
+    // lit poster boxes, one every few metres
+    for (let x = x0 + 1.25; x + 1 < x0 + w; x += 4.5) {
+      g.fillStyle = 'rgba(255,240,200,0.35)'; g.fillRect(x - 0.125, y0 + 0.125, 1.25, Math.min(h - 0.25, 1.5));
+      g.fillStyle = '#f4f0e6'; g.fillRect(x, y0 + 0.25, 1, Math.min(h - 0.5, 1.25));
+      g.fillStyle = ['#5a8ac8', '#e07a8a', '#3a3a44', '#e8c23a'][Math.floor(Math.abs(Math.sin(x * 7.3)) * 4) % 4];
+      g.fillRect(x + 0.125, y0 + 0.5, 0.75, 0.5);
     }
   }
-  g.fillStyle = 'rgba(200,228,240,0.28)'; // a reflection across the glass
-  for (let i = 0; i < 3; i += 1) g.fillRect(gx + ((i * 1.7 + s.x0) % Math.max(0.5, gw - 0.5)), gy, 0.25, gh);
-  g.fillStyle = '#b8c2ca';
-  for (let x = gx; x <= gx + gw; x += 1.25) g.fillRect(Math.min(x, gx + gw - px), gy, px, gh);
+}
+
+/**
+ * One shop in the wall under a deck, as at the real plaza: timber louvres above, a dark fascia with
+ * the shop's sign, then a full-height glass shopfront lit warm from inside.
+ */
+function shopfront(g: CanvasRenderingContext2D, s: Shop): void {
+  const px = 1 / 8, t = s.y, w = s.x1 - s.x0;
+  louvres(g, s.x0, w, t + 0.5, 1.25, w >= 5);
+  // the fascia and sign
+  g.fillStyle = '#1e1e24'; g.fillRect(s.x0, t + 1.75, w, 0.625);
+  if (s.name || s.open) {
+    const sw = Math.min(w - 1, Math.max(2, w * 0.55));
+    g.fillStyle = s.colour; g.fillRect(s.x0 + (w - sw) / 2, t + 1.8, sw, 0.5);
+    g.fillStyle = 'rgba(255,248,230,0.9)';
+    for (let x = s.x0 + (w - sw) / 2 + 0.25; x < s.x0 + (w + sw) / 2 - 0.4; x += 0.375) if (Math.abs(Math.sin(x * 3.7 + t)) > 0.3) g.fillRect(x, t + 1.925, 0.25, 0.25);
+  }
+  // the shopfront: steel-framed glass, lit warm where the shop is open
+  const gx = s.x0 + 0.125, gw = w - 0.25, gy = t + 2.375, gh = FACE - 2.625;
+  g.fillStyle = s.open ? '#e8c890' : '#2c3238'; g.fillRect(gx, gy, gw, gh);
+  if (s.open) {
+    g.fillStyle = 'rgba(255,236,190,0.6)'; g.fillRect(gx, gy, gw, 0.25); // ceiling lights
+    // shelves, racks, tables and people inside
+    for (let x = gx + 0.25; x < gx + gw - 0.5; x += 0.625) {
+      const h = Math.abs(Math.sin(x * 9.1 + s.y)) % 1;
+      g.fillStyle = ['#c8463a', '#3a6a9a', '#f2eee4', '#5a3a2a', '#e8a040', '#4a8a5a'][Math.floor(h * 6)];
+      g.fillRect(x, gy + gh * 0.4 + (h > 0.5 ? 0.25 : 0), 0.375, h > 0.7 ? 0.75 : 0.375);
+    }
+    g.fillStyle = 'rgba(90,60,40,0.35)'; g.fillRect(gx, gy + gh - 0.375, gw, 0.375); // floor
+  }
+  g.fillStyle = 'rgba(255,255,255,0.18)';
+  for (let i = 0; i < 2; i += 1) g.fillRect(gx + ((i * 2.3 + s.x0) % Math.max(0.5, gw - 0.5)), gy, 0.25, gh);
+  g.fillStyle = '#2e2e34';
+  for (let x = gx; x <= gx + gw; x += 1.5) g.fillRect(Math.min(x, gx + gw - px), gy, px, gh);
   g.fillRect(gx, gy, gw, px);
-  // the door, in the middle, with a mat in front
+  // the door, in the middle
   const dx = s.x0 + w / 2 - 0.75;
-  g.fillStyle = s.open ? '#f0dcaa' : '#1c2830'; g.fillRect(dx, gy + 0.25, 1.5, gh - 0.25);
-  g.fillStyle = '#cfd6dc'; g.fillRect(dx, gy + 0.25, px, gh - 0.25); g.fillRect(dx + 1.5 - px, gy + 0.25, px, gh - 0.25); g.fillRect(dx + 0.75 - px / 2, gy + 0.25, px, gh - 0.25);
-  g.fillStyle = '#9a9286'; g.fillRect(s.x0, t + FACE - 0.25, w, 0.25); // kick plate
-  if (s.open) { g.fillStyle = 'rgba(60,40,30,0.45)'; g.fillRect(dx + 0.125, t + FACE, 1.25, 0.375); }
+  g.fillStyle = s.open ? '#f6e2b0' : '#1c2228'; g.fillRect(dx, gy + 0.25, 1.5, gh - 0.25);
+  g.fillStyle = '#2e2e34'; g.fillRect(dx, gy + 0.25, px, gh - 0.25); g.fillRect(dx + 1.5 - px, gy + 0.25, px, gh - 0.25); g.fillRect(dx + 0.75 - px / 2, gy + 0.25, px, gh - 0.25);
+  g.fillStyle = '#2e2e34'; g.fillRect(s.x0, t + FACE - 0.25, w, 0.25); // sill
+  if (s.open) { g.fillStyle = 'rgba(255,220,150,0.25)'; g.fillRect(dx - 0.5, t + FACE, 2.5, 0.75); } // light spilling out
 }
 
 /** an escalator pair: glass balustrades, steel median, two lanes of steps, comb plates at each end */
@@ -509,6 +574,25 @@ export function drawPlazaProps(g: CanvasRenderingContext2D, x0: number, y0: numb
   for (const s of SHOPS) {
     if (!s.tables) continue;
     for (const x of [s.x0 + 1.6, s.x1 - 1.6]) if (clearOf(x, s.y + FACE + 2.4)) cafeTable(g, Math.round(x * T), Math.round((s.y + FACE + 2.4) * T), Math.round(s.x0) % 3);
+  }
+  // the white slatted canopy over the piazza by the café and the escalator
+  {
+    const [cx0, cy0, cx1, cy1] = [389 * T, 412.5 * T, 401 * T, 418 * T];
+    g.fillStyle = 'rgba(0,0,0,0.12)'; g.fillRect(cx0 + 10, cy0 + 14, cx1 - cx0, cy1 - cy0);
+    g.fillStyle = 'rgba(248,246,238,0.85)';
+    for (let x = cx0; x < cx1; x += 5) g.fillRect(x, cy0, 3, cy1 - cy0);
+    g.fillStyle = '#3a3a42'; g.fillRect(cx0, cy0, cx1 - cx0, 2); g.fillRect(cx0, cy1 - 2, cx1 - cx0, 2);
+    for (const x of [cx0 + 4, cx1 - 8]) { g.fillRect(x, cy1 - 2, 4, 14); }
+  }
+  // the tower over 5/F: the Stanley Plaza sign, lit
+  {
+    const d = DECKS.find((o) => o.roof)!;
+    const sx = Math.round((d.x0 + 1) * T), sy = Math.round((d.y1 + 0.75) * T), sw = Math.round((d.x1 - d.x0 - 2) * T);
+    g.fillStyle = '#4a2c18'; g.fillRect(sx, sy, sw, 30);
+    g.fillStyle = '#2e2e34'; g.fillRect(sx, sy, sw, 3); g.fillRect(sx, sy + 27, sw, 3);
+    g.save(); g.translate(sx + sw / 2 - 78, sy + 7); g.scale(2, 2);
+    text(g, 'STANLEY PLAZA', 0, 0, '#f6ead0');
+    g.restore();
   }
   // the lift's call buttons: a sign with the floor at every stop
   LIFT_STOPS.forEach((p, i) => {
