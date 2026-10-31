@@ -10,7 +10,7 @@ import { ROUTES } from './minibus.ts';
 import { COVER, ROOF } from './stanley-cover.ts';
 import { SHAPE_3D, EXTRA_3D } from './stanley-shapes.ts';
 import { PHOTOS, PHOTO_PX } from './stanley-photos.ts';
-import { PLAZA_ESCALATORS, plazaTile, deckAt, drawPlaza, drawPlazaProps, shopDoor, PLAZA_SPOTS, PLAZA_BOX, FLOOR_NAMES } from './plaza.ts';
+import { PLAZA_ESCALATORS, plazaTile, deckAt, drawPlaza, drawPlazaProps, shopDoor, PLAZA_SPOTS, PLAZA_BOX, FLOOR_NAMES, LIFT_STOPS } from './plaza.ts';
 
 export const TILE = 16;
 export const MAP_W = OSM.w;
@@ -19,7 +19,7 @@ const N = MAP_W * MAP_H;
 
 export type PlaceKind =
   | 'job' | 'board' | 'shop' | 'pirate' | 'employer' | 'library' | 'course'
-  | 'police' | 'prison' | 'flavour' | 'offer' | 'bus' | 'minibus';
+  | 'police' | 'prison' | 'flavour' | 'offer' | 'bus' | 'minibus' | 'lift';
 
 export type Place = {
   id: string;
@@ -529,7 +529,7 @@ const ROAD: Record<string, [Gr, number]> = {
     if (!t && !PLAZA_MASK[k]) continue;
     PLAZA_MASK[k] = 1;
     bid[k] = -1;
-    grid[k] = t === 'deck' ? Gr.Plaza : t === 'rail' ? Gr.Wall : t === 'face' ? Gr.Building : t === 'escalator' ? Gr.Escalator : t === 'stairs' ? Gr.Steps
+    grid[k] = t === 'deck' ? Gr.Plaza : t === 'rail' ? Gr.Wall : t === 'face' ? Gr.Building : t === 'escalator' ? Gr.Escalator : t === 'stairs' ? Gr.Steps : t === 'lift' ? Gr.Building
       : y >= 410 ? Gr.Plaza : x < 382 && y >= 395 && y < 405 ? Gr.Path : Gr.Wood;
   }
   // 7. no stranded pockets: any open area people can't reach from the streets (woods or a fence all
@@ -844,8 +844,11 @@ export const PLACES: Place[] = [
     line: 'prison history, by the prison. free entry.' },
   { id: 'escalator', ...standAt(408, 412, 3), name: 'stanley plaza escalators', kind: 'flavour',
     line: 'they zig-zag up the terraces, a floor at a time: g/f, 1/f, 2/f, 3/f, then the bus deck on 4/f. left lane down, right lane up.' },
-  { id: 'plazaview', ...standAt(412, 357, 3), name: 'stanley plaza viewing deck', kind: 'flavour',
-    line: '4/f, the top of the plaza. the whole of stanley bay, murray house and blake pier below you.' },
+  { id: 'plazaview', ...standAt(405, 367, 2), name: 'stanley plaza observation deck', kind: 'flavour',
+    line: '4/f. the whole of stanley bay, murray house and blake pier below you. couples come up here for photos.' },
+  // the lift, one stop a floor: E to pick a floor
+  ...LIFT_STOPS.map((p, i): Place => ({ id: `lift${i}`, ...standAt(p.x, p.y, 1), name: `lift ${FLOOR_NAMES[i]}`, kind: 'lift',
+    line: 'a glass lift. it stops on every floor, g/f to 5/f.' })),
   { id: 'pirateship', ...standAt(388, 422, 3), name: 'pirate ship playground', kind: 'flavour',
     line: 'a wooden ship on the piazza, facing the bay. stanley was a fishing village long before the plaza.' },
   { id: 'stbeach', ...at(117, 141), name: "st stephen's beach", kind: 'flavour',

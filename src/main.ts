@@ -1120,6 +1120,19 @@ function activate(p: Place): void {
     case 'police': openPolice(); return;
     case 'bus': openBus(); return;
     case 'minibus': openMinibus(p); return;
+    case 'lift': {
+      // Stanley Plaza's lift: pick a floor, the doors close, and you step out there
+      const here = Number(p.id.slice(4));
+      const stops = PLACES.filter((q) => q.kind === 'lift');
+      openMenu({
+        title: 'stanley plaza lift', line: 'which floor?',
+        items: stops.filter((q) => q !== p).map((q) => ({
+          label: q.name.replace('lift ', '') + (Number(q.id.slice(4)) > here ? '  up' : '  down'),
+          act: () => { menu = null; placePlayer(q.tx, q.ty); audio.play('door'); flash(`stanley plaza, ${q.name.replace('lift ', '')}`); },
+        })),
+      });
+      return;
+    }
     case 'employer': {
       const e = EMPLOYERS.find((x) => x.place === p.id);
       if (e) { openEmployer(e); return; }
@@ -1572,11 +1585,11 @@ function drawHud(): void {
 const KIND_COLOUR: Partial<Record<Place['kind'], string>> = {
   job: '#ffc84a', employer: '#ffc84a', shop: '#7be08a', pirate: '#d8a0ff', minibus: '#46d07a', bus: '#ff9a4a',
   library: '#9ad0ff', course: '#c8a0ff', police: '#6aa0ff', prison: '#ff6a6a', board: '#ffe28a', offer: '#d8a0ff',
-  flavour: '#e8e4d8',
+  flavour: '#e8e4d8', lift: '#7ab0d8',
 };
 const KIND_ICON: Partial<Record<Place['kind'], string>> = {
   job: '!', employer: 'w', shop: '$', pirate: '?', minibus: 'm', bus: 'b', library: '#', course: '+', police: 'p',
-  prison: 'x', board: 'n', offer: '?', flavour: 'i',
+  prison: 'x', board: 'n', offer: '?', flavour: 'i', lift: 'l',
 };
 
 /** a green minibus stop: a pole and the green-and-white sign with its route numbers */
@@ -1783,7 +1796,7 @@ function drawCity(): void {
     const j = jobAt(near);
     if (j?.mission && state.mission) text(`(callout $${j.def.pay * MISSION_PAY} - ${Math.ceil(state.mission.left)}s)`, after, 342, '#ff4a5f');
     else if (j) text(`(job $${j.def.pay})`, after, 342, '#ffc84a');
-    else text(`(${({ minibus: 'ride', board: 'gigs', shop: 'buy gear', pirate: 'a man with discs', employer: 'work', library: 'study', course: 'courses', police: 'your record', prison: 'stay out', flavour: 'look', offer: 'a man in a cap', bus: 'go home', job: 'shop' } as Record<string, string>)[near.kind]})`, after, 342, '#9aa0b8');
+    else text(`(${({ minibus: 'ride', board: 'gigs', shop: 'buy gear', pirate: 'a man with discs', employer: 'work', library: 'study', course: 'courses', police: 'your record', prison: 'stay out', flavour: 'look', offer: 'a man in a cap', bus: 'go home', job: 'shop', lift: 'pick a floor' } as Record<string, string>)[near.kind]})`, after, 342, '#9aa0b8');
   } else {
     text('wasd / tap to walk   shift run   e use   i status   z zoom', 8, 342, '#6f7688');
   }

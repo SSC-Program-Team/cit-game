@@ -17,27 +17,37 @@ export const FACE = 5;
 /**
  * The decks: where you walk on each floor. `open` lists the sides that meet the street at the same
  * level (n, e, w); every other side has a glass balustrade. A floor can be several rectangles.
+ * A `roof` is not walked on: it is only there for the row of shops in the wall under it (5/F's).
+ *
+ * The real plaza (Link REIT, 2011 rebuild) has six floors of semi-outdoor shops, G/F to 5/F: the top
+ * at the bus stop and coach park on Carmel Road, the observation deck and the management office on
+ * 4/F, the 1/F walkway to Ma Hang Estate, and the piazza with the amphitheatre and the pirate ship
+ * on G/F, ringed by restaurants with outdoor tables.
  */
-export type Deck = { level: number; x0: number; x1: number; y0: number; y1: number; open: string };
+export type Deck = { level: number; x0: number; x1: number; y0: number; y1: number; open: string; roof?: boolean };
 export const DECKS: Deck[] = [
-  // 4/F: the top deck, level with the lane to the bus terminus; the viewing platform
-  { level: 4, x0: 401, x1: 425, y0: 349, y1: 360, open: 'ne' },
-  // 3/F: restaurant terraces with the sea view
-  { level: 3, x0: 393, x1: 431, y0: 365, y1: 375, open: '' },
-  // 2/F: shops; a footbridge to the car park on the east
-  { level: 2, x0: 388, x1: 441, y0: 380, y1: 390, open: 'e' },
-  // 1/F: shops and the training centre; the walkway to Ma Hang Estate leaves from the west end
-  { level: 1, x0: 382, x1: 451, y0: 395, y1: 405, open: 'w' },
-  // 1/F east wing: the block over the supermarket, out to the street behind
-  { level: 1, x0: 421, x1: 458, y0: 395, y1: 418, open: 'n' },
+  // the block on top of 5/F's shops (the deli, the youth centre)
+  { level: 6, x0: 405, x1: 421, y0: 343, y1: 346, open: '', roof: true },
+  // 5/F: level with Carmel Road, the bus stop and the coach park
+  { level: 5, x0: 401, x1: 425, y0: 351, y1: 357, open: 'ne' },
+  // 4/F: the observation deck, over Stanley Bay
+  { level: 4, x0: 395, x1: 431, y0: 362, y1: 369, open: '' },
+  // 3/F: the bank, an optician, a grill with tables out on the terrace
+  { level: 3, x0: 390, x1: 437, y0: 374, y1: 381, open: '' },
+  // 2/F: the supermarket, a kids' play centre; a bridge to the car park on the east
+  { level: 2, x0: 386, x1: 442, y0: 386, y1: 393, open: 'e' },
+  // 1/F: fried chicken, pizza, the training centre; the walkway to Ma Hang Estate leaves the west end
+  { level: 1, x0: 382, x1: 451, y0: 398, y1: 405, open: 'w' },
+  // 1/F east wing, over the G/F restaurants on the piazza
+  { level: 1, x0: 421, x1: 458, y0: 398, y1: 418, open: 'n' },
 ];
 
-export const FLOOR_NAMES = ['g/f', '1/f', '2/f', '3/f', '4/f'];
+export const FLOOR_NAMES = ['g/f', '1/f', '2/f', '3/f', '4/f', '5/f'];
 
 /** the deck under a point, if any */
 export function deckAt(x: number, y: number): Deck | undefined {
   let best: Deck | undefined;
-  for (const d of DECKS) if (x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1 && (!best || d.level > best.level)) best = d;
+  for (const d of DECKS) if (!d.roof && x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1 && (!best || d.level > best.level)) best = d;
   return best;
 }
 
@@ -45,19 +55,30 @@ export function deckAt(x: number, y: number): Deck | undefined {
  * Flights between floors. An escalator pair (`w` wide, the west lane going down, the east lane up)
  * or a straight stair, cut through the front wall under deck `upper`'s south edge.
  */
-export type Flight = { kind: 'escalator' | 'stairs'; upper: number; x: number; w: number };
+export type Flight = { kind: 'escalator' | 'stairs' | 'lift'; upper: number; x: number; w: number };
+/** the deck index of a floor's main rectangle */
+const D = (level: number): number => DECKS.findIndex((d) => d.level === level);
 export const FLIGHTS: Flight[] = [
   // the escalators zig-zag, so each floor is walked along on the way up
-  { kind: 'escalator', upper: 3, x: 404, w: 5 }, // G/F to 1/F, by the piazza
-  { kind: 'escalator', upper: 2, x: 433, w: 5 }, // 1/F to 2/F, east end
-  { kind: 'escalator', upper: 1, x: 404, w: 5 }, // 2/F to 3/F, west end
-  { kind: 'escalator', upper: 0, x: 418, w: 5 }, // 3/F to 4/F
+  { kind: 'escalator', upper: D(1), x: 404, w: 5 }, // G/F to 1/F, by the café on the piazza
+  { kind: 'escalator', upper: D(2), x: 432, w: 5 }, // 1/F to 2/F, east end
+  { kind: 'escalator', upper: D(3), x: 400, w: 5 }, // 2/F to 3/F, west end
+  { kind: 'escalator', upper: D(4), x: 426, w: 5 }, // 3/F to 4/F, east
+  { kind: 'escalator', upper: D(5), x: 422, w: 5 }, // 4/F to 5/F
   // stairs at the other ends, for going straight through
-  { kind: 'stairs', upper: 3, x: 386.5, w: 3 },
-  { kind: 'stairs', upper: 4, x: 453.5, w: 3 },
-  { kind: 'stairs', upper: 2, x: 391.5, w: 3 },
-  { kind: 'stairs', upper: 1, x: 426.5, w: 3 },
-  { kind: 'stairs', upper: 0, x: 404, w: 3 },
+  { kind: 'stairs', upper: D(1), x: 386.5, w: 3 },
+  { kind: 'stairs', upper: D(1) + 1, x: 453.5, w: 3 },
+  { kind: 'stairs', upper: D(2), x: 390.5, w: 3 },
+  { kind: 'stairs', upper: D(3), x: 434.5, w: 3 },
+  { kind: 'stairs', upper: D(4), x: 398.5, w: 3 },
+  { kind: 'stairs', upper: D(5), x: 403.5, w: 3 },
+  // the lift: one glass shaft through every floor, G/F to 5/F
+  ...[1, 2, 3, 4, 5].map((l): Flight => ({ kind: 'lift', upper: D(l), x: 418, w: 2.5 })),
+];
+/** where you stand to call the lift on each floor, G/F up, in metres */
+export const LIFT_STOPS: Array<{ x: number; y: number }> = [
+  { x: 418, y: DECKS[D(1)].y1 + FACE + 0.8 },
+  ...[1, 2, 3, 4, 5].map((l) => ({ x: 418, y: DECKS[D(l)].y1 - 1 })),
 ];
 /** the escalators, in the form world.ts uses for the moving steps: landings 1.2 m onto each floor */
 export const PLAZA_ESCALATORS = FLIGHTS.filter((f) => f.kind === 'escalator').map((f) => {
@@ -85,27 +106,48 @@ const cutsOf = (di: number): Array<[number, number]> =>
  * Shops: the bays along each front wall. Generated evenly between the flights, then a few are
  * given names (and doors the game uses). `level` is the floor the shop is on: one below the deck.
  */
-export type Shop = { level: number; x0: number; x1: number; y: number; colour: string; name: string; open: boolean };
+export type Shop = { level: number; x0: number; x1: number; y: number; colour: string; name: string; open: boolean; tables: boolean };
 const SIGN = ['#2a5a8a', '#a8323a', '#2f7a52', '#c8902a', '#5a3a7a', '#1f6f7a', '#8a4a2a', '#3a3a44'];
-const NAMED: Array<{ level: number; x: number; name: string; colour: string }> = [
-  { level: 0, x: 397, name: 'harbour coffee', colour: '#1f6a4a' },
-  { level: 0, x: 440, name: 'supermarket', colour: '#c8302a' },
-  { level: 0, x: 414, name: 'gelato', colour: '#e07aa0' },
-  { level: 1, x: 413, name: 'training centre', colour: '#2a4a8a' },
-  { level: 1, x: 438, name: 'bakery cafe', colour: '#b0782a' },
-  { level: 2, x: 418, name: 'noodle house', colour: '#a8282a' },
-  { level: 3, x: 410, name: 'management office', colour: '#3a3a44' },
+/**
+ * What is on each floor follows the real directory (a café, burger places and pizza round the
+ * piazza; fried chicken and a surf shop on 1/F; the supermarket and a kids' play centre on 2/F; a
+ * bank, an optician and a grill on 3/F; a waffle bar and the management office on 4/F; a deli and a
+ * youth centre on 5/F). The names are invented, as for every private business in the game.
+ */
+const NAMED: Array<{ level: number; x: number; name: string; colour: string; tables?: boolean }> = [
+  { level: 0, x: 391, name: 'burger bar', colour: '#c8302a' },
+  { level: 0, x: 398, name: 'harbour coffee', colour: '#1f6a4a', tables: true },
+  { level: 0, x: 409, name: 'the corner bistro', colour: '#3a3a44', tables: true },
+  { level: 0, x: 414, name: 'pizza and doughnuts', colour: '#e07a3a' },
+  { level: 0, x: 425, name: 'burger grill', colour: '#8a2a2a', tables: true },
+  { level: 0, x: 431, name: 'gelato', colour: '#e07aa0' },
+  { level: 0, x: 440, name: 'souvenirs', colour: '#c8902a' },
+  { level: 0, x: 446, name: 'pet shop', colour: '#2f7a52' },
+  { level: 1, x: 395, name: 'fried chicken', colour: '#b02a2a' },
+  { level: 1, x: 410, name: 'training centre', colour: '#2a4a8a' },
+  { level: 1, x: 425, name: 'surf shop', colour: '#1f6f9a' },
+  { level: 1, x: 438, name: 'pizza', colour: '#a8323a' },
+  { level: 2, x: 394, name: 'kids play centre', colour: '#e0a020' },
+  { level: 2, x: 406, name: 'supermarket', colour: '#1f7a3a' },
+  { level: 2, x: 425, name: 'hair salon', colour: '#5a3a7a' },
+  { level: 3, x: 403, name: 'bank', colour: '#a8282a' },
+  { level: 3, x: 409, name: 'optician', colour: '#2a5a8a' },
+  { level: 3, x: 421, name: 'grill house', colour: '#3a2a22', tables: true },
+  { level: 4, x: 408, name: 'waffle bar', colour: '#c8902a', tables: true },
+  { level: 4, x: 414, name: 'management office', colour: '#3a3a44' },
+  { level: 5, x: 408, name: 'gourmet deli', colour: '#2f5a3a' },
+  { level: 5, x: 417, name: 'youth centre', colour: '#1f6f7a' },
 ];
 export const SHOPS: Shop[] = (() => {
   const out: Shop[] = [];
   DECKS.forEach((d, di) => {
     for (const [a, b] of faceRuns(di)) {
-      // the stretches of wall between flights
+      // the stretches of wall between flights; a stretch under 3 m is plain wall
       let segs: Array<[number, number]> = [[a, b]];
       for (const [c0, c1] of cutsOf(di)) {
         segs = segs.flatMap(([s0, s1]): Array<[number, number]> => (c1 <= s0 || c0 >= s1 ? [[s0, s1]] : [[s0, c0], [c1, s1]].filter(([p, q]) => q - p > 0.5) as Array<[number, number]>));
       }
-      for (const [s0, s1] of segs) {
+      for (const [s0, s1] of segs.filter(([p, q]) => q - p >= 3)) {
         const n = Math.max(1, Math.round((s1 - s0) / 6.5));
         const w = (s1 - s0) / n;
         for (let i = 0; i < n; i += 1) {
@@ -114,7 +156,7 @@ export const SHOPS: Shop[] = (() => {
           const h = Math.abs(Math.sin(x0 * 12.9898 + d.level * 78.233) * 43758.5453) % 1;
           out.push({
             level: d.level - 1, x0, x1, y: d.y1, colour: named?.colour ?? SIGN[Math.floor(h * SIGN.length)],
-            name: named?.name ?? '', open: !!named || h > 0.45,
+            name: named?.name ?? '', open: !!named || h > 0.45, tables: !!named?.tables,
           });
         }
       }
@@ -148,7 +190,7 @@ function railSides(d: Deck, x: number, y: number): string {
  * What the plaza puts on the 1 m tile at (x, y): part of a floor, a balustrade at a floor's edge,
  * the front wall of the floor above (shops, solid), an escalator or a stair, or nothing.
  */
-export function plazaTile(x: number, y: number): '' | 'deck' | 'rail' | 'face' | 'escalator' | 'stairs' {
+export function plazaTile(x: number, y: number): '' | 'deck' | 'rail' | 'face' | 'escalator' | 'stairs' | 'lift' {
   if (x < PLAZA_BOX.x0 || x > PLAZA_BOX.x1 || y < PLAZA_BOX.y0 || y > PLAZA_BOX.y1) return '';
   const cx = x + 0.5, cy = y + 0.5;
   for (const f of FLIGHTS) {
@@ -156,6 +198,7 @@ export function plazaTile(x: number, y: number): '' | 'deck' | 'rail' | 'face' |
     if (Math.abs(cx - f.x) < f.w / 2 && cy >= d.y1 && cy < d.y1 + FACE) return f.kind;
   }
   const d = DECKS.filter((o) => cx >= o.x0 && cx < o.x1 && cy >= o.y0 && cy < o.y1);
+  if (d.some((o) => o.roof)) return 'face';
   if (d.length) return d.some((o) => railSides(o, x, y)) ? 'rail' : 'deck';
   for (let i = 0; i < DECKS.length; i += 1) {
     const o = DECKS[i];
@@ -165,7 +208,7 @@ export function plazaTile(x: number, y: number): '' | 'deck' | 'rail' | 'face' |
 }
 
 /** the whole plaza, for skipping it quickly */
-export const PLAZA_BOX = { x0: 376, y0: 345, x1: 464, y1: 446 };
+export const PLAZA_BOX = { x0: 376, y0: 342, x1: 464, y1: 446 };
 
 /** spots on every floor for shoppers to wander between (metres) */
 export const PLAZA_SPOTS: Array<{ x: number; y: number }> = [
@@ -180,6 +223,7 @@ const PAVE: Record<number, [string, string, string]> = {
   2: ['#c47c5e', '#aa6646', '#d08c6e'],
   3: ['#c9846a', '#ad6c50', '#d59478'],
   4: ['#d4cbb8', '#b8ae9a', '#e0d8c6'],
+  5: ['#cfcabe', '#b2ac9e', '#dcd8cc'],
 };
 const rnd = (x: number, y: number, s: number): number => {
   let h = (Math.floor(x) * 374761393 + Math.floor(y) * 668265263 + s * 2147483647) >>> 0;
@@ -201,9 +245,10 @@ export function drawPlaza(g: CanvasRenderingContext2D, x0: number, y0: number, x
   const order = DECKS.map((d, i) => i).sort((a, b) => DECKS[a].level - DECKS[b].level);
   for (const di of order) {
     const d = DECKS[di];
+    if (d.roof) { roofBlock(g, d); continue; }
     const [base, joint, light] = PAVE[d.level];
     g.fillStyle = base; g.fillRect(d.x0, d.y0, d.x1 - d.x0, d.y1 - d.y0);
-    if (d.level === 4) {
+    if (d.level >= 4) {
       // granite slabs, 1 m square
       g.fillStyle = joint;
       for (let x = Math.ceil(d.x0); x < d.x1; x += 1) g.fillRect(x, d.y0, px, d.y1 - d.y0);
@@ -230,6 +275,12 @@ export function drawPlaza(g: CanvasRenderingContext2D, x0: number, y0: number, x
   }
 
   // ---- front walls: one row of shopfronts under each deck's south edge
+  DECKS.forEach((d, di) => {
+    for (const [a, b] of faceRuns(di)) {
+      g.fillStyle = '#e6dfd0'; g.fillRect(a, d.y1 + 0.5, b - a, FACE - 0.5); // plain render where there is no shop
+      g.fillStyle = '#9a9286'; g.fillRect(a, d.y1 + FACE - 0.25, b - a, 0.25);
+    }
+  });
   for (const s of SHOPS) shopfront(g, s);
   DECKS.forEach((d, di) => {
     for (const [a, b] of faceRuns(di)) {
@@ -239,7 +290,9 @@ export function drawPlaza(g: CanvasRenderingContext2D, x0: number, y0: number, x
       g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(a, d.y1 + FACE, b - a, 0.5);
       g.fillStyle = 'rgba(0,0,0,0.1)'; g.fillRect(a, d.y1 + FACE + 0.5, b - a, 0.5);
       // a glass balustrade along the edge of the deck above, gapped where a flight comes up
+      // (a roof has a parapet instead)
       const cuts = cutsOf(di);
+      if (d.roof) { g.fillStyle = '#d8d0c0'; g.fillRect(a, d.y1 - 0.5, b - a, 0.5); continue; }
       for (let x = a; x < b; x += 0.25) {
         if (cuts.some(([c0, c1]) => x + 0.25 > c0 && x < c1)) continue;
         g.fillStyle = 'rgba(176,218,236,0.7)'; g.fillRect(x, d.y1 - 0.5, 0.25, 0.375);
@@ -248,15 +301,45 @@ export function drawPlaza(g: CanvasRenderingContext2D, x0: number, y0: number, x
       }
     }
     // balustrades along the closed sides
-    sideRails(g, d);
+    if (!d.roof) sideRails(g, d);
   });
 
   // ---- flights
   for (const f of FLIGHTS) {
     const d = DECKS[f.upper];
     if (f.kind === 'escalator') escalator(g, f.x, d.y1 - 1.2, d.y1 + FACE + 1.2, f.w);
+    else if (f.kind === 'lift') liftShaft(g, f.x - f.w / 2, d.y1, f.w, d.level);
     else stairs(g, f.x - f.w / 2, d.y1, f.w);
   }
+}
+
+/** the block over 5/F's shops: a flat roof with a parapet, plant and a planted edge */
+function roofBlock(g: CanvasRenderingContext2D, d: Deck): void {
+  const px = 1 / 8, w = d.x1 - d.x0, h = d.y1 - d.y0;
+  g.fillStyle = '#bdb6a6'; g.fillRect(d.x0, d.y0, w, h);
+  g.fillStyle = '#d8d0c0'; g.fillRect(d.x0, d.y0, w, 0.375); g.fillRect(d.x0, d.y0, 0.375, h); g.fillRect(d.x1 - 0.375, d.y0, 0.375, h);
+  g.fillStyle = '#9a9384'; for (let x = d.x0 + 2; x < d.x1 - 2; x += 4) g.fillRect(x, d.y0 + 0.75, 1.5, 1.25); // air-con units
+  g.fillStyle = '#6a6458'; for (let x = d.x0 + 2; x < d.x1 - 2; x += 4) g.fillRect(x + 0.25, d.y0 + 1, 1, px);
+  g.fillStyle = '#4f8a46'; g.fillRect(d.x0 + 0.375, d.y1 - 0.75, w - 0.75, 0.375); // planting along the edge
+}
+
+/** a glass lift shaft through one storey's wall, with the car waiting at the top on every other one */
+function liftShaft(g: CanvasRenderingContext2D, x0: number, t: number, w: number, level: number): void {
+  const px = 1 / 8;
+  g.fillStyle = '#5a6672'; g.fillRect(x0 - 0.25, t, w + 0.5, FACE); // steel frame
+  g.fillStyle = 'rgba(150,200,225,0.85)'; g.fillRect(x0, t + 0.25, w, FACE - 0.5); // glass
+  g.fillStyle = 'rgba(255,255,255,0.35)'; g.fillRect(x0 + 0.375, t + 0.25, 0.25, FACE - 0.5);
+  g.fillStyle = '#3a4048'; for (let y = t + 1.25; y < t + FACE; y += 1.25) g.fillRect(x0, y, w, px);
+  if (level % 2) {
+    // the car
+    const cy = t + 0.75;
+    g.fillStyle = '#d8dee4'; g.fillRect(x0 + 0.25, cy, w - 0.5, 2);
+    g.fillStyle = '#8a96a2'; g.fillRect(x0 + 0.25, cy + 2 - px, w - 0.5, px); g.fillRect(x0 + w / 2 - px / 2, cy + 0.25, px, 1.5);
+  }
+  // the call button panel and doors at the foot, on the floor below
+  g.fillStyle = '#2a3038'; g.fillRect(x0 + 0.25, t + FACE - 1.75, w - 0.5, 1.5);
+  g.fillStyle = '#c8ccd4'; g.fillRect(x0 + w / 2 - px / 2, t + FACE - 1.75, px, 1.5);
+  g.fillStyle = '#e8c23a'; g.fillRect(x0 + w + 0.25, t + FACE - 1.5, 0.25, 0.375);
 }
 
 /** glass balustrades on the sides of a deck that do not open to the street */
@@ -403,23 +486,37 @@ export function drawPlazaProps(g: CanvasRenderingContext2D, x0: number, y0: numb
   const T = 16;
   const clearOf = (x: number, y: number): boolean => !FLIGHTS.some((f) => {
     const d = DECKS[f.upper];
-    return Math.abs(x - f.x) < f.w / 2 + 1.5 && y > d.y1 - 3 && y < d.y1 + FACE + 3;
+    return Math.abs(x - f.x) < f.w / 2 + (f.kind === 'lift' ? 2.5 : 1.5) && y > d.y1 - 3 && y < d.y1 + FACE + 3;
   });
   for (const d of DECKS) {
     const mid = d.y0 + Math.max(3, (d.y1 - d.y0) / 2);
     for (let x = d.x0 + 3; x < d.x1 - 2; x += d.level === 3 ? 4 : 7) {
       if (!clearOf(x, mid)) continue;
       const px = Math.round(x * T), py = Math.round(mid * T);
+      if (d.roof) continue;
       if (d.level === 3) cafeTable(g, px, py, Math.round(x) % 3);
-      else if (d.level === 4) { if (x < 420) bench(g, px, py - 24); }
+      else if (d.level === 5) bench(g, px, py - 12);
+      else if (d.level === 4) planter(g, px, py - 8);
       else if (Math.round((x - d.x0) / 7) % 2) tree(g, px, py);
       else { planter(g, px - 14, py); bench(g, px + 2, py + 2); }
     }
     if (d.level === 4) {
-      // telescopes along the south rail: the view over Stanley Bay
+      // the observation deck: telescopes along the south rail, over Stanley Bay
       for (let x = d.x0 + 2; x < d.x1 - 1; x += 3.5) if (clearOf(x, d.y1 - 1)) telescope(g, Math.round(x * T), Math.round((d.y1 - 1.3) * T));
     }
   }
+  // outdoor tables in front of the restaurants that have them (round the piazza, mostly)
+  for (const s of SHOPS) {
+    if (!s.tables) continue;
+    for (const x of [s.x0 + 1.6, s.x1 - 1.6]) if (clearOf(x, s.y + FACE + 2.4)) cafeTable(g, Math.round(x * T), Math.round((s.y + FACE + 2.4) * T), Math.round(s.x0) % 3);
+  }
+  // the lift's call buttons: a sign with the floor at every stop
+  LIFT_STOPS.forEach((p, i) => {
+    const px = Math.round((p.x + 1.6) * T), py = Math.round((p.y - (i ? 0.6 : 1.4)) * T);
+    g.fillStyle = '#1e2a3a'; g.fillRect(px, py, 32, 13);
+    g.fillStyle = '#7ab0d8'; g.fillRect(px, py, 32, 2);
+    text(g, 'LIFT', px + 4, py + 3, '#f2eee4');
+  });
   // floor numbers, on boards beside the foot and the head of each escalator
   for (const f of FLIGHTS) {
     if (f.kind !== 'escalator') continue;
