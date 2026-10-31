@@ -9,6 +9,7 @@ import { OSM } from './stanley-osm.ts';
 import { ROUTES } from './minibus.ts';
 import { COVER, ROOF } from './stanley-cover.ts';
 import { SHAPE_3D, EXTRA_3D } from './stanley-shapes.ts';
+import { PHOTOS, PHOTO_PX } from './stanley-photos.ts';
 
 export const TILE = 16;
 export const MAP_W = OSM.w;
@@ -557,6 +558,8 @@ export type Building = {
   chimneys: number;
   /** a landmark's own wall colour, instead of its style's */
   wallColour?: string;
+  /** its real look, cut from the 3D map: [atlas x, y, w, h, game x, y, wall] (see stanley-photos.ts) */
+  photo?: [number, number, number, number, number, number, number];
 };
 
 
@@ -607,11 +610,14 @@ export const BUILDINGS: Building[] = ALL_BUILDINGS.map(([, kind, name, extra], i
   // roof shape: from the 3D surface when we have it, else the aerial photo's tiles, else the style
   const pitched = shape ? shape[2] === 1 : real ? real[2] === 1 : style === 'house' || style === 'heritage' || style === 'school' || style === 'temple';
   const lm = LANDMARKS[name] ?? {};
+  const photo = PHOTOS[i];
+  // a building with its real look is drawn exactly as tall as the picture of it
+  if (photo) wall = photo[6];
   return {
-    poly: p, name, style, x0: Math.floor(x0), y0: Math.floor(y0), x1: Math.ceil(x1), y1: Math.ceil(y1), wall: lm.wallH ?? wall, door: null,
+    poly: p, name, style, x0: Math.floor(x0), y0: Math.floor(y0), x1: Math.ceil(x1), y1: Math.ceil(y1), wall: photo ? wall : lm.wallH ?? wall, door: null,
     roof: lm.roof ?? real?.[0] ?? roofs[Math.floor(hash(Math.round(x0), Math.round(y0), 5) * roofs.length)],
     pitched: lm.pitched ?? pitched, height,
-    facade: lm.facade ?? 'windows', terrace: lm.terrace ?? false, chimneys: lm.chimneys ?? 0, wallColour: lm.wall,
+    facade: lm.facade ?? 'windows', terrace: lm.terrace ?? false, chimneys: lm.chimneys ?? 0, wallColour: lm.wall, photo,
   };
 });
 
@@ -952,6 +958,13 @@ export function drawWorld(ctx: CanvasRenderingContext2D, camX: number, camY: num
     const old = [...chunks.entries()].sort((a, b) => a[1].used - b[1].used).slice(0, chunks.size - MAX_CHUNKS);
     for (const [k] of old) chunks.delete(k);
   }
+}
+
+/** the atlas of buildings' real looks: drawn instead of the generic style once it has loaded */
+let photoImg: HTMLImageElement | null = null;
+export function setBuildingPhotos(img: HTMLImageElement): void {
+  photoImg = img;
+  chunks.clear(); // redraw what is on screen with the real buildings
 }
 
 /** a small overview of the whole map, one pixel per `scale` metres, for checking the layout */
@@ -1398,6 +1411,14 @@ function drawBuilding(g: CanvasRenderingContext2D, B: Building): void {
   g.beginPath(); g.rect(-1e4, -1e4, 3e4, 3e4);
   for (const e of ESCALATORS) g.rect(e.x - e.w / 2, e.y0, e.w, e.y1 - e.y0);
   g.clip('evenodd');
+  if (photoImg && B.photo) {
+    // its real look: roof and south walls as the 3D map shows them, already cut to shape
+    const [ax, ay, w, hh, gx, gy] = B.photo;
+    g.imageSmoothingEnabled = false;
+    g.drawImage(photoImg, ax, ay, w, hh, gx, gy, w / PHOTO_PX, hh / PHOTO_PX);
+    g.restore();
+    return;
+  }
   path(p); g.clip();
 
   // ---- front walls

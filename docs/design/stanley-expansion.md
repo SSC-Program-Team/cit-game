@@ -81,6 +81,16 @@ Landmarks in `LANDMARKS` keep their drawn outline and take only the height. The 
 through the same tidying as OSM's. Credit: Lands Department, HKSAR Government (terms of use of
 3d.map.gov.hk); shown on the status screen.
 
+**Buildings' real look (textures).** `scripts/render-oblique.py` (run where the OBJ zips are, about
+2 minutes a sheet) renders the 3D photo mesh in the game's own view: from above, with south walls at
+0.4 of their height, only what stands above the ground. `scripts/export-buildings.ts` prints the
+outlines the game draws, and `python3 scripts/import-photos.py render.png buildings.json` cuts each
+building's area out of the render (its outline swept up by its wall), fills mesh gaps, smooths
+photo speckle with a 3×3 median, lifts colour a little and reduces the atlas to 96 colours, so it
+sits with the pixel art. Output: `public/img/buildings.png` (one atlas, about 3 MB) and
+`src/stanley-photos.ts`. 390 buildings use it; the rest keep the drawn style. The game draws the
+map without them until the atlas has loaded, then redraws.
+
 Known limits: OSM building outlines seal off a few courtyards (places are only put where you can
 walk). Collision still uses the 1 m grid, so you stop up to half a metre short of a slanted wall.
 

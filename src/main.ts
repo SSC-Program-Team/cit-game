@@ -12,7 +12,7 @@ import { GLYPHS } from './font';
 import {
   TILE, MAP_W, MAP_H, PLACES, START, RELEASE, drawWorld, setWorldText, renderOverview, solidAt, solidTile,
   walkableTile, findPath, isSea, areaNear, ROAD_LINES, walkDistance, roadRoute, BUILDING_LABELS, ESCALATORS,
-  escalatorAt, type Place,
+  escalatorAt, setBuildingPhotos, type Place,
 } from './world';
 import { ROUTES, routesAt, type Route, type Stop } from './minibus';
 import { QUESTIONS, TOPIC_NAMES, FORM_RATE, type Form, type Question, type Tier, type Topic } from './questions';
@@ -41,6 +41,13 @@ function toggleZoom(): void {
 }
 
 (window as unknown as { __cit: typeof state }).__cit = state;
+
+// buildings' real looks (from the Lands Department 3D map): the map draws without them until loaded
+{
+  const img = new Image();
+  img.onload = () => setBuildingPhotos(img);
+  img.src = 'img/buildings.png';
+}
 
 // ---------------------------------------------------------------- canvas ---
 const canvas = document.createElement('canvas');

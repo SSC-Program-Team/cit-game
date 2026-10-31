@@ -304,6 +304,9 @@ ts = f"""/**
 /** OSM building index -> [outline in metres, height in metres, pitched roof 1/0] */
 export const SHAPE_3D: Record<number, [number[], number, number]> = {json.dumps(shapes, separators=(',', ':'))};
 
+/** how far the 3D map was shifted (metres east, south) to line up with OSM */
+export const SHIFT_3D = [{sdx}, {sdy}];
+
 /** buildings the 3D map has and OpenStreetMap does not: [outline, height, pitched] */
 export const EXTRA_3D: Array<[number[], number, number]> = {json.dumps(extra, separators=(',', ':'))};
 """
