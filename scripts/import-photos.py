@@ -11,7 +11,7 @@ the game draws buildings. For each building with a real height, this takes exact
 game draws it in (its outline, lifted by 0.4 of its height) from the render, fills small gaps,
 packs it into one atlas, and reduces the colours a little so it sits with the pixel art.
 
-Writes public/img/buildings.png (the atlas) and src/stanley-photos.ts (where each building is).
+Writes public/img/buildings.webp (the atlas) and src/stanley-photos.ts (where each building is).
 Buildings the render does not cover keep the game's own drawing. Needs numpy, scipy and Pillow.
 """
 import json
@@ -25,12 +25,13 @@ from scipy import ndimage as ndi
 
 Image.MAX_IMAGE_PIXELS = None
 ROOT = __file__.rsplit('/scripts/', 1)[0]
-PX = 4                 # atlas pixels per metre (the game draws 8 art pixels per metre: each is 2x2)
+PX = None              # atlas pixels per metre: as fine as the render (8 = the game's art grid)
 LIFT = 0.4             # wall height on screen, as a share of the real height (as in render-oblique.py)
 MAX_WALL = 16.0        # metres: very tall towers are squashed, or they would hide whole streets
 
 render_path, buildings_path = sys.argv[1], sys.argv[2]
 meta = json.load(open(render_path.rsplit('.', 1)[0] + '.json'))
+PX = round(1 / meta['cell'])
 photo = np.asarray(Image.open(render_path).convert('RGBA'))
 PH, PW = photo.shape[:2]
 buildings = json.load(open(buildings_path))
@@ -125,7 +126,7 @@ print(f'{len(crops)} buildings have their real look', flush=True)
 
 # ---- pack into one atlas (shelves, tallest first)
 crops.sort(key=lambda c: -c[4].shape[0])
-AW = 2048
+AW = 4096 if PX > 4 else 2048
 x = y = shelf = 0
 places = []
 for i, gx0, gy0, wall, px in crops:
@@ -145,12 +146,12 @@ img = Image.fromarray(atlas, 'RGBA')
 alpha = img.getchannel('A')
 # a 3x3 median takes out photo speckle (leaves, noise) but keeps edges, windows and signs
 rgb = Image.fromarray(ndi.median_filter(np.asarray(img.convert('RGB')), size=(3, 3, 1)))
-rgb = ImageEnhance.Color(rgb).enhance(1.3)
-rgb = ImageEnhance.Contrast(rgb).enhance(1.12)
-rgb = rgb.quantize(colors=96, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).convert('RGB')
+rgb = ImageEnhance.Color(rgb).enhance(1.2)
+rgb = ImageEnhance.Contrast(rgb).enhance(1.08)
 out = rgb.convert('RGBA')
 out.putalpha(alpha)
-out.save(f'{ROOT}/public/img/buildings.png', optimize=True)
+# WebP keeps a detailed photo atlas to a few MB (every current browser, iPad Safari included, reads it)
+out.save(f'{ROOT}/public/img/buildings.webp', quality=82, method=6)
 
 index = {i: [ax, ay, w, hgt, gx0, gy0, round(wall, 3)] for i, ax, ay, w, hgt, gx0, gy0, wall in places}
 ts = f"""/**
@@ -163,4 +164,4 @@ export const PHOTOS: Record<number, [number, number, number, number, number, num
 """
 open(f'{ROOT}/src/stanley-photos.ts', 'w').write(ts)
 import os
-print(f'atlas {AW}x{AH}, {os.path.getsize(f"{ROOT}/public/img/buildings.png") / 1e6:.1f} MB; index {len(ts)} bytes')
+print(f'atlas {AW}x{AH}, {os.path.getsize(f"{ROOT}/public/img/buildings.webp") / 1e6:.1f} MB; index {len(ts)} bytes')

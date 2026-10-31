@@ -46,7 +46,7 @@ function toggleZoom(): void {
 {
   const img = new Image();
   img.onload = () => setBuildingPhotos(img);
-  img.src = 'img/buildings.png';
+  img.src = 'img/buildings.webp';
 }
 
 // ---------------------------------------------------------------- canvas ---
@@ -57,10 +57,21 @@ document.getElementById('app')!.appendChild(canvas);
 const ctx = canvas.getContext('2d')!;
 ctx.imageSmoothingEnabled = false;
 
+/**
+ * The game is laid out on a 640x360 grid, but the canvas has as many real pixels as the screen
+ * shows it at (up to 4 per grid unit), so nothing is blown up: the art and text stay sharp.
+ */
+let PXR = 1;
 function resize(): void {
   const s = Math.min(window.innerWidth / W, window.innerHeight / H);
   canvas.style.width = `${Math.floor(W * s)}px`;
   canvas.style.height = `${Math.floor(H * s)}px`;
+  const want = Math.max(1, Math.min(4, Math.round(s * (window.devicePixelRatio || 1))));
+  if (want !== PXR || canvas.width !== W * want) {
+    PXR = want;
+    canvas.width = W * PXR;
+    canvas.height = H * PXR;
+  }
 }
 window.addEventListener('resize', resize);
 resize();
@@ -1556,7 +1567,7 @@ function drawCity(): void {
   cam.x = Math.max(0, Math.min(MAP_W * TILE - VW, Math.round(fx - VW / 2)));
   cam.y = Math.max(-35 / zoom, Math.min(MAP_H * TILE - VH + 28 / zoom, Math.round(fy - VH / 2)));
   // keep the camera on whole canvas pixels so the art does not shimmer
-  cam.x = Math.round(cam.x * zoom) / zoom; cam.y = Math.round(cam.y * zoom) / zoom;
+  cam.x = Math.round(cam.x * zoom * PXR) / (zoom * PXR); cam.y = Math.round(cam.y * zoom * PXR) / (zoom * PXR);
   ctx.fillStyle = '#2a5f86'; ctx.fillRect(0, 0, W, H);
   const t = performance.now() / 1000;
 
@@ -2060,6 +2071,9 @@ function frame(t: number): void {
   last = t;
   frames += 1;
   update(dt);
+  // everything is drawn in 640x360 units; the canvas has PXR real pixels per unit
+  ctx.setTransform(PXR, 0, 0, PXR, 0, 0);
+  ctx.imageSmoothingEnabled = false;
   if (state.jail) drawPrison();
   else if (job) drawJob();
   else if (quiz) drawQuiz();

@@ -3,6 +3,7 @@ Render the Lands Department 3D photo mesh in the game's own view: from above, wi
 shown at 0.4 of their height (as the game draws them). Only what stands above the ground is drawn.
 
     python3 render-oblique.py out-prefix dsm.npz sheet1.zip [sheet2.zip ...]
+    (CELL=0.25 in the environment for a quicker, coarser render)
 
 Writes out-prefix.png (colour, transparent where nothing was drawn) and out-prefix.json (where the
 image sits). Rows: south is down; a point at grid north N and height z (above the local ground)
@@ -21,7 +22,7 @@ from PIL import Image
 from scipy import ndimage as ndi
 
 Image.MAX_IMAGE_PIXELS = None
-CELL = 0.25   # metres per pixel
+CELL = float(__import__('os').environ.get('CELL', '0.125'))  # metres per pixel (8 per metre, the game's art grid)
 LIFT = 0.4    # how much of a wall's height shows, as in the game
 PAD = 40.0    # metres of room above the top edge for tall buildings near it
 MIN_Z = 1.2   # metres above ground: anything lower is ground, drawn by the game itself
