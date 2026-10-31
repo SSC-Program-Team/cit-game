@@ -13,7 +13,7 @@ the market notice board, two employers that send work tasks in real time (and fi
 shop, courses at Stanley Plaza, free study at the library, a warning-then-jail law system, and a
 62-question MC bank tagged F1–F6 (junior ICT/CIT, coding and AI up to F3; the five DSE ICT
 compulsory modules from F4), where harder questions pay more. The map is real Stanley at 1 m per tile, built from
-OpenStreetMap (© OpenStreetMap contributors, ODbL), with the GMB 40 and 52 green minibuses to ride. The networking console jobs from v0.4 are still there.
+OpenStreetMap (© OpenStreetMap contributors, ODbL) and the Lands Department's 3D Visualisation Map (source: Lands Department, HKSAR Government, 3d.map.gov.hk), with the GMB 40 and 52 green minibuses to ride. The networking console jobs from v0.4 are still there.
 
 **Read first:** [Stanley expansion plan](docs/design/stanley-expansion.md) — the decisions behind v0.5.
 

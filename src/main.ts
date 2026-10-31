@@ -879,6 +879,7 @@ function openStatus(): void {
       { label: 'certificates', sub: state.certs.map((c) => COURSES.find((x) => x.id === c)?.name ?? c).join(', ') || 'none yet', off: true },
       { label: 'record', sub: state.record.length ? `${state.record.length} offence(s). see stanley police station` : 'clean', off: true,
         colour: state.record.length ? '#ff9a6a' : '#7be08a' },
+      { label: 'map data', sub: '(c) openstreetmap contributors (odbl). 3d map: lands department, hksar government', off: true, colour: '#6f7688' },
       { label: 'close', act: () => { menu = null; } },
     ],
   });

@@ -68,6 +68,19 @@ height (2–10 m) so roofs stay visible. Woods block walking, except a 2 m fring
 and buildings. Outside the model, open hillside gets invented copses so it matches; that part is
 artistic, not surveyed.
 
+**Real building shapes (Lands Department OBJ sheets).** The 3D Visualisation Map's tile-based
+OBJ download (photo mesh, by 1:1000 map sheet: Stanley is 15-NE-12A to 12D, with 13A, 13C, 17A,
+17B and 18A for the edges) is turned into a 0.5 m surface-height map by `scripts/dsm.py` (run it
+where the zips are, about 2 minutes for 20 GB; needs numpy), then `python3 scripts/import-dsm.py
+dsm.npz` writes `src/stanley-shapes.ts`. A cell is building if it stands 2.2 m above the ground
+around it and is made of flat or evenly sloped patches (tree crowns are speckled). Each OSM
+building takes the building cells around its outline: real footprint, height above the ground
+outside its walls, and pitched or flat roof. 374 of 662 OSM buildings are reshaped this way and 11
+missing ones added (they must have walls all round, so trees are not mistaken for buildings).
+Landmarks in `LANDMARKS` keep their drawn outline and take only the height. The outlines then go
+through the same tidying as OSM's. Credit: Lands Department, HKSAR Government (terms of use of
+3d.map.gov.hk); shown on the status screen.
+
 Known limits: OSM building outlines seal off a few courtyards (places are only put where you can
 walk). Collision still uses the 1 m grid, so you stop up to half a metre short of a slanted wall.
 

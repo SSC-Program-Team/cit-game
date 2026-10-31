@@ -8,6 +8,7 @@
 import { OSM } from './stanley-osm.ts';
 import { ROUTES } from './minibus.ts';
 import { COVER, ROOF } from './stanley-cover.ts';
+import { SHAPE_3D, EXTRA_3D } from './stanley-shapes.ts';
 
 export const TILE = 16;
 export const MAP_W = OSM.w;
@@ -293,7 +294,35 @@ export function escalatorAt(px: number, py: number): number {
   return 0;
 }
 /** every building's tidied outline, by OSM index */
-const SHAPES: number[][] = OSM.buildings.map(([p]) => destair(regularize(p)));
+/**
+ * Landmarks people know get their own look, so they read as themselves rather than as a generic
+ * block. Keyed by the OSM name; anything not given keeps the usual style. Add to this as you go.
+ */
+type Landmark = { wall?: string; roof?: string; pitched?: boolean; facade?: Building['facade']; terrace?: boolean; chimneys?: number; wallH?: number };
+const LANDMARKS: Record<string, Landmark> = {
+  // 1840s granite colonial block, rebuilt here in 2001: colonnades on every floor, grey hipped roof
+  'Murray House': { wall: '#ddd5c2', roof: '#5d6266', pitched: true, facade: 'colonnade', chimneys: 6, wallH: 6 },
+  // terraced mall stepping down to the waterfront: glass shopfronts, a public terrace on top
+  'Stanley Plaza': { wall: '#d9d3c6', roof: '#c9bfa8', pitched: false, facade: 'glass', terrace: true, wallH: 4 },
+};
+const LANDMARK_NAMES = new Set(Object.keys(LANDMARKS));
+
+/**
+ * Every building: OSM's, then the ones only the Lands Department 3D map has. Where the 3D map
+ * gives a building's real outline (SHAPE_3D), that is used instead of OSM's hand-traced one.
+ */
+const ALL_BUILDINGS: Array<[number[], string, string, string]> = [
+  ...OSM.buildings,
+  ...EXTRA_3D.map(([p]): [number[], string, string, string] => [p, 'yes', '', '']),
+];
+const real3d = (i: number): [number[], number, number] | undefined => {
+  if (i >= OSM.buildings.length) return EXTRA_3D[i - OSM.buildings.length];
+  const r = SHAPE_3D[i];
+  // landmarks keep the outline they are drawn for (Stanley Plaza's terraces sit level with the
+  // hillside, so the 3D map only sees part of it as a building); they still take the real height
+  return r && LANDMARK_NAMES.has(OSM.buildings[i][2]) ? [OSM.buildings[i][0], r[1], r[2]] : r;
+};
+const SHAPES: number[][] = ALL_BUILDINGS.map(([p], i) => destair(regularize(real3d(i)?.[0] ?? p)));
 
 const AREA_CODE: Record<string, Gr> = {
   beach: Gr.Beach, wood: Gr.Wood, cemetery: Gr.Cemetery, pitch: Gr.Pitch, park: Gr.Park, parking: Gr.Parking,
@@ -530,17 +559,6 @@ export type Building = {
   wallColour?: string;
 };
 
-/**
- * Landmarks people know get their own look, so they read as themselves rather than as a generic
- * block. Keyed by the OSM name; anything not given keeps the usual style. Add to this as you go.
- */
-type Landmark = { wall?: string; roof?: string; pitched?: boolean; facade?: Building['facade']; terrace?: boolean; chimneys?: number; wallH?: number };
-const LANDMARKS: Record<string, Landmark> = {
-  // 1840s granite colonial block, rebuilt here in 2001: colonnades on every floor, grey hipped roof
-  'Murray House': { wall: '#ddd5c2', roof: '#5d6266', pitched: true, facade: 'colonnade', chimneys: 6, wallH: 6 },
-  // terraced mall stepping down to the waterfront: glass shopfronts, a public terrace on top
-  'Stanley Plaza': { wall: '#d9d3c6', roof: '#c9bfa8', pitched: false, facade: 'glass', terrace: true, wallH: 4 },
-};
 
 
 const ROOFS: Record<BuildingStyle, string[]> = {
@@ -570,7 +588,7 @@ function styleFor(kind: string, extra: string, cx: number, cy: number): Building
   return 'house';
 }
 
-export const BUILDINGS: Building[] = OSM.buildings.map(([, kind, name, extra], i) => {
+export const BUILDINGS: Building[] = ALL_BUILDINGS.map(([, kind, name, extra], i) => {
   const p = SHAPES[i];
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   for (let i = 0; i < p.length; i += 2) { x0 = Math.min(x0, p[i]); x1 = Math.max(x1, p[i]); y0 = Math.min(y0, p[i + 1]); y1 = Math.max(y1, p[i + 1]); }
@@ -579,16 +597,20 @@ export const BUILDINGS: Building[] = OSM.buildings.map(([, kind, name, extra], i
   const span = Math.min(x1 - x0, y1 - y0);
   const tall = style === 'apartments' || style === 'quarters' || style === 'mall';
   const real = ROOF[i];
+  const shape = real3d(i);
+  // real height: measured from the 3D map's surface, else from the 3D model's boxes
+  const height = shape?.[1] || real?.[1] || 0;
   let wall = Math.max(2, Math.min(tall ? 7 : style === 'school' ? 3 : 4, Math.round(span * (tall ? 0.4 : style === 'school' ? 0.2 : 0.3))));
   // with a real height, draw the front wall about 0.4 of it: tall enough to read, not so tall it hides the roof
-  if (real?.[1]) wall = Math.max(2, Math.min(10, Math.round(real[1] * 0.4), Math.round((y1 - y0) * 0.6)));
+  if (height) wall = Math.max(2, Math.min(10, Math.round(height * 0.4), Math.round((y1 - y0) * 0.6)));
   const roofs = ROOFS[style];
-  const pitched = real ? real[2] === 1 : style === 'house' || style === 'heritage' || style === 'school' || style === 'temple';
+  // roof shape: from the 3D surface when we have it, else the aerial photo's tiles, else the style
+  const pitched = shape ? shape[2] === 1 : real ? real[2] === 1 : style === 'house' || style === 'heritage' || style === 'school' || style === 'temple';
   const lm = LANDMARKS[name] ?? {};
   return {
     poly: p, name, style, x0: Math.floor(x0), y0: Math.floor(y0), x1: Math.ceil(x1), y1: Math.ceil(y1), wall: lm.wallH ?? wall, door: null,
     roof: lm.roof ?? real?.[0] ?? roofs[Math.floor(hash(Math.round(x0), Math.round(y0), 5) * roofs.length)],
-    pitched: lm.pitched ?? pitched, height: real?.[1] ?? 0,
+    pitched: lm.pitched ?? pitched, height,
     facade: lm.facade ?? 'windows', terrace: lm.terrace ?? false, chimneys: lm.chimneys ?? 0, wallColour: lm.wall,
   };
 });
