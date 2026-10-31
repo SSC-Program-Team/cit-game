@@ -6,6 +6,7 @@
  * near the camera are kept. See docs/design/stanley-expansion.md §2.
  */
 import { OSM } from './stanley-osm.ts';
+import { PED } from './stanley-ped.ts';
 import { ROUTES } from './minibus.ts';
 import { COVER, ROOF } from './stanley-cover.ts';
 import { SHAPE_3D, EXTRA_3D } from './stanley-shapes.ts';
@@ -404,6 +405,11 @@ const ROAD: Record<string, [Gr, number]> = {
   footway: [Gr.Path, 2.2], path: [Gr.Path, 1.8], steps: [Gr.Steps, 2.2], cycleway: [Gr.Path, 2],
 };
 
+/** pedestrian network types that are a paved way you walk along (not stairs, lifts or crossings) */
+const PED_PAVED = new Set(['Footway', 'Generalized Walkway inside Park', 'Ramp', 'Footpath', 'Village', 'Track', 'Service Lane']);
+/** promenades with timber decking, by their name in the pedestrian network */
+export const BOARDWALK_NAMES = new Set(['Stanley Promenade', 'Hsbc Seafront Promenade']);
+
 {
   // 1. land use, biggest first so the smaller, more specific areas win
   const areas = [...OSM.areas].sort((a, b) => bboxArea(b[0]) - bboxArea(a[0]));
@@ -491,6 +497,39 @@ const ROAD: Record<string, [Gr, number]> = {
     for (let k = 0; k < N; k += 1) {
       const g = grid[k];
       if (side[k] && (g === Gr.Hill || g === Gr.Grass || g === Gr.Park || g === Gr.Built || g === Gr.School || g === Gr.Yard)) grid[k] = Gr.Path;
+    }
+  }
+  // 3c. footways from the Lands Department's pedestrian network that OpenStreetMap does not have:
+  //     where an outdoor footway runs over open ground more than 3 m from any mapped way, lay a
+  //     2 m path (steps for a staircase). Buildings, the sea and walls are left alone.
+  {
+    const way = (g: number): boolean => g === Gr.Path || g === Gr.Steps || g === Gr.Road || g === Gr.Lane || g === Gr.Plaza || g === Gr.Pier || g === Gr.Parking;
+    const had = new Uint8Array(N);
+    for (let k = 0; k < N; k += 1) if (way(grid[k])) had[k] = 1;
+    // is there already a way within 3 m (OSM often maps the same path a few metres off)
+    const near = (x: number, y: number): boolean => {
+      for (let dy = -3; dy <= 3; dy += 1) for (let dx = -3; dx <= 3; dx += 1) {
+        const X = x + dx, Y = y + dy;
+        if (X >= 0 && Y >= 0 && X < MAP_W && Y < MAP_H && had[Y * MAP_W + X]) return true;
+      }
+      return false;
+    };
+    for (const w of PED) {
+      if (w.indoor || (!PED_PAVED.has(w.type) && w.type !== 'Staircase')) continue;
+      const code = w.type === 'Staircase' ? Gr.Steps : Gr.Path;
+      for (let i = 0; i + 3 < w.p.length; i += 2) {
+        const ax = w.p[i], ay = w.p[i + 1], bx = w.p[i + 2], by = w.p[i + 3], len = Math.hypot(bx - ax, by - ay);
+        for (let t = 0; t <= len; t += 0.5) {
+          const x = ax + ((bx - ax) * t) / (len || 1), y = ay + ((by - ay) * t) / (len || 1);
+          if (near(Math.floor(x), Math.floor(y))) continue;
+          for (let dy = -1; dy <= 0; dy += 1) for (let dx = -1; dx <= 0; dx += 1) {
+            const X = Math.floor(x + 0.5) + dx, Y = Math.floor(y + 0.5) + dy;
+            if (X < 0 || Y < 0 || X >= MAP_W || Y >= MAP_H) continue;
+            const k = Y * MAP_W + X, g = grid[k];
+            if (g === Gr.Hill || g === Gr.Grass || g === Gr.Scrub || g === Gr.Wood || g === Gr.Park || g === Gr.School || g === Gr.Built || g === Gr.Cemetery) grid[k] = code;
+          }
+        }
+      }
     }
   }
   // 4. buildings. A mapped road, path or steps is never built over: where one runs under a
@@ -605,6 +644,62 @@ const ROAD: Record<string, [Gr, number]> = {
         if (prev[k] === -1) break;
       }
     }
+  }
+}
+
+// ---------------------------------------------------------------- surfaces ---
+/** what a footway is paved with. Hong Kong pavements beside roads are red interlocking bricks with a
+ *  band of grey ones along the kerb; Stanley's two waterfront promenades are timber decking; park
+ *  walkways and trails stay plain concrete. Where the Lands Department's pedestrian network runs
+ *  (src/stanley-ped.ts) it decides; elsewhere a path within 4 m of a road, or in the village core,
+ *  is pavement. Looks only: walking is the same on all of them. */
+export const Surf = { Concrete: 0, Brick: 1, Kerb: 2, DeckAcross: 3, DeckAlong: 4, Coping: 5 } as const;
+export const surf = new Uint8Array(N);
+{
+  const isPath = (k: number): boolean => grid[k] === Gr.Path;
+  const road = (k: number): boolean => grid[k] === Gr.Road || grid[k] === Gr.Lane;
+  // metres to the nearest road along the paving (up to 4), breadth first
+  const far = 255;
+  const spread = (seed: (k: number) => boolean, cap: number, through: (k: number) => boolean): Uint8Array => {
+    const d = new Uint8Array(N).fill(far);
+    const q = new Int32Array(N);
+    let head = 0, tail = 0;
+    for (let k = 0; k < N; k += 1) if (seed(k)) { d[k] = 0; q[tail++] = k; }
+    while (head < tail) {
+      const k = q[head++], v = d[k];
+      if (v >= cap) continue;
+      const x = k % MAP_W;
+      for (const n of [x > 0 ? k - 1 : -1, x < MAP_W - 1 ? k + 1 : -1, k - MAP_W, k + MAP_W]) {
+        if (n >= 0 && n < N && d[n] === far && through(n)) { d[n] = v + 1; q[tail++] = n; }
+      }
+    }
+    return d;
+  };
+  const toRoad = spread(road, 4, (k) => isPath(k) || grid[k] === Gr.Steps || grid[k] === Gr.Plaza);
+  const sea = (k: number): boolean => grid[k] === Gr.Sea || grid[k] === Gr.Rock || grid[k] === Gr.Beach;
+  // what the pedestrian network says each metre near it is: 1 timber, 2 pavement, 3 park walkway
+  // (plain, unless it is beside a road)
+  const ped = new Uint8Array(N);
+  for (const w of PED) {
+    if (w.indoor || !PED_PAVED.has(w.type)) continue;
+    const v = BOARDWALK_NAMES.has(w.name) ? 1 : w.type === 'Footway' || w.type === 'Ramp' ? 2 : 3;
+    // a promenade takes the whole width of the path it runs along (the survey line may sit to one side)
+    stampLine(w.p, v === 1 ? 7 : 3, (k) => { if (!ped[k] || v < ped[k]) ped[k] = v; });
+  }
+  // how far a path runs each way from a tile, to lay deck boards across the way you walk
+  const run = (x: number, y: number, dx: number, dy: number): number => {
+    let n = 0;
+    for (let i = 1; i <= 6; i += 1) { const qx = x + dx * i, qy = y + dy * i; if (qx < 0 || qy < 0 || qx >= MAP_W || qy >= MAP_H || !isPath(qy * MAP_W + qx)) break; n += 1; }
+    return n;
+  };
+  for (let y = 0; y < MAP_H; y += 1) for (let x = 0; x < MAP_W; x += 1) {
+    const k = y * MAP_W + x;
+    if (!isPath(k)) continue;
+    if (ped[k] === 1 && toRoad[k] >= 2) {
+      const seaSide = x > 0 && x < MAP_W - 1 && y > 0 && y < MAP_H - 1 && (sea(k - 1) || sea(k + 1) || sea(k - MAP_W) || sea(k + MAP_W));
+      const h = run(x, y, 1, 0) + run(x, y, -1, 0), v = run(x, y, 0, 1) + run(x, y, 0, -1);
+      surf[k] = seaSide ? Surf.Coping : h >= v ? Surf.DeckAcross : Surf.DeckAlong;
+    } else if (ped[k] === 2 || toRoad[k] <= 4 || (core(x, y) && ped[k] !== 3)) surf[k] = Surf.Brick;
   }
 }
 
@@ -1174,7 +1269,8 @@ export function renderOverview(scale = 4): HTMLCanvasElement {
   const img = g.createImageData(c.width, c.height);
   for (let y = 0; y < c.height; y += 1) for (let x = 0; x < c.width; x += 1) {
     const k = y * scale * MAP_W + x * scale;
-    const col = OVERVIEW[grid[k]] ?? [0, 0, 0];
+    const sf = grid[k] === Gr.Path ? surf[k] : 0;
+    const col = sf === Surf.Brick || sf === Surf.Kerb ? [184, 112, 96] : sf >= Surf.DeckAcross ? [150, 116, 82] : OVERVIEW[grid[k]] ?? [0, 0, 0];
     const b = bid[k] >= 0 ? hexRgb(BUILDINGS[bid[k]].roof) : col;
     const i = (y * c.width + x) * 4;
     img.data[i] = b[0]; img.data[i + 1] = b[1]; img.data[i + 2] = b[2]; img.data[i + 3] = 255;
@@ -1312,6 +1408,50 @@ function rockTone(gx: number, gy: number, wet: boolean): RGB {
   return wet ? [c[0] * 0.78, c[1] * 0.8, c[2] * 0.84] : c;
 }
 
+/** the surface for an art pixel the blend made footway: its own tile's, or where the blend has
+ *  spread the path onto a neighbouring tile, the nearest path tile's */
+function surfAt(mx: number, my: number): number {
+  const tx = Math.floor(mx), ty = Math.floor(my);
+  if (at_(tx, ty) === Gr.Path) return surf[ty * MAP_W + tx];
+  const sx = mx - tx < 0.5 ? -1 : 1, sy = my - ty < 0.5 ? -1 : 1;
+  for (const [dx, dy] of [[sx, 0], [0, sy], [sx, sy], [-sx, 0], [0, -sy]]) {
+    if (at_(tx + dx, ty + dy) === Gr.Path) return surf[(ty + dy) * MAP_W + tx + dx];
+  }
+  return Surf.Concrete;
+}
+const BRICK: RGB[] = ['#94463a', '#a14d3f', '#ad5645', '#b9604c', '#9a4f48'].map(hex3);
+const KERB_BRICK: RGB[] = ['#7c7d80', '#88898c', '#949598', '#a0a0a2'].map(hex3);
+const TIMBER: RGB[] = ['#7a5a3e', '#876649', '#937253', '#a07e5d', '#8c6c50'].map(hex3);
+/** a footway's surface at one art pixel (8 to the metre): Hong Kong red pavers in stretcher bond,
+ *  grey ones along the kerb, or timber deck boards with dark gaps, and granite coping at the sea */
+function paving(gx: number, gy: number, sf: number): RGB {
+  if (sf === Surf.Brick || sf === Surf.Kerb) {
+    // pavers drawn 0.75 x 0.375 m (a little big, so they read), 1 px joints, rows offset by half
+    const row = Math.floor(gy / 3), off = row % 2 ? 3 : 0, col = Math.floor((gx + off) / 6);
+    if (gy % 3 === 0 || (gx + off) % 6 === 0) return sf === Surf.Kerb ? [96, 96, 100] : [112, 78, 70];
+    const pal = sf === Surf.Kerb ? KERB_BRICK : BRICK;
+    const t = hash(col, row, 90);
+    const c = pal[Math.floor(t * pal.length)];
+    const lift = gy % 3 === 1 ? 8 : 0, grime = (noise(gx, gy, 91) - 0.5) * 10;
+    return [c[0] + lift + grime, c[1] + lift + grime, c[2] + lift + grime];
+  }
+  if (sf === Surf.Coping) {
+    const v = (noise(gx, gy, 92) - 0.5) * 12 + (gx % 8 === 0 || gy % 8 === 0 ? -26 : 0);
+    return [190 + v, 186 + v, 178 + v];
+  }
+  // deck boards 0.25 m wide with a 1 px gap, butt joints at random lengths, nail heads at the ends
+  const across = sf === Surf.DeckAcross;
+  const u = across ? gx : gy, w = across ? gy : gx;
+  const board = Math.floor(u / 3);
+  if (u % 3 === 0) return [62, 45, 32];
+  const len = 10 + Math.floor(hash(board, 0, 93) * 14), seg = Math.floor((w + board * 7) / len);
+  if ((w + board * 7) % len === 0) return [70, 52, 37];
+  const c = TIMBER[Math.floor(hash(board, seg, 94) * TIMBER.length)];
+  const grain = (vnoise(across ? gx / 1.5 : gx / 9, across ? gy / 9 : gy / 1.5, 95) - 0.5) * 18;
+  const nail = (w + board * 7) % len === 1 && u % 3 === 2 ? -30 : 0;
+  return [c[0] + grain + nail, c[1] + grain * 0.8 + nail, c[2] + grain * 0.6 + nail];
+}
+
 /** the label next to the art pixel being painted (set per pixel, so no closure is made each time) */
 let opx = 0, opy = 0, oc = 0, olabel = new Uint8Array(0);
 function other(dx: number, dy: number): number {
@@ -1421,6 +1561,22 @@ function renderChunk(cx: number, cy: number): HTMLCanvasElement {
             const slab = hash(gx >> 3, gy >> 3, 21);
             const v = (slab - 0.5) * 16; r += v; g += v; b += v * 0.8;
             if (gx % 8 === 0 || gy % 8 === 0) { r -= 22; g -= 22; b -= 22; }
+            break;
+          }
+          let sf = surfAt(mx, my);
+          if (sf !== Surf.Concrete) {
+            if (sf === Surf.Brick || sf === Surf.Kerb) {
+              // the grey band: the half metre of pavers next to the kerb, measured from the drawn edge
+              const car = (q: number): boolean => q === Gr.Road || q === Gr.Lane || q === Gr.Parking;
+              sf = car(other(4, 0)) || car(other(-4, 0)) || car(other(0, 4)) || car(other(0, -4)) || car(other(3, 3)) || car(other(-3, 3)) || car(other(3, -3)) || car(other(-3, -3)) ? Surf.Kerb : Surf.Brick;
+            }
+            [r, g, b] = paving(gx, gy, sf);
+            // a timber deck ends in an edge beam, darker, with a lit top
+            if (sf === Surf.DeckAcross || sf === Surf.DeckAlong) {
+              const off = (q: number): boolean => q !== Gr.Path && q !== Gr.Pier && q !== Gr.Steps;
+              if (off(other(1, 0)) || off(other(-1, 0)) || off(other(0, 1)) || off(other(0, -1))) { r = 74; g = 55; b = 38; }
+              else if (off(other(2, 0)) || off(other(-2, 0)) || off(other(0, 2)) || off(other(0, -2))) { r = 132; g = 104; b = 76; }
+            }
             break;
           }
           // small paving slabs, half a metre, staggered
