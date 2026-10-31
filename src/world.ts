@@ -1290,6 +1290,7 @@ function renderChunk(cx: number, cy: number): HTMLCanvasElement {
     .sort((p, q) => p.y1 - q.y1);
   for (const b of near) drawBuilding(lg, b);
   for (const e of ESCALATORS) if (e.x + e.w >= tx0 && e.x - e.w <= tx0 + CHUNK && e.y1 >= ty0 && e.y0 <= ty0 + CHUNK) drawEscalator(lg, e);
+  if (tx0 < 740 && tx0 + CHUNK > 590 && ty0 < 570 && ty0 + CHUNK > 420) drawMarket(lg, tx0, ty0);
   lg.restore();
 
   // ---- 4. double up to screen pixels, then the props and labels at full resolution
@@ -1301,6 +1302,115 @@ function renderChunk(cx: number, cy: number): HTMLCanvasElement {
   g.translate(-cx * CPX, -cy * CPX);
   for (let y = ty0 - 5; y < ty0 + CHUNK + 6; y += 1) for (let x = tx0 - 5; x < tx0 + CHUNK + 5; x += 1) drawProp(g, x, y);
   return c;
+}
+
+// ---------------------------------------------------------- Stanley Market ---
+/**
+ * The hawker bazaar (Stanley Market Open Space Hawker Bazaar, a 1972 site with 28 licensed
+ * pitches) is drawn as rows of covered pitches inside its real outline; the market itself is the
+ * narrow lanes around it, lined with open-fronted stalls and roofed over with canvas.
+ */
+const BAZAAR = OSM.areas.find(([, , n]) => n === 'Stanley Market Open Space Hawker Bazaar')?.[0] ?? [];
+type Pitch = { x: number; y: number; w: number; seed: number };
+const PITCHES: Pitch[] = (() => {
+  const out: Pitch[] = [];
+  if (!BAZAAR.length) return out;
+  let y0 = Infinity, y1 = -Infinity, x0 = Infinity, x1 = -Infinity;
+  for (let i = 0; i < BAZAAR.length; i += 2) { x0 = Math.min(x0, BAZAAR[i]); x1 = Math.max(x1, BAZAAR[i]); y0 = Math.min(y0, BAZAAR[i + 1]); y1 = Math.max(y1, BAZAAR[i + 1]); }
+  const board = { x: 83 * 8 + 4, y: 57.5 * 8 + 4 }; // keep the notice board clear
+  // rows of pitches 2.6 m wide under a 3 m deep roof, with a 4 m aisle between rows
+  for (let y = y0 + 2; y + 3 < y1 && out.length < 28; y += 7) {
+    for (let x = x0 + 1; x + 2.6 < x1 && out.length < 28; x += 2.6) {
+      const corners = [[x, y], [x + 2.6, y], [x, y + 3], [x + 2.6, y + 3]];
+      if (!corners.every(([cx, cy]) => pipM(cx, cy, BAZAAR))) continue;
+      if (Math.abs(x + 1.3 - board.x) < 4 && Math.abs(y + 1.5 - board.y) < 5) continue;
+      out.push({ x, y, w: 2.6, seed: hash(Math.round(x * 4), Math.round(y * 4), 63) });
+    }
+  }
+  return out;
+})();
+
+/** stall fronts and canvas roofs along the market lanes: [x, y, angle, kind, seed] in metres */
+type MarketBit = { x: number; y: number; a: number; kind: 'goods' | 'tarp'; len: number; seed: number };
+const MARKET: MarketBit[] = (() => {
+  const out: MarketBit[] = [];
+  const lanes = new Set(['Stanley New Street', 'Stanley Market Road', 'Stanley Main Street']);
+  const inMarket = (x: number, y: number): boolean => x >= 600 && x <= 725 && y >= 432 && y <= 552;
+  for (const [p, h, name] of OSM.roads) {
+    if (!lanes.has(name)) continue;
+    const half = (ROAD[h]?.[1] ?? 3) / 2;
+    for (let i = 0; i + 3 < p.length; i += 2) {
+      const ax = p[i], ay = p[i + 1], bx = p[i + 2], by = p[i + 3];
+      const len = Math.hypot(bx - ax, by - ay);
+      if (len < 1) continue;
+      const ux = (bx - ax) / len, uy = (by - ay) / len, nx = -uy, ny = ux;
+      const a = Math.atan2(uy, ux);
+      for (let t = 1; t < len - 1; t += 2) {
+        const x = ax + ux * t, y = ay + uy * t;
+        if (!inMarket(x, y)) continue;
+        const seed = hash(Math.round(x * 2), Math.round(y * 2), 64);
+        // a stall front on each side where there is a shop to have one
+        for (const side of [-1, 1]) {
+          // the shop front: the first building within 5 m of the lane's edge
+          let d = 0;
+          for (let q = 0.5; q <= 5 && !d; q += 0.5) {
+            if (at_(Math.floor(x + nx * side * (half + q)), Math.floor(y + ny * side * (half + q))) === Gr.Building) d = q;
+          }
+          if (!d) continue;
+          const off = half + Math.max(0.35, d - 0.5); // goods spill out in front of the shop
+          out.push({ x: x + nx * side * off, y: y + ny * side * off, a: side < 0 ? a + Math.PI : a, kind: 'goods', len: 1.8, seed: (seed * 7) % 1 });
+        }
+        // canvas roofs across the lane, with gaps to let the light in
+        if (Math.round(t) % 4 === 1) out.push({ x, y, a, kind: 'tarp', len: half * 2 + 1.6, seed });
+      }
+    }
+  }
+  return out;
+})();
+
+const GOODS = ['#c8463a', '#e0a83a', '#3a7ac8', '#f2eee4', '#3aa86a', '#d86a8a', '#8a3ac8', '#e8d890', '#2a2a30'];
+const TARPS: Array<[string, string]> = [['#3a6ac8', '#f2eee4'], ['#c84a3a', '#f2eee4'], ['#3a8a5a', '#e8e4d8'], ['#e0a83a', '#c8463a']];
+
+/** the market, in metres: bazaar pitches and lane stalls in this chunk */
+function drawMarket(g: CanvasRenderingContext2D, tx0: number, ty0: number): void {
+  const px = 1 / ART;
+  const near = (x: number, y: number): boolean => x > tx0 - 4 && x < tx0 + CHUNK + 4 && y > ty0 - 4 && y < ty0 + CHUNK + 4;
+  // covered pitches: a corrugated roof per pitch, goods showing at the open front
+  for (const pt of PITCHES) {
+    if (!near(pt.x, pt.y)) continue;
+    const roof = pt.seed < 0.5 ? '#3f7a5a' : '#4a6a8a';
+    g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(pt.x + 0.3, pt.y + 0.4, pt.w, 3);
+    g.fillStyle = shade(roof, 0.75); g.fillRect(pt.x, pt.y + 2.4, pt.w, 0.6); // the open front, in shade
+    for (let k = 0; k < 5; k += 1) { g.fillStyle = GOODS[Math.floor((pt.seed * 97 + k * 3) % GOODS.length)]; g.fillRect(pt.x + 0.15 + k * 0.48, pt.y + 2.5, 0.38, 0.45); }
+    g.fillStyle = roof; g.fillRect(pt.x, pt.y, pt.w, 2.4);
+    g.fillStyle = shade(roof, 1.18); for (let x = pt.x + 0.2; x < pt.x + pt.w; x += 0.4) g.fillRect(x, pt.y, px, 2.4); // ribs
+    g.fillStyle = shade(roof, 1.3); g.fillRect(pt.x, pt.y + 2.4 - 2 * px, pt.w, 2 * px); // the roof's front edge
+    g.fillStyle = shade(roof, 0.6); g.fillRect(pt.x + pt.w - px, pt.y, px, 2.4); // the line between pitches
+  }
+  // the lanes: stall fronts first, canvas over them
+  for (const kind of ['goods', 'tarp'] as const) {
+    for (const m of MARKET) {
+      if (m.kind !== kind || !near(m.x, m.y)) continue;
+      g.save();
+      g.translate(m.x, m.y); g.rotate(m.a);
+      if (kind === 'goods') {
+        // clothes and souvenirs on rails, with the rail in front
+        g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(-m.len / 2 + 0.1, -0.2, m.len, 0.6);
+        for (let k = 0; k < 6; k += 1) {
+          g.fillStyle = GOODS[Math.floor((m.seed * 131 + k * 5) % GOODS.length)];
+          g.fillRect(-m.len / 2 + k * (m.len / 6), -0.35, m.len / 6 - px, 0.55);
+        }
+        g.fillStyle = '#3a3a40'; g.fillRect(-m.len / 2, -0.4, m.len, px);
+      } else {
+        const [c1, c2] = TARPS[Math.floor(m.seed * TARPS.length)];
+        g.globalAlpha = 0.88;
+        for (let k = 0; k < 6; k += 1) { g.fillStyle = k % 2 ? c2 : c1; g.fillRect(-0.7 + k * (1.4 / 6), -m.len / 2, 1.4 / 6, m.len); }
+        g.globalAlpha = 1;
+        g.fillStyle = 'rgba(0,0,0,0.18)'; g.fillRect(-0.7, -m.len / 2, 1.4, 2 * px);
+      }
+      g.restore();
+    }
+  }
 }
 
 /** name plates for landmark buildings, in metres: main.ts draws them at screen size */
@@ -1355,13 +1465,13 @@ const WALL_COLOUR: Record<BuildingStyle, string> = {
 };
 const AWNINGS = ['#c8463a', '#3a7ac8', '#e0a83a', '#3aa86a', '#8a3ac8', '#d86a8a'];
 
-const pipM = (x: number, y: number, p: number[]): boolean => {
+function pipM(x: number, y: number, p: number[]): boolean {
   let c = false;
   for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
     if ((p[i + 1] > y) !== (p[j + 1] > y) && x < ((p[j] - p[i]) * (y - p[i + 1])) / (p[j + 1] - p[i + 1]) + p[i]) c = !c;
   }
   return c;
-};
+}
 
 /** drop vertices that move the outline less than `tol` metres: OSM traces many tiny jogs */
 function simplifyRing(p: number[], tol: number): number[] {
@@ -1838,8 +1948,7 @@ function drawProp(g: CanvasRenderingContext2D, x: number, y: number): void {
     case Gr.Cemetery: if (x % 3 === 0 && y % 3 === 0) { g.fillStyle = '#e8e8e0'; g.fillRect(px + 6, py + 2, 6, 10); g.fillStyle = '#c8c8c0'; g.fillRect(px + 6, py + 2, 6, 2); g.fillStyle = 'rgba(0,0,0,0.25)'; g.fillRect(px + 6, py + 12, 8, 2); } return;
     case Gr.Beach: if (r < 0.006) umbrella(g, px, py, hash(x, y, 32)); else if (r < 0.01) nb || rock(g, px, py); return;
     case Gr.Plaza:
-      if (x >= 640 && x <= 720 && y >= 440 && y <= 540 && x % 7 === 0 && y % 6 === 0) stall(g, px, py, hash(x, y, 61));
-      else if (r < 0.008) bench(g, px, py);
+      if (r < 0.008) bench(g, px, py);
       else if (r < 0.014) nb || flowers(g, px, py, r);
       return;
     case Gr.Path: {
@@ -1881,19 +1990,6 @@ function drawProp(g: CanvasRenderingContext2D, x: number, y: number): void {
     }
     default:
   }
-}
-
-/** a market stall: a striped awning over a table of goods */
-function stall(g: CanvasRenderingContext2D, px: number, py: number, r: number): void {
-  const cols = ['#c8463a', '#3a7ac8', '#e0a83a', '#3aa86a', '#8a3ac8', '#d86a8a'];
-  const c = cols[Math.floor(r * cols.length)];
-  g.fillStyle = 'rgba(0,0,0,0.22)'; g.fillRect(px + 4, py + 30, 64, 6);
-  g.fillStyle = '#6a4a3a'; g.fillRect(px + 2, py + 18, 64, 14);
-  const goods = ['#e05a4a', '#4a8ae0', '#e0c04a', '#5ac08a', '#f2eee4', '#c05ae0'];
-  for (let i = 0; i < 8; i += 1) { g.fillStyle = goods[(i + Math.floor(r * 6)) % goods.length]; g.fillRect(px + 5 + i * 7, py + 20, 5, 6); }
-  for (let i = 0; i < 8; i += 1) { g.fillStyle = i % 2 ? '#f2eee4' : c; g.fillRect(px + i * 9, py, 9, 14); }
-  g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(px, py + 12, 72, 2);
-  g.fillStyle = '#3a3a3a'; g.fillRect(px + 1, py + 14, 2, 18); g.fillRect(px + 67, py + 14, 2, 18);
 }
 
 function bench(g: CanvasRenderingContext2D, px: number, py: number): void {
