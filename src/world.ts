@@ -59,6 +59,10 @@ const mapped = new Uint8Array(N);
  *  1 wall, 2 fence */
 const thin = new Uint8Array(N);
 const under = new Uint8Array(N);
+/** tiles of a seawall's granite coping (iB1000), and for each seawall which side the sea is on (+1/-1
+ *  to the left of its direction of drawing) */
+const coping = new Uint8Array(N);
+const SEAWALL_SIDE: number[] = [];
 
 /** is this metre in the village core, where open ground is paved rather than garden */
 const core = (x: number, y: number): boolean => (x >= 460 && x <= 845 && y >= 300 && y <= 700) || (x >= 280 && x <= 470 && y >= 260 && y <= 490);
@@ -640,6 +644,39 @@ export const BOARDWALK_NAMES = new Set(['Stanley Promenade', 'Hsbc Seafront Prom
     put(IB.wall, 1);
     put(IB.fence, 2);
   }
+  // 5d. seawalls (iB1000): a granite wall along the line. The metre and a half on the land side is
+  //     its coping (paving) and rock or sand behind that turns to grass; at its foot on the sea side
+  //     is rock armour (grass there becomes shore rock), down to the water OSM maps.
+  const seaAt = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < MAP_W && y < MAP_H && grid[y * MAP_W + x] === Gr.Sea;
+  ROADS.seawalls.forEach((p, wi) => {
+    // which side is the sea: count sea tiles 2-6 m out on each side along the wall
+    let left = 0, right = 0;
+    for (let i = 0; i + 3 < p.length; i += 2) {
+      const ax = p[i], ay = p[i + 1], bx = p[i + 2], by = p[i + 3], len = Math.hypot(bx - ax, by - ay) || 1;
+      const nx = -(by - ay) / len, ny = (bx - ax) / len;
+      for (let t = 0; t <= len; t += 1) for (let o = 2; o <= 6; o += 1) {
+        const x = ax + ((bx - ax) * t) / len, y = ay + ((by - ay) * t) / len;
+        if (seaAt(Math.floor(x + nx * o), Math.floor(y + ny * o))) left += 1;
+        if (seaAt(Math.floor(x - nx * o), Math.floor(y - ny * o))) right += 1;
+      }
+    }
+    const side = left === right ? 0 : left > right ? 1 : -1;
+    SEAWALL_SIDE[wi] = side;
+    if (!side) return;
+    for (let i = 0; i + 3 < p.length; i += 2) {
+      const ax = p[i], ay = p[i + 1], bx = p[i + 2], by = p[i + 3], len = Math.hypot(bx - ax, by - ay) || 1;
+      const nx = (-(by - ay) / len) * side, ny = ((bx - ax) / len) * side; // towards the sea
+      for (let t = 0; t <= len; t += 0.5) for (let o = -4; o <= 4; o += 0.5) {
+        const X = Math.floor(ax + ((bx - ax) * t) / len + nx * o), Y = Math.floor(ay + ((by - ay) * t) / len + ny * o);
+        if (X < 0 || Y < 0 || X >= MAP_W || Y >= MAP_H) continue;
+        const k = Y * MAP_W + X, g = grid[k];
+        const shore = g === Gr.Rock || g === Gr.Beach || g === Gr.Grass || g === Gr.Scrub || g === Gr.Hill || g === Gr.Park;
+        if (o > 0.5) { if (o < 3 && (g === Gr.Grass || g === Gr.Scrub || g === Gr.Hill || g === Gr.Park)) grid[k] = Gr.Rock; }
+        else if (o > -1.5) { if (shore || g === Gr.Path) { grid[k] = Gr.Path; coping[k] = 1; } }
+        else if (g === Gr.Rock || g === Gr.Beach) grid[k] = Gr.Grass;
+      }
+    }
+  });
   // 5b. outside the aerial photo, open hillside gets invented copses, so it matches the wooded
   //     hills the photo shows (Stanley's slopes are mostly trees). Artistic, not surveyed.
   for (let y = 0; y < MAP_H; y += 1) for (let x = 0; x < MAP_W; x += 1) {
@@ -794,7 +831,8 @@ export const surf = new Uint8Array(N);
   for (let y = 0; y < MAP_H; y += 1) for (let x = 0; x < MAP_W; x += 1) {
     const k = y * MAP_W + x;
     if (!isPath(k)) continue;
-    if (ped[k] === 1 && toRoad[k] >= 2) {
+    if (coping[k]) surf[k] = Surf.Coping;
+    else if (ped[k] === 1 && toRoad[k] >= 2) {
       const seaSide = x > 0 && x < MAP_W - 1 && y > 0 && y < MAP_H - 1 && (sea(k - 1) || sea(k + 1) || sea(k - MAP_W) || sea(k + MAP_W));
       const h = run(x, y, 1, 0) + run(x, y, -1, 0), v = run(x, y, 0, 1) + run(x, y, 0, -1);
       surf[k] = seaSide ? Surf.Coping : h >= v ? Surf.DeckAcross : Surf.DeckAlong;
@@ -1581,6 +1619,7 @@ const MARK_ON_ROAD = ROADS.marks.map((m) => {
 const TACTILE_BOX = ROADS.tactile.map((p) => boxOf(p));
 const RAIL_BOX = ROADS.rails.map(([, p]) => boxOf(p));
 const WALL_BOX = IB.wall.map((p) => boxOf(p));
+const SEAWALL_BOX = ROADS.seawalls.map((p) => boxOf(p, 3));
 const FENCE_BOX = IB.fence.map((p) => boxOf(p));
 const PAINT: Record<string, string> = { w: '#ecebe4', y: '#f2c230', r: '#a8443a' };
 /** a line of paint one art pixel (or more) wide, stepped along at an eighth of a metre, so it stays
@@ -1675,6 +1714,26 @@ function drawRoadMarks(g: CanvasRenderingContext2D, tx0: number, ty0: number): v
       g.fillStyle = '#6f9c72'; g.fillRect(X, Y - px, px, px);
       if (d % 2 < 1 / ART) { g.fillStyle = '#24392a'; g.fillRect(X - px, Y - 2 * px, 2 * px, 3 * px); }
     });
+  });
+  // seawalls: the granite face on the sea side of the coping, block joints every metre, a wet
+  // dark line where it meets the water
+  ROADS.seawalls.forEach((p, i) => {
+    const side = SEAWALL_SIDE[i];
+    if (!side || !hit(SEAWALL_BOX[i])) return;
+    for (let j = 0; j + 3 < p.length; j += 2) {
+      const ax = p[j], ay = p[j + 1], bx = p[j + 2], by = p[j + 3], len = Math.hypot(bx - ax, by - ay) || 1;
+      const nx = (-(by - ay) / len) * side, ny = ((bx - ax) / len) * side;
+      for (let d = 0; d < len; d += px) {
+        const x = ax + ((bx - ax) * d) / len + nx * 0.6, y = ay + ((by - ay) * d) / len + ny * 0.6;
+        const X = Math.floor(x * ART) / ART, Y = Math.floor(y * ART) / ART;
+        const t = at_(Math.floor(x), Math.floor(y));
+        if (t === Gr.Building || t === Gr.Wall) continue;
+        // the face, in courses of granite blocks, darker at the joints, with its shadow below
+        g.fillStyle = 'rgba(0,0,0,0.28)'; g.fillRect(X + nx * 3 * px, Y + ny * 3 * px, 2 * px, 2 * px);
+        g.fillStyle = d % 1 < px ? '#5a554d' : (Math.floor(d) % 2 ? '#8f897d' : '#9a9387'); g.fillRect(X, Y, 3 * px, 3 * px);
+        g.fillStyle = '#c9c2b4'; g.fillRect(X - nx * px, Y - ny * px, px, px);
+      }
+    }
   });
   // signal posts: a dark pole with the signal head; pedestrian signals and push buttons smaller
   for (const [ref, x, y] of ROADS.lights) {
