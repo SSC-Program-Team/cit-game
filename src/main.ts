@@ -9,9 +9,10 @@ import { state, clock, resetSolo } from './state';
 import { net, act, startNet, sendPos, serverNow, updateOthers, soloOwners } from './net';
 import { HOMES, home, HOMES_AT, type Home } from './homes';
 import { CARS, car as carModel, CAR_BUYBACK } from './cars';
+import { CROSSINGS, crossingLight, walkLight, rulesOfTheRoad, type Vehicle } from './traffic';
 import {
   has, coverFor, payBoost, condition, licenceLive, repairCost, netWorth, ago, employer, MISSION_PAY, NO_SHOW_FEE,
-  SLEEP_FARE, RENT, RENEW_WINDOW, HOME_FEES, TENANT_PER_REAL_DAY, HOME_SELL, tenantsOwe, type Ev, type QuizView,
+  SLEEP_FARE, RENT, RENEW_WINDOW, HOME_FEES, TENANT_PER_REAL_DAY, HOME_SELL, tenantsOwe, taxiFare, roadMetres, type Ev, type QuizView,
 } from './rules';
 import { audio } from './audio';
 import { JOBS, MISSIONS, OFFER, type JobDef, type Crime, type Prop } from './jobs';
@@ -179,8 +180,8 @@ const now = serverNow;
  * back gate is about 600 m, which the owner wants to take about five minutes: 600 * 16 / 300.
  * Running (Shift, or the run button) is RUN times faster.
  */
-const SPEED = 32;
-const RUN = 2.4;
+const SPEED = 64;
+const RUN = 2;
 let running = false;
 
 const WIRE = [
@@ -263,7 +264,23 @@ function newRoute(c: Car, near: { x: number; y: number }): void {
 }
 
 let carRoutes = 0;
+/** the traffic-light clock, in seconds */
+let clockSecs = 0;
+/** every vehicle that obeys the rules this frame (NPC cars, minibuses, the taxi), and the ones they
+ *  must not hit (your car, other players' cars) */
+let ruled: Vehicle[] = [];
+function gatherVehicles(): void {
+  ruled = [...cars.filter((c) => c.x >= 0), ...shuttles];
+  if (ride) ruled.push(ride);
+  if (taxi) ruled.push(taxi);
+  const obstacle = (x: number, y: number, angle: number, speed: number): Vehicle => ({ x, y, angle, speed, rank: 9 });
+  if (drive) ruled.push(obstacle(drive.x, drive.y, drive.angle, Math.abs(drive.speed)));
+  else if (state.car) ruled.push(obstacle(state.car.x, state.car.y, state.car.angle, 0));
+  for (const [id, o] of net.cars) if (id !== net.me.id) ruled.push(obstacle(o.x, o.y, o.angle, o.driving ? 60 : 0));
+}
 function updateCars(dt: number): void {
+  clockSecs += dt;
+  gatherVehicles();
   const me = drive ? { x: drive.x, y: drive.y } : { x: player.x, y: player.y };
   carRoutes = 0;
   for (const c of cars) {
@@ -284,10 +301,8 @@ function updateCars(dt: number): void {
       const along = dx * Math.cos(c.angle) + dy * Math.sin(c.angle), across = -dx * Math.sin(c.angle) + dy * Math.cos(c.angle);
       if (along > 0 && along < len && Math.abs(across) < 1.6 * TILE) target = Math.min(target, Math.max(0, (along - 4 * TILE) * 1.5));
     };
-    for (const o of cars) if (o !== c && o.x >= 0 && Math.abs(o.x - c.x) < 200 && Math.abs(o.y - c.y) < 200) {
-      const dh = Math.abs(Math.atan2(Math.sin(o.angle - c.angle), Math.cos(o.angle - c.angle)));
-      if (dh < 1.2) ahead(o.x, o.y, 10 * TILE);
-    }
+    // signals, junctions, giving way and keeping a distance from other vehicles (traffic.ts)
+    target = Math.min(target, rulesOfTheRoad(c, ruled, clockSecs, dt));
     if (drive) ahead(drive.x, drive.y, 10 * TILE);
     else if (drivableTile(Math.floor(player.x / TILE), Math.floor(player.y / TILE))) ahead(player.x, player.y, 7 * TILE);
     if (state.car && !drive) ahead(state.car.x, state.car.y, 9 * TILE);
@@ -926,6 +941,10 @@ function parkingNear(x: number, y: number): { x: number; y: number } {
   return t ? { x: t.tx * TILE + 8, y: t.ty * TILE + 8 } : { x, y };
 }
 
+/** a taxi you called (v0.10): declared here so the traffic rules can see it */
+type Taxi = { x: number; y: number; angle: number; speed: number; route: Pt[]; state: 'coming' | 'waiting' | 'riding' | 'leaving'; to: Place | null; waitUntil: number; from: { x: number; y: number }; wait: number };
+let taxi: Taxi | null = null;
+
 type Drive = { x: number; y: number; angle: number; speed: number; route: Array<{ x: number; y: number }>; then: Place | null };
 /** you, driving your car */
 let drive: Drive | null = null;
@@ -1047,6 +1066,250 @@ function drawCar(x: number, y: number, angle: number, model: string, coat: strin
   ctx.restore();
 }
 
+// ----------------------------------------------------------- map and taxis ---
+/** the whole of Stanley, a pixel per 4 m (the map) and per 2 m (the minimap), drawn once */
+let mapArt: HTMLCanvasElement | null = null;
+let miniArt: HTMLCanvasElement | null = null;
+
+/** somewhere worth going: a place, or one of your homes */
+type Dest = { id: string; name: string; tx: number; ty: number; colour: string };
+function destinations(): Dest[] {
+  const skip = new Set(['lift', 'minibus']);
+  const out: Dest[] = PLACES.filter((p) => !skip.has(p.kind) && p.id !== 'escalator' && p.id !== 'bus')
+    .map((p) => ({ id: p.id, name: p.name, tx: p.tx, ty: p.ty, colour: KIND_COLOUR[p.kind] ?? '#e8e4d8' }));
+  for (const id of Object.keys(state.homes)) { const h = home(id); if (h) out.push({ id: h.id, name: `${state.residence === id ? 'home: ' : ''}${h.name}`, tx: h.tx, ty: h.ty, colour: '#3a8ae8' }); }
+  return out;
+}
+
+let mapView: { sel: number; list: Dest[]; fare: number; fareFor: string } | null = null;
+function openMap(): void {
+  if (!mapArt) mapArt = renderOverview(4);
+  const list = destinations();
+  // start on whatever is nearest
+  let sel = 0, bd = Infinity;
+  list.forEach((d, i) => { const dd = Math.hypot(d.tx - player.x / TILE, d.ty - player.y / TILE); if (dd < bd) { bd = dd; sel = i; } });
+  mapView = { sel, list, fare: 0, fareFor: '' };
+  menu = null; dialogue = null; path = [];
+  audio.play('ui');
+}
+const MAP_X = 18, MAP_Y = 20;
+const mapRects = { taxi: { x: 392, y: 150, w: 230, h: 24 }, way: { x: 392, y: 180, w: 230, h: 24 }, cancel: { x: 392, y: 210, w: 230, h: 24 }, close: { x: 392, y: 300, w: 230, h: 22 } };
+
+/** the selected destination's fare, by road from where a taxi would pick you up */
+function mapFare(): number {
+  const mv = mapView!;
+  const d = mv.list[mv.sel];
+  if (mv.fareFor !== d.id) {
+    const m = roadMetres(player.x, player.y, d.tx * TILE + 8, d.ty * TILE + 8);
+    mv.fare = m < 0 ? -1 : taxiFare(m);
+    mv.fareFor = d.id;
+  }
+  return mv.fare;
+}
+
+function mapPick(what: 'taxi' | 'way' | 'cancel'): void {
+  const mv = mapView;
+  if (!mv) return;
+  const d = mv.list[mv.sel];
+  if (what === 'way') { guide = { x: d.tx * TILE + 8, y: d.ty * TILE + 8, label: d.name }; mapView = null; audio.play('ui'); return; }
+  if (what === 'cancel') { if (taxi && taxi.state !== 'riding') { taxi.state = 'leaving'; taxiAway(); flash('taxi cancelled'); } return; }
+  if (mapFare() < 0) { flash('no road goes there', '#ff9a6a'); return; }
+  if (taxi && taxi.state === 'riding') return;
+  if (Math.hypot(d.tx - player.x / TILE, d.ty - player.y / TILE) < 25) { flash('you are nearly there: walk', '#9aa0b8'); return; }
+  callTaxi(d);
+  mapView = null;
+}
+
+function drawMap(): void {
+  const mv = mapView!;
+  ctx.fillStyle = '#0b0d16'; ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(mapArt!, MAP_X, MAP_Y);
+  ctx.strokeStyle = '#3a4054'; ctx.strokeRect(MAP_X - 0.5, MAP_Y - 0.5, mapArt!.width + 1, mapArt!.height + 1);
+  const mx = (x: number): number => MAP_X + x / 4, my = (y: number): number => MAP_Y + y / 4;
+  mv.list.forEach((d, i) => {
+    ctx.fillStyle = '#0b0d16'; ctx.fillRect(Math.round(mx(d.tx)) - 2, Math.round(my(d.ty)) - 2, 5, 5);
+    ctx.fillStyle = i === mv.sel ? '#ffffff' : d.colour; ctx.fillRect(Math.round(mx(d.tx)) - 1, Math.round(my(d.ty)) - 1, 3, 3);
+  });
+  for (const o of net.others.values()) { ctx.fillStyle = o.coat; ctx.fillRect(Math.round(mx(o.x / TILE)) - 1, Math.round(my(o.y / TILE)) - 1, 2, 2); }
+  if (state.car) { ctx.fillStyle = net.me.coat; ctx.fillRect(Math.round(mx(state.car.x / TILE)) - 2, Math.round(my(state.car.y / TILE)) - 1, 4, 3); }
+  if (taxi) { ctx.fillStyle = '#e8463a'; ctx.fillRect(Math.round(mx(taxi.x / TILE)) - 2, Math.round(my(taxi.y / TILE)) - 1, 4, 3); }
+  // you: a blinking cross
+  const px = Math.round(mx(player.x / TILE)), py = Math.round(my(player.y / TILE));
+  if (Math.floor(performance.now() / 400) % 2) { ctx.fillStyle = '#ffffff'; ctx.fillRect(px - 3, py, 7, 1); ctx.fillRect(px, py - 3, 1, 7); }
+  const d = mv.list[mv.sel];
+  // the selected place
+  const sx = Math.round(mx(d.tx)), sy = Math.round(my(d.ty));
+  ctx.strokeStyle = '#ffc84a'; ctx.strokeRect(sx - 5.5, sy - 5.5, 11, 11);
+  text('map of stanley', 392, 24, '#ffc84a');
+  prose(`${mv.sel + 1} of ${mv.list.length} - tab or tap a dot`, 392, 38, '#6f7688');
+  wrap(d.name, 38).forEach((l, i) => text(l, 392, 60 + i * 12, d.colour));
+  const dist = Math.round(Math.hypot(d.tx - player.x / TILE, d.ty - player.y / TILE));
+  prose(`${dist} m as the crow flies`, 392, 96, '#c8ccdc');
+  const fare = mapFare();
+  prose(fare < 0 ? 'no road goes there' : `taxi about ${money(fare)} on the meter`, 392, 110, '#c8ccdc');
+  const button = (r: Rect, label: string, on: boolean, colour = '#46e0e6'): void => {
+    ctx.globalAlpha = on ? 1 : 0.4;
+    ctx.fillStyle = 'rgba(28,34,48,0.98)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = colour; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+    text(label, r.x + 8, r.y + 8, colour);
+    ctx.globalAlpha = 1;
+  };
+  button(mapRects.taxi, taxi && taxi.state !== 'leaving' ? '1 call a taxi here instead' : '1 call a taxi', fare >= 0 && !(taxi?.state === 'riding'), '#ffc84a');
+  button(mapRects.way, '2 show me the way', true);
+  if (taxi && (taxi.state === 'coming' || taxi.state === 'waiting')) button(mapRects.cancel, '3 cancel your taxi', true, '#ff9a6a');
+  button(mapRects.close, 'esc close', true, '#6f7688');
+  wrap('a red taxi comes to the road nearest you; walk up to it to get in. it obeys the rules of the road like everyone else.', 38)
+    .forEach((l, i) => prose(l, 392, 244 + i * 11, '#6f7688'));
+}
+
+function mapTap(x: number, y: number): void {
+  const mv = mapView!;
+  if (inRect(mapRects.taxi, x, y)) { mapPick('taxi'); return; }
+  if (inRect(mapRects.way, x, y)) { mapPick('way'); return; }
+  if (inRect(mapRects.cancel, x, y)) { mapPick('cancel'); return; }
+  if (inRect(mapRects.close, x, y)) { mapView = null; return; }
+  // a dot
+  let best = -1, bd = 10;
+  mv.list.forEach((d, i) => { const dd = Math.hypot(MAP_X + d.tx / 4 - x, MAP_Y + d.ty / 4 - y); if (dd < bd) { bd = dd; best = i; } });
+  if (best >= 0) { mv.sel = best; audio.play('ui'); }
+}
+
+/** the minimap, top right: about 245 x 185 m round you */
+function drawMinimap(): void {
+  if (!miniArt) miniArt = renderOverview(2);
+  const r = minimapRect;
+  const cx = (drive ? drive.x : taxi?.state === 'riding' ? taxi.x : player.x) / TILE, cy = (drive ? drive.y : taxi?.state === 'riding' ? taxi.y : player.y) / TILE;
+  const wm = 245, hm = 185;
+  ctx.fillStyle = 'rgba(8,10,18,0.9)'; ctx.fillRect(r.x - 2, r.y - 2, r.w + 4, r.h + 4);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(miniArt, (cx - wm / 2) / 2, (cy - hm / 2) / 2, wm / 2, hm / 2, r.x, r.y, r.w, r.h);
+  const k = r.w / wm;
+  const at = (mx: number, my: number): [number, number] => [Math.round(r.x + (mx - cx + wm / 2) * k), Math.round(r.y + (my - cy + hm / 2) * k)];
+  for (const p of PLACES) {
+    if (p.kind === 'lift') continue;
+    const [x, y] = at(p.tx, p.ty);
+    ctx.fillStyle = KIND_COLOUR[p.kind] ?? '#e8e4d8'; ctx.fillRect(x - 1, y - 1, 2, 2);
+  }
+  for (const id of Object.keys(state.homes)) { const h = home(id); if (h) { const [x, y] = at(h.tx, h.ty); ctx.fillStyle = '#3a8ae8'; ctx.fillRect(x - 1, y - 1, 3, 3); } }
+  for (const o of net.others.values()) { const [x, y] = at(o.x / TILE, o.y / TILE); ctx.fillStyle = o.coat; ctx.fillRect(x - 1, y - 1, 2, 2); }
+  if (state.car && !drive) { const [x, y] = at(state.car.x / TILE, state.car.y / TILE); ctx.fillStyle = net.me.coat; ctx.fillRect(x - 2, y - 1, 4, 3); }
+  if (taxi) { const [x, y] = at(taxi.x / TILE, taxi.y / TILE); ctx.fillStyle = '#ff3a2a'; ctx.fillRect(x - 2, y - 1, 4, 3); }
+  if (guide) { const [x, y] = at(guide.x / TILE, guide.y / TILE); ctx.strokeStyle = '#ffc84a'; ctx.strokeRect(x - 2.5, y - 2.5, 5, 5); }
+  const [ux, uy] = at(cx, cy);
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(ux - 1, uy - 1, 3, 3);
+  ctx.restore();
+  ctx.strokeStyle = '#3a4054'; ctx.strokeRect(r.x - 0.5, r.y - 0.5, r.w + 1, r.h + 1);
+  text('m map', r.x + 2, r.y + r.h + 4, '#6f7688');
+}
+const minimapRect: Rect = { x: W - 106, y: 40, w: 100, h: 76 };
+
+// ------------------------------------------------------------------ taxis ---
+const TAXI_EMPTY_KMH = 45, TAXI_FULL_KMH = 50, TAXI_WAIT_MS = 150000;
+let taxiPicked = 0;
+function callTaxi(d: Dest): void {
+  const me = { x: player.x / TILE, y: player.y / TILE };
+  const pick = nearestOnNetwork(me.x, me.y, 60);
+  if (!pick) { flash('no road near you for a taxi', '#ff9a6a'); return; }
+  // it sets off from a road 60-160 m away, just out of sight
+  let start: { tx: number; ty: number } | null = null;
+  for (let i = 0; i < 12 && !start; i += 1) {
+    const t = networkTileNear(pick.tx, pick.ty, 60, 160);
+    if (t && Math.abs(t.tx * TILE - player.x) * zoom > W / 2 + 40 || t && Math.abs(t.ty * TILE - player.y) * zoom > H / 2 + 40) start = t;
+  }
+  start ??= networkTileNear(pick.tx, pick.ty, 60, 160);
+  if (!start) { flash('no taxis about', '#ff9a6a'); return; }
+  const route = keepLeft(driveRoute(start.tx * TILE + 8, start.ty * TILE + 8, pick.tx * TILE + 8, pick.ty * TILE + 8));
+  if (route.length < 2) { flash('no taxis can get to you here', '#ff9a6a'); return; }
+  const place = PLACES.find((p) => p.id === d.id) ?? null;
+  taxi = { x: route[0].x, y: route[0].y, angle: 0, speed: 0, route, state: 'coming', to: place ?? ({ id: d.id, tx: d.tx, ty: d.ty, name: d.name, kind: 'flavour', line: '' } as Place), waitUntil: 0, from: { x: 0, y: 0 }, wait: 0 };
+  audio.play('ui');
+  flash(`a taxi is on its way to ${d.name}... the nearest road to you`, '#ffc84a', 4);
+}
+
+function taxiAway(): void {
+  if (!taxi) return;
+  const t = networkTileNear(taxi.x / TILE, taxi.y / TILE, 150, 400);
+  taxi.route = t ? keepLeft(driveRoute(taxi.x, taxi.y, t.tx * TILE + 8, t.ty * TILE + 8)) : [];
+  taxi.state = 'leaving';
+  if (guide?.label === 'your taxi') guide = null;
+}
+
+function arriveTaxi(): void {
+  const tx = taxi!;
+  const to = tx.to!;
+  // the server has you where the taxi stopped; it charges, then you step out at the door
+  sendPos(tx.x, tx.y);
+  act('taxi.ride', { x: Math.round(tx.from.x), y: Math.round(tx.from.y), to: to.id });
+  placePlayer(to.tx, to.ty);
+  audio.play('door');
+  taxiAway();
+}
+
+function updateTaxi(dt: number): void {
+  const tx = taxi;
+  if (!tx) return;
+  if (tx.state === 'waiting') {
+    if (guide?.label === 'your taxi') { guide.x = tx.x; guide.y = tx.y; }
+    if (!drive && Math.hypot(player.x - tx.x, player.y - tx.y) < 2.8 * TILE) {
+      // in you get: the meter starts here
+      const to = tx.to!;
+      const r = keepLeft(driveRoute(tx.x, tx.y, to.tx * TILE + 8, to.ty * TILE + 8));
+      if (r.length < 2) { flash('the driver shakes his head: no road goes there', '#ff9a6a'); taxiAway(); return; }
+      tx.route = r; tx.state = 'riding'; tx.from = { x: tx.x, y: tx.y }; taxiPicked = 0;
+      path = []; pending = null;
+      if (guide?.label === 'your taxi') guide = null;
+      audio.play('door');
+      return;
+    }
+    if (Date.now() > tx.waitUntil) { flash('your taxi gave up waiting', '#ff9a6a'); taxiAway(); }
+    return;
+  }
+  const kmh = tx.state === 'riding' ? TAXI_FULL_KMH : TAXI_EMPTY_KMH;
+  if (!tx.route.length) {
+    if (tx.state === 'coming') {
+      tx.state = 'waiting'; tx.waitUntil = Date.now() + TAXI_WAIT_MS; tx.speed = 0;
+      guide = { x: tx.x, y: tx.y, label: 'your taxi' };
+      audio.play('alert');
+      flash('your taxi is here: walk up to it', '#ffc84a', 4);
+    } else if (tx.state === 'riding') arriveTaxi();
+    else taxi = null;
+    return;
+  }
+  const sp = minibusSpeed(tx, kmh, dt);
+  const before = { x: tx.x, y: tx.y };
+  let dist = sp * dt;
+  while (dist > 0 && tx.route.length) {
+    const t = tx.route[0];
+    const dd = Math.hypot(t.x - tx.x, t.y - tx.y);
+    if (dd > 0.5) { const want = Math.atan2(t.y - tx.y, t.x - tx.x); tx.angle += Math.atan2(Math.sin(want - tx.angle), Math.cos(want - tx.angle)) * Math.min(1, 8 * dt); }
+    if (dd <= dist) { tx.x = t.x; tx.y = t.y; tx.route.shift(); dist -= dd; } else { tx.x += ((t.x - tx.x) / dd) * dist; tx.y += ((t.y - tx.y) / dd) * dist; dist = 0; }
+  }
+  if (tx.state === 'riding') { taxiPicked += Math.hypot(tx.x - before.x, tx.y - before.y) / TILE; player.x = tx.x; player.y = tx.y; sendPos(tx.x, tx.y); }
+  if (tx.state === 'leaving' && Math.hypot(tx.x - player.x, tx.y - player.y) > 250 * TILE) taxi = null;
+}
+
+/** a Hong Kong urban taxi: red body, silver roof, the roof sign lit when it is for hire */
+function drawTaxi(t: Taxi): void {
+  const sx = Math.round(t.x - cam.x), sy = Math.round(t.y - cam.y);
+  if (sx < -100 || sy < -100 || sx > viewW() + 100 || sy > viewH() + 100) return;
+  const L = 4.6 * TILE, Wd = 1.75 * TILE;
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.save(); ctx.translate(3, 4); ctx.rotate(t.angle); ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fillRect(-L / 2, -Wd / 2, L, Wd); ctx.restore();
+  ctx.rotate(t.angle);
+  ctx.fillStyle = '#d22a2a'; ctx.fillRect(-L / 2, -Wd / 2, L, Wd);
+  ctx.fillStyle = '#c8ccd4'; ctx.fillRect(-L * 0.26, -Wd / 2 + 3, L * 0.34, Wd - 6);
+  ctx.fillStyle = '#1c2a3a'; ctx.fillRect(L * 0.08, -Wd / 2 + 3, L * 0.16, Wd - 6); ctx.fillRect(-L * 0.36, -Wd / 2 + 3, L * 0.1, Wd - 6);
+  ctx.fillStyle = '#f2eec8'; ctx.fillRect(L / 2 - 2, -Wd / 2 + 2, 2, 4); ctx.fillRect(L / 2 - 2, Wd / 2 - 6, 2, 4);
+  ctx.restore();
+  // the roof sign stays upright so it reads; lit while it is for hire
+  const hire = t.state === 'coming' || t.state === 'leaving';
+  ctx.fillStyle = hire ? '#fff2a0' : '#8a8670'; ctx.fillRect(sx - 9, sy - 5, 18, 8);
+  ctx.fillStyle = '#d22a2a'; ctx.fillRect(sx - 7, sy - 3, 14, 1);
+}
+
 // ---------------------------------------------------------------- status ---
 function openStatus(): void {
   const gear = state.inv.map((id) => {
@@ -1147,10 +1410,10 @@ function journey(r: Route, from: string, to: string): Pt[] {
   return out;
 }
 
-type Ride = { route: Route; to: Stop; path: Pt[]; i: number; x: number; y: number; angle: number };
+type Ride = { route: Route; to: Stop; path: Pt[]; i: number; x: number; y: number; angle: number; speed: number };
 let ride: Ride | null = null;
 /** minibuses running up and down their routes for the look of the place */
-type Shuttle = { route: Route; path: Pt[]; i: number; dir: 1 | -1; x: number; y: number; angle: number; wait: number };
+type Shuttle = { route: Route; path: Pt[]; i: number; dir: 1 | -1; x: number; y: number; angle: number; wait: number; speed: number; there: Pt[]; back: Pt[] };
 const shuttles: Shuttle[] = [];
 
 function startShuttles(): void {
@@ -1159,7 +1422,10 @@ function startShuttles(): void {
     if (path.length < 2) continue;
     for (let n = 0; n < 2; n += 1) {
       const i = Math.floor((n * path.length) / 2);
-      shuttles.push({ route: r, path, i, dir: n ? -1 : 1, x: path[i].x, y: path[i].y, angle: 0, wait: 0 });
+      // each way in its own left-hand lane, 1.6 m left of the middle
+      const there = keepLeft(path), back = keepLeft([...path].reverse());
+      const run = n ? back : there;
+      shuttles.push({ route: r, path: run, i, dir: 1, x: run[i].x, y: run[i].y, angle: 0, wait: 0, speed: 0, there, back });
     }
   }
 }
@@ -1186,7 +1452,7 @@ function board(r: Route, from: string, to: Stop): void {
   menu = null;
   if (path.length < 2) { flash('the minibus is not running that way right now', '#ff9a6a'); return; }
   act('fare', { route: r.no }).then((res) => {
-    if (res.ok) ride = { route: r, to, path, i: 0, x: path[0].x, y: path[0].y, angle: 0 };
+    if (res.ok) { const lane = keepLeft(path); ride = { route: r, to, path: lane, i: 0, x: lane[0].x, y: lane[0].y, angle: 0, speed: 0 }; }
   });
 }
 
@@ -1213,12 +1479,23 @@ function moveAlong(v: { path: Pt[]; i: number; x: number; y: number; angle: numb
   return true;
 }
 
+/** speed up gently to a limit, and slow down for whatever the rules say */
+function minibusSpeed(v: { speed: number; x: number; y: number; angle: number }, kmh: number, dt: number): number {
+  const target = Math.min((kmh / 3.6) * TILE, rulesOfTheRoad(v, ruled, clockSecs, dt));
+  v.speed = v.speed < target ? Math.min(target, v.speed + 45 * dt) : Math.max(target, v.speed - 160 * dt);
+  return v.speed;
+}
 function updateMinibuses(dt: number): void {
   for (const sh of shuttles) {
     if (sh.wait > 0) { sh.wait -= dt; continue; }
-    if (!moveAlong(sh, sh.dir, 170 * dt)) { sh.dir = sh.dir === 1 ? -1 : 1; sh.wait = 6; }
+    // on their rounds, up to 45 km/h; at the end of the route, turn round into the other lane
+    if (!moveAlong(sh, 1, minibusSpeed(sh, 45, dt) * dt)) {
+      sh.path = sh.path === sh.there ? sh.back : sh.there;
+      sh.i = 0; sh.x = sh.path[0].x; sh.y = sh.path[0].y; sh.speed = 0; sh.wait = 6;
+    }
   }
-  if (ride && !moveAlong(ride, 1, 420 * dt)) endRide();
+  // the one you ride: up to the 50 km/h limit, and it stops for the same things
+  if (ride && !moveAlong(ride, 1, minibusSpeed(ride, 50, dt) * dt)) endRide();
 }
 
 function drawMinibus(x: number, y: number, angle: number, no: string): void {
@@ -1394,6 +1671,9 @@ canvas.addEventListener('pointerdown', (ev) => {
     return;
   }
   if (ride) { endRide(); return; }
+  if (mapView) { mapTap(x, y); return; }
+  // in a taxi: a tap skips to the end of the ride
+  if (taxi?.state === 'riding') { taxi.x = taxi.route[taxi.route.length - 1]?.x ?? taxi.x; taxi.y = taxi.route[taxi.route.length - 1]?.y ?? taxi.y; taxiPicked += taxi.route.length * 3; taxi.route = []; return; }
   if (quiz) {
     if (quiz.summary || quiz.picked !== null) { quiz.next(); return; }
     for (let i = 0; i < 4; i += 1) if (inRect(quizOptionRect(i), x, y)) { quiz.pick(i); return; }
@@ -1407,6 +1687,7 @@ canvas.addEventListener('pointerdown', (ev) => {
   }
   if (dialogue) { dialogue = null; return; }
   if (inRect(statusRect, x, y)) { openStatus(); return; }
+  if (inRect(minimapRect, x, y)) { openMap(); return; }
   if (inRect(runRect, x, y, 0)) { running = !running; audio.play('ui'); return; }
   if (inRect(zoomRect, x, y, 0)) { toggleZoom(); return; }
   const wx = x / zoom + cam.x, wy = y / zoom + cam.y;
@@ -1463,7 +1744,18 @@ function leaveJob(): void {
 window.addEventListener('keydown', (ev) => {
   audio.unlock();
   const k = ev.key;
-  if (k === 'm' || k === 'M') { audio.toggleMute(); return; }
+  if (k === 'u' || k === 'U') { audio.toggleMute(); return; }
+  if (mapView) {
+    const mv = mapView;
+    if (k === 'Escape' || k === 'm' || k === 'M') mapView = null;
+    else if (k === 'Tab' || k === 'ArrowRight' || k === 'ArrowDown') { mv.sel = (mv.sel + 1) % mv.list.length; audio.play('ui'); }
+    else if (k === 'ArrowLeft' || k === 'ArrowUp') { mv.sel = (mv.sel - 1 + mv.list.length) % mv.list.length; audio.play('ui'); }
+    else if (k === '1' || k === 'Enter') mapPick('taxi');
+    else if (k === '2') mapPick('way');
+    else if (k === '3') mapPick('cancel');
+    ev.preventDefault();
+    return;
+  }
   if (state.jail) return;
   if (job) {
     if (k === 'Escape') { leaveJob(); ev.preventDefault(); return; }
@@ -1491,6 +1783,7 @@ window.addEventListener('keydown', (ev) => {
     if (n >= 0) pickMenu(n);
     return;
   }
+  if ((k === 'm' || k === 'M') && !menu && !quiz && !job && !ride && taxi?.state !== 'riding') { openMap(); return; }
   if (k === 'c' || k === 'C') {
     if (drive) stopDrive();
     else if (nearMyCar()) startDrive();
@@ -1626,7 +1919,10 @@ function update(dt: number): void {
   updateOthers(dt);
   updateCars(dt);
   updateMinibuses(dt);
+  updateTaxi(dt);
   if (ride) return;
+  if (mapView) return;
+  if (taxi?.state === 'riding') { near = null; return; }
   if (drive && !menu && !quiz && !job) { updateDrive(dt); near = null; return; }
 
   if (job) { job.update(dt); return; }
@@ -1776,7 +2072,7 @@ function drawHud(): void {
   }
   ctx.fillStyle = '#232a3a'; ctx.fillRect(618, 18, 16, 14);
   text('i', 623, 21, '#46e0e6');
-  if (audio.muted) text('m', 560, 21, '#6f7688');
+  if (audio.muted) text('u', 560, 21, '#6f7688');
 }
 
 /** 'show me the way': an arrow at the edge of the screen pointing to the target, with the distance */
@@ -1827,7 +2123,8 @@ function drawStopSign(p: Place): void {
 
 function drawCity(): void {
   const VW = viewW(), VH = viewH();
-  const fx = ride ? ride.x : drive ? drive.x : player.x, fy = ride ? ride.y : drive ? drive.y : player.y;
+  const inTaxi = taxi?.state === 'riding';
+  const fx = ride ? ride.x : drive ? drive.x : inTaxi ? taxi!.x : player.x, fy = ride ? ride.y : drive ? drive.y : inTaxi ? taxi!.y : player.y;
   cam.x = Math.max(0, Math.min(MAP_W * TILE - VW, Math.round(fx - VW / 2)));
   cam.y = Math.max(-35 / zoom, Math.min(MAP_H * TILE - VH + 28 / zoom, Math.round(fy - VH / 2)));
   // keep the camera on whole canvas pixels so the art does not shimmer
@@ -1892,7 +2189,33 @@ function drawCity(): void {
     ctx.fillStyle = '#f2eee4'; ctx.fillRect(Math.round(x) - 4, Math.round(y) - 17, 10, 1); ctx.fillRect(Math.round(x) - 4, Math.round(y) - 15, 7, 1);
   }
 
+  // signal heads at the three signal-controlled crossings: red, amber, green for vehicles; the red
+  // and green man for people
+  for (const c of CROSSINGS) {
+    if (c.x * TILE < cam.x - 60 || c.x * TILE > cam.x + VW + 60 || c.y * TILE < cam.y - 60 || c.y * TILE > cam.y + VH + 60) continue;
+    const light = crossingLight(c, clockSecs), walk = walkLight(c, clockSecs);
+    for (const [ref, lx, ly] of c.lights) {
+      const x = Math.round(lx * TILE - cam.x), y = Math.round(ly * TILE - cam.y);
+      if (ref === 'PBUTT') { ctx.fillStyle = '#2d3136'; ctx.fillRect(x - 2, y - 2, 4, 4); ctx.fillStyle = '#e8c23a'; ctx.fillRect(x - 1, y - 1, 2, 2); continue; }
+      ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(x - 2, y + 2, 6, 3);
+      ctx.fillStyle = '#5e646a'; ctx.fillRect(x - 1, y - 16, 2, 16);
+      if (ref.startsWith('S')) {
+        ctx.fillStyle = '#1e2226'; ctx.fillRect(x - 4, y - 30, 8, 18);
+        ctx.fillStyle = light === 'red' ? '#ff3a2a' : '#4a1a16'; ctx.fillRect(x - 2, y - 28, 4, 4);
+        ctx.fillStyle = light === 'amber' ? '#ffb020' : '#4a3a16'; ctx.fillRect(x - 2, y - 23, 4, 4);
+        ctx.fillStyle = light === 'green' ? '#3aff6a' : '#163a20'; ctx.fillRect(x - 2, y - 18, 4, 4);
+      } else {
+        ctx.fillStyle = '#1e2226'; ctx.fillRect(x - 4, y - 26, 8, 12);
+        ctx.fillStyle = walk ? '#3aff6a' : '#ff3a2a';
+        // a little figure: walking when green, standing when red
+        ctx.fillRect(x - 1, y - 24, 2, 2); ctx.fillRect(x - 1, y - 22, 2, 4);
+        if (walk) { ctx.fillRect(x - 2, y - 18, 1, 2); ctx.fillRect(x + 1, y - 18, 1, 2); } else ctx.fillRect(x - 1, y - 18, 2, 2);
+      }
+    }
+  }
+
   for (const sh of shuttles) drawMinibus(sh.x, sh.y, sh.angle, sh.route.no);
+  if (taxi) drawTaxi(taxi);
   if (ride) drawMinibus(ride.x, ride.y, ride.angle, ride.route.no);
 
   // entrances: a glowing pad on the ground at every place you can use, pulsing gently
@@ -1936,7 +2259,7 @@ function drawCity(): void {
     if (o.x < cam.x - 60 || o.x > cam.x + VW + 60 || o.y < cam.y - 60 || o.y > cam.y + VH + 60) continue;
     sprites.push({ y: o.y, draw: () => drawFigure(o.x - cam.x, o.y - cam.y, o.coat, o.frame, o.facing) });
   }
-  if (!ride && !drive) sprites.push({ y: player.y, draw: () => drawPlayer() });
+  if (!ride && !drive && !inTaxi) sprites.push({ y: player.y, draw: () => drawPlayer() });
   // anyone standing behind a building (on the ground its picture covers) is hidden by it: the
   // building joins the depth sort at its front edge, so people in front still stand in front
   const feet: Array<[number, number]> = walkers.map((w) => [w.x, w.y]);
@@ -2024,6 +2347,7 @@ function drawCity(): void {
   if (dark > 0) { ctx.fillStyle = `rgba(14,20,52,${dark.toFixed(3)})`; ctx.fillRect(0, 0, W, H); }
 
   drawHud();
+  drawMinimap();
   drawGuide();
 
   // prompt line
@@ -2033,6 +2357,9 @@ function drawCity(): void {
   if (ride) {
     text(`on the gmb ${ride.route.no} to ${ride.to.name}`, 8, 342, '#7be08a');
     text('tap to get off at your stop', 330, 342, '#6f7688');
+  } else if (taxi?.state === 'riding') {
+    text(`taxi to ${taxi.to?.name ?? ''}`, 8, 342, '#ffc84a');
+    textRight(`meter ${money(taxiFare(taxiPicked))}  ${(taxiPicked / 1000).toFixed(1)} km`, 500, 342, '#ffc84a');
   } else if (drive) {
     const kmh = Math.round((Math.abs(drive.speed) / TILE) * 3.6);
     text(`driving - ${kmh} km/h`, 8, 342, '#7be08a');
@@ -2055,7 +2382,7 @@ function drawCity(): void {
     else if (j) text(`(job $${j.def.pay})`, after, 342, '#ffc84a');
     else text(`(${({ minibus: 'ride', board: 'gigs', shop: 'buy gear', pirate: 'a man with discs', employer: 'work', library: 'study', course: 'courses', police: 'your record', prison: 'stay out', flavour: 'look', offer: 'a man in a cap', bus: 'go home', job: 'shop', lift: 'pick a floor', agency: 'homes for sale', motors: 'cars' } as Record<string, string>)[near.kind]})`, after, 342, '#9aa0b8');
   } else {
-    text(nearMyCar() ? 'c drive your car   wasd / tap to walk   e use   i status' : 'wasd / tap to walk   shift run   e use   i status   z zoom', 8, 342, nearMyCar() ? '#7be08a' : '#6f7688');
+    text(nearMyCar() ? 'c drive your car   wasd / tap to walk   e use   m map' : 'wasd / tap to walk   shift run   e use   i status   m map', 8, 342, nearMyCar() ? '#7be08a' : '#6f7688');
   }
   ctx.fillStyle = '#232a3a'; ctx.fillRect(zoomRect.x, zoomRect.y, zoomRect.w, zoomRect.h);
   const zl = zoom < 1 ? 'zoom in' : 'zoom out';
@@ -2400,6 +2727,7 @@ function frame(t: number): void {
   if (state.jail) drawPrison();
   else if (job) drawJob();
   else if (quiz) drawQuiz();
+  else if (mapView) drawMap();
   else { drawCity(); drawMenu(); }
   requestAnimationFrame(frame);
 }
@@ -2498,6 +2826,9 @@ hooks.__items = ITEMS.map((i) => i.id);
 hooks.__act = act;
 hooks.__home = home;
 hooks.__homesList = HOMES;
+hooks.__lights = () => CROSSINGS.map((c) => [Math.round(c.x), Math.round(c.y), crossingLight(c, clockSecs)]);
+hooks.__taxi = () => (taxi ? { state: taxi.state, x: Math.round(taxi.x / TILE), y: Math.round(taxi.y / TILE), kmh: Math.round((taxi.speed / TILE) * 3.6), left: taxi.route.length } : null);
+hooks.__mapView = () => (mapView ? mapView.list[mapView.sel].name : null);
 hooks.__cars = () => cars.map((c) => ({ x: Math.round(c.x / TILE), y: Math.round(c.y / TILE), kmh: Math.round((c.speed / TILE) * 3.6), left: c.route.length }));
 hooks.__drive = () => (drive ? { x: Math.round(drive.x / TILE), y: Math.round(drive.y / TILE), kmh: Math.round((Math.abs(drive.speed) / TILE) * 3.6), left: drive.route.length } : null);
 hooks.__driveTo = (id: string) => { const p = PLACES.find((q) => q.id === id); if (!p || !drive) return false; driveTo(placeX(p), placeY(p), p); return drive.route.length; };

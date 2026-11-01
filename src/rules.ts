@@ -19,6 +19,7 @@ import {
 } from './economy.ts';
 import { ROUTES } from './minibus.ts';
 import { HOMES, home } from './homes.ts';
+import { PLACES, driveRoute } from './world.ts';
 import { car as carModel, CAR_LOSS_PER_DAY, CAR_FLOOR, CAR_BUYBACK } from './cars.ts';
 
 // ------------------------------------------------------------------- save ---
@@ -160,6 +161,23 @@ export const RENEW_WINDOW = 7;
 export const HOME_FEES = 0.0003;
 export const TENANT_PER_REAL_DAY = 0.003;
 export const HOME_SELL = 0.9;
+/**
+ * The red taxi meter (Transport Department, from 14 July 2024): $29 for the first 2 km, then $2.1
+ * for every 200 m or part while the fare is under $102.5, then $1.4. Waiting time is not charged.
+ */
+export function taxiFare(metres: number): number {
+  let tenths = 290; // in ten-cent steps, so the $102.5 threshold is exact
+  for (let d = 2000; d < metres; d += 200) tenths += tenths < 1025 ? 21 : 14;
+  return tenths / 10;
+}
+/** metres by road between two points (world pixels), or -1 */
+export function roadMetres(ax: number, ay: number, bx: number, by: number): number {
+  const r = driveRoute(ax, ay, bx, by);
+  if (r.length < 2) return -1;
+  let m = Math.hypot(r[0].x - ax, r[0].y - ay);
+  for (let i = 1; i < r.length; i += 1) m += Math.hypot(r[i].x - r[i - 1].x, r[i].y - r[i - 1].y);
+  return m / 16;
+}
 /** a gig wears the laptop you use 1% and each tool it needs 4% */
 export const WEAR_LAPTOP = 1;
 export const WEAR_TOOL = 4;
@@ -437,7 +455,7 @@ export const ACTIONS = [
   'tick', 'quiz.start', 'quiz.answer', 'quiz.end', 'buy', 'repair', 'renew', 'crime', 'offer.decline',
   'work.apply', 'work.quit', 'sleep', 'fare', 'ride.end', 'job.wrong', 'job.done', 'job.crime',
   'mission.new', 'mission.take', 'mission.leave', 'study.time', 'home.buy', 'home.sell', 'home.live',
-  'car.buy', 'car.sell', 'car.park',
+  'car.buy', 'car.sell', 'car.park', 'taxi.ride',
 ] as const;
 export type ActionName = (typeof ACTIONS)[number];
 
@@ -641,6 +659,23 @@ function run(s: Save, name: string, a: Args, now: number, ev: Ev[], world: World
       if (!s.homes[id]) return fail('that is not yours');
       s.residence = id;
       ev.push({ t: 'toast', text: `you live at ${home(id)!.name} now`, colour: '#7be08a' });
+      return done();
+    }
+    // ---------------------------------------------------------------- taxis
+    case 'taxi.ride': {
+      // the meter runs over the road distance from where you got in, measured here; short of money,
+      // you pay what you have
+      const fx = num(a, 'x'), fy = num(a, 'y');
+      const to = PLACES.find((p) => p.id === str(a, 'to')) ?? (home(str(a, 'to')) && { tx: home(str(a, 'to'))!.tx, ty: home(str(a, 'to'))!.ty });
+      if (!to || !Number.isFinite(fx) || !Number.isFinite(fy)) return fail('where to?');
+      // you are charged at the end of the ride: you must be there (the road nearest the place)
+      if (s.x >= 0 && Math.hypot(s.x / 16 - to.tx, s.y / 16 - to.ty) > 90) return fail('the taxi has not got there yet');
+      const m = roadMetres(fx, fy, to.tx * 16 + 8, to.ty * 16 + 8);
+      if (m < 0) return fail('no road goes there');
+      const fare = Math.min(s.money, taxiFare(m));
+      addMoney(s, -fare);
+      addMinutes(s, Math.max(2, Math.min(20, Math.round((m / 1000 / 25) * 60))), ev);
+      ev.push({ t: 'sound', s: 'cash' }, { t: 'toast', text: `taxi: ${(m / 1000).toFixed(1)} km, ${money(fare)}${fare < taxiFare(m) ? ' (all you had)' : ''}`, colour: '#7be08a', secs: 4 });
       return done();
     }
     // ----------------------------------------------------------------- cars

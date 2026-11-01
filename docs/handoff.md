@@ -23,12 +23,19 @@ traps that cost time.
 | `scripts/test-rules.ts` | Checks the rules (part of `npm run check`) |
 | `src/homes.ts` | v0.7: houses and flats for sale, worked out from the map (same ids and prices on server and browser); price by floor area, sea view, detached |
 | `src/cars.ts` | v0.7: Stanley Motors' five models |
+| `src/traffic.ts` | v0.9: rules of the road for NPC cars, minibuses and taxis: the three real signal-controlled crossings (from the Transport Department's drawings), junctions one vehicle at a time, giving way, keeping a distance |
 
 v0.7 (homes, cars, traffic): the first home you buy is where you live (fees instead of rent, sleep
 at your own door); others are let by the real hour; one owner per home on the server (`homes`
 table). Cars park where you leave them and everyone sees them; driving uses the road network
 (`drivableTile`, `onNetwork`, `driveRoute` in world.ts), not the market lanes. NPC cars drive
 routes in the left-hand lane and brake for whatever is ahead; people walk 40-300 m along paths.
+
+v0.9 / v0.10: walking 4 m/s, running 8 m/s. Signals are live (vehicle red/amber/green, the
+green man) and everything but your own car obeys them. M opens the map (U is mute now): pick a
+place (Tab or tap), call a taxi or get an arrow. The minimap sits top right. Taxis come to the
+road nearest you, wait 2.5 minutes, drive you there under the same rules, and the rules charge
+the real red-taxi meter over the road distance (`taxi.ride`).
 
 Deploying it: [deploy.md](deploy.md). `main.ts` no longer changes the save itself: it calls
 `act()` and reacts to the events (`handle()`).

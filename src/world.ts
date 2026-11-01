@@ -1839,16 +1839,7 @@ function drawRoadMarks(g: CanvasRenderingContext2D, tx0: number, ty0: number): v
       }
     }
   });
-  // signal posts: a dark pole with the signal head; pedestrian signals and push buttons smaller
-  for (const [ref, x, y] of ROADS.lights) {
-    if (x < x0 || x > x1 || y < y0 || y > y1) continue;
-    const s = ref.startsWith('S') ? 3 : ref === 'PBUTT' ? 1 : 2;
-    g.fillStyle = 'rgba(0,0,0,0.3)';
-    g.fillRect(x - s / ART + 1 / ART, y - s / ART + 2 / ART, (s * 2) / ART, (s * 2) / ART);
-    g.fillStyle = '#2d3136';
-    g.fillRect(x - s / ART, y - s / ART, (s * 2) / ART, (s * 2) / ART);
-    if (ref !== 'PBUTT') { g.fillStyle = ref.startsWith('S') ? '#e8463a' : '#3ccf6a'; g.fillRect(x - 1 / ART, y - 1 / ART, 1 / ART, 1 / ART); }
-  }
+  // signal posts are drawn live by main.ts (their lights change)
 }
 
 /** the label next to the art pixel being painted (set per pixel, so no closure is made each time) */

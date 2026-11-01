@@ -121,5 +121,11 @@ ok(!p.jail && r.events.some((e) => e.t === 'released'), 'released after 30 real 
   ok(act(h, 'car.buy', { model: 'saloon' }, now + 24 * HOUR).ok && Math.round(m4 - h.money) === 38000 - Math.round(11880 * 0.8), 'part exchange at 80%');
 }
 
+// the red taxi meter: $29 for 2 km, then $2.1 per 200 m to $102.5, then $1.4
+{
+  const { taxiFare } = await import('../src/rules.ts');
+  ok(taxiFare(1500) === 29 && taxiFare(2001) === 31.1 && taxiFare(9000) === 102.5 && taxiFare(10000) === 109.5, 'taxi meter');
+}
+
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
