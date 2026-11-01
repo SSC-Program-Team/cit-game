@@ -7,6 +7,7 @@
  */
 import { OSM } from './stanley-osm.ts';
 import { PED } from './stanley-ped.ts';
+import { ROADS } from './stanley-roads.ts';
 import { ROUTES } from './minibus.ts';
 import { COVER, ROOF } from './stanley-cover.ts';
 import { SHAPE_3D, EXTRA_3D } from './stanley-shapes.ts';
@@ -484,6 +485,83 @@ export const BOARDWALK_NAMES = new Set(['Stanley Promenade', 'Hsbc Seafront Prom
       grid[k] = code;
       mapped[k] = 1;
     });
+  }
+  // 3a. real carriageway widths from the Lands Department's kerb lines (iB1000). From every road's
+  //     centre line, fill outwards until a kerb, at most 9 m and no more than 3 m past OSM's own width:
+  //     what is reached is carriageway, and
+  //     stamped road the fill did not reach (outside the kerb) becomes pavement. Roads with no
+  //     surveyed kerb near them (private lanes, the estates) keep their stamped width.
+  {
+    const kerb = new Uint8Array(N);
+    for (const p of ROADS.kerbs) traceLine(p, (k) => { kerb[k] = 1; });
+    const kerbNear = (x: number, y: number): boolean => {
+      for (let dy = -9; dy <= 9; dy += 1) for (let dx = -9; dx <= 9; dx += 1) {
+        const X = x + dx, Y = y + dy;
+        if (X >= 0 && Y >= 0 && X < MAP_W && Y < MAP_H && kerb[Y * MAP_W + X]) return true;
+      }
+      return false;
+    };
+    const dist = new Uint8Array(N).fill(255), code = new Uint8Array(N);
+    const q = new Int32Array(N);
+    let head = 0, tail = 0;
+    const kerbed = new Uint8Array(N); // tiles within 10 m of a kerbed centre line
+    for (const [p, h] of OSM.roads) {
+      const def = ROAD[h];
+      if (!def || (def[0] !== Gr.Road && def[0] !== Gr.Lane)) continue;
+      for (let i = 0; i + 3 < p.length; i += 2) {
+        const len = Math.hypot(p[i + 2] - p[i], p[i + 3] - p[i + 1]);
+        for (let t = 0; t <= len; t += 0.5) {
+          const x = Math.floor(p[i] + ((p[i + 2] - p[i]) * t) / (len || 1)), y = Math.floor(p[i + 1] + ((p[i + 3] - p[i + 1]) * t) / (len || 1));
+          if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H || !kerbNear(x, y)) continue;
+          for (let dy = -10; dy <= 10; dy += 1) for (let dx = -10; dx <= 10; dx += 1) {
+            const X = x + dx, Y = y + dy;
+            if (X >= 0 && Y >= 0 && X < MAP_W && Y < MAP_H) kerbed[Y * MAP_W + X] = 1;
+          }
+          const k = y * MAP_W + x;
+          if (kerb[k] || dist[k] === 0) continue;
+          dist[k] = 0; code[k] = def[0]; q[tail++] = k;
+        }
+      }
+    }
+    // how far each tile is from OSM's stamped carriageway: the fill may widen a road by 3 m at most,
+    // so a gap in a kerb (a driveway, a car park mouth) cannot let it spill across open ground
+    const wide = new Uint8Array(N).fill(255);
+    {
+      const w = new Int32Array(N);
+      let h = 0, t = 0;
+      for (let k = 0; k < N; k += 1) if (grid[k] === Gr.Road || grid[k] === Gr.Lane) { wide[k] = 0; w[t++] = k; }
+      while (h < t) {
+        const k = w[h++];
+        if (wide[k] >= 3) continue;
+        const x = k % MAP_W;
+        for (const n of [x > 0 ? k - 1 : -1, x < MAP_W - 1 ? k + 1 : -1, k - MAP_W, k + MAP_W]) {
+          if (n >= 0 && n < N && wide[n] === 255) { wide[n] = wide[k] + 1; w[t++] = n; }
+        }
+      }
+    }
+    while (head < tail) {
+      const k = q[head++], d = dist[k];
+      if (d >= 9) continue;
+      const x = k % MAP_W;
+      for (const n of [x > 0 ? k - 1 : -1, x < MAP_W - 1 ? k + 1 : -1, k - MAP_W, k + MAP_W]) {
+        if (n < 0 || n >= N || dist[n] !== 255 || kerb[n] || wide[n] > 3 || grid[n] === Gr.Sea) continue;
+        dist[n] = d + 1; code[n] = code[k]; q[tail++] = n;
+      }
+    }
+    for (let k = 0; k < N; k += 1) {
+      if (!kerbed[k]) continue;
+      const g = grid[k];
+      if (dist[k] !== 255) {
+        // a road and a lane meeting: the more important one wins
+        grid[k] = g === Gr.Road || code[k] === Gr.Road ? Gr.Road : Gr.Lane;
+        mapped[k] = 1;
+      } else if (kerb[k] && (g === Gr.Road || g === Gr.Lane)) {
+        // the kerb line itself: road if most of its neighbours are
+        let n = 0;
+        for (const o of [k - 1, k + 1, k - MAP_W, k + MAP_W]) if (o >= 0 && o < N && dist[o] !== 255) n += 1;
+        if (n < 2) grid[k] = Gr.Path;
+      } else if (g === Gr.Road || g === Gr.Lane) grid[k] = Gr.Path;
+    }
   }
   // 3b. pavements: open ground beside a road becomes footway (OSM rarely maps them)
   {
@@ -1452,6 +1530,105 @@ function paving(gx: number, gy: number, sf: number): RGB {
   return [c[0] + grain + nail, c[1] + grain * 0.8 + nail, c[2] + grain * 0.6 + nail];
 }
 
+// ------------------------------------------------------------ road markings ---
+type Box = { x0: number; y0: number; x1: number; y1: number };
+const boxOf = (p: number[], pad = 1): Box => {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let i = 0; i < p.length; i += 2) { x0 = Math.min(x0, p[i]); x1 = Math.max(x1, p[i]); y0 = Math.min(y0, p[i + 1]); y1 = Math.max(y1, p[i + 1]); }
+  return { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad };
+};
+const MARK_BOX = ROADS.marks.map((m) => boxOf(m[5]));
+/** the drawings also carry their notes ("Removable Railing", "B & W Co at Kerb") as stroked text
+ *  beside the road: only paint whose points mostly lie on (or within a metre of) a carriageway is kept */
+const MARK_ON_ROAD = ROADS.marks.map((m) => {
+  const p = m[5];
+  // lane and edge lines may run along the kerb, so they get a metre's grace; the thin outline
+  // strokes (arrows, words, zebra stripes, where the notes are too) must be on the carriageway
+  const r = m[2] >= 0.15 || m[0] === 'y' ? 1 : 0;
+  const car = (x: number, y: number): boolean => {
+    for (let dy = -r; dy <= r; dy += 1) for (let dx = -r; dx <= r; dx += 1) {
+      const g = at_(Math.floor(x) + dx, Math.floor(y) + dy);
+      if (g === Gr.Road || g === Gr.Lane || g === Gr.Parking) return true;
+    }
+    return false;
+  };
+  let on = 0, n = 0;
+  for (let i = 0; i < p.length; i += 2) { n += 1; if (car(p[i], p[i + 1])) on += 1; }
+  return on * 2 >= n;
+});
+const TACTILE_BOX = ROADS.tactile.map((p) => boxOf(p));
+const RAIL_BOX = ROADS.rails.map(([, p]) => boxOf(p));
+const PAINT: Record<string, string> = { w: '#ecebe4', y: '#f2c230', r: '#a8443a' };
+/** a line of paint one art pixel (or more) wide, stepped along at an eighth of a metre, so it stays
+ *  crisp like the rest of the pixel art. dash/gap in metres (0: solid); offset shifts it sideways */
+function paintLine(g: CanvasRenderingContext2D, p: number[], px: number, dash = 0, gap = 0, offset = 0, roadOnly = false): void {
+  const step = 1 / ART, w = px / ART;
+  let run = 0;
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const ax = p[i], ay = p[i + 1], bx = p[i + 2], by = p[i + 3];
+    const len = Math.hypot(bx - ax, by - ay);
+    if (!len) continue;
+    const nx = -(by - ay) / len * offset, ny = (bx - ax) / len * offset;
+    for (let d = 0; d < len; d += step, run += step) {
+      if (dash > 0 && run % (dash + gap) > dash) continue;
+      const x = ax + ((bx - ax) * d) / len + nx, y = ay + ((by - ay) * d) / len + ny;
+      if (roadOnly) { const t = at_(Math.floor(x), Math.floor(y)); if (t !== Gr.Road && t !== Gr.Lane && t !== Gr.Parking) continue; }
+      g.fillRect(Math.floor(x * ART) / ART - (w > step ? step : 0), Math.floor(y * ART) / ART - (w > step ? step : 0), w, w);
+    }
+  }
+}
+/** road markings, tactile paving, guard railings and signal posts for one chunk, in map metres
+ *  (the context is already scaled by ART and translated to the chunk) */
+function drawRoadMarks(g: CanvasRenderingContext2D, tx0: number, ty0: number): void {
+  const x0 = tx0 - 2, y0 = ty0 - 2, x1 = tx0 + CHUNK + 2, y1 = ty0 + CHUNK + 2;
+  const hit = (b: Box): boolean => b.x1 >= x0 && b.x0 <= x1 && b.y1 >= y0 && b.y0 <= y1;
+  // tactile warning strips: yellow studded paving where a crossing meets the kerb
+  g.fillStyle = '#d9b02a';
+  ROADS.tactile.forEach((p, i) => { if (hit(TACTILE_BOX[i])) paintLine(g, p, 4); });
+  g.fillStyle = '#b8901c';
+  ROADS.tactile.forEach((p, i) => { if (hit(TACTILE_BOX[i])) paintLine(g, p, 1, 0.25, 0.25); });
+  // paint: filled shapes first (arrow heads, red surfacing), then lines
+  ROADS.marks.forEach((m, i) => {
+    if (!MARK_ON_ROAD[i] || !hit(MARK_BOX[i]) || m[1] !== 'f') return;
+    const p = m[5];
+    g.fillStyle = PAINT[m[0]] ?? PAINT.w;
+    g.beginPath();
+    g.moveTo(p[0], p[1]);
+    for (let j = 2; j < p.length; j += 2) g.lineTo(p[j], p[j + 1]);
+    g.closePath();
+    g.fill();
+  });
+  ROADS.marks.forEach((m, i) => {
+    if (!MARK_ON_ROAD[i] || !hit(MARK_BOX[i]) || m[1] === 'f') return;
+    const [col, kind, width, dash, gap, p] = m;
+    g.fillStyle = PAINT[col] ?? PAINT.w;
+    const px = Math.max(1, Math.round(width * ART));
+    // paint stays on the carriageway: where the survey and the map disagree by a metre, a line
+    // that would run onto the pavement is cut there
+    if (kind === 'd') { paintLine(g, p, 1, 0, 0, -0.12, true); paintLine(g, p, 1, 0, 0, 0.12, true); }
+    else paintLine(g, p, px, dash, gap, 0, true);
+  });
+  // guard railings (grey, posts every 2 m) and concrete barriers
+  ROADS.rails.forEach(([barrier, p], i) => {
+    if (!hit(RAIL_BOX[i])) return;
+    g.fillStyle = 'rgba(0,0,0,0.22)';
+    paintLine(g, p.map((v, j) => (j % 2 ? v + 0.25 : v + 0.12)), barrier ? 4 : 2);
+    g.fillStyle = barrier ? '#b9b6ad' : '#9aa0a6';
+    paintLine(g, p, barrier ? 4 : 1);
+    if (!barrier) { g.fillStyle = '#5e646a'; paintLine(g, p, 2, 0.13, 1.87); }
+  });
+  // signal posts: a dark pole with the signal head; pedestrian signals and push buttons smaller
+  for (const [ref, x, y] of ROADS.lights) {
+    if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+    const s = ref.startsWith('S') ? 3 : ref === 'PBUTT' ? 1 : 2;
+    g.fillStyle = 'rgba(0,0,0,0.3)';
+    g.fillRect(x - s / ART + 1 / ART, y - s / ART + 2 / ART, (s * 2) / ART, (s * 2) / ART);
+    g.fillStyle = '#2d3136';
+    g.fillRect(x - s / ART, y - s / ART, (s * 2) / ART, (s * 2) / ART);
+    if (ref !== 'PBUTT') { g.fillStyle = ref.startsWith('S') ? '#e8463a' : '#3ccf6a'; g.fillRect(x - 1 / ART, y - 1 / ART, 1 / ART, 1 / ART); }
+  }
+}
+
 /** the label next to the art pixel being painted (set per pixel, so no closure is made each time) */
 let opx = 0, opy = 0, oc = 0, olabel = new Uint8Array(0);
 function other(dx: number, dy: number): number {
@@ -1620,25 +1797,11 @@ function renderChunk(cx: number, cy: number): HTMLCanvasElement {
   }
   lg.putImageData(img, 0, 0);
 
-  // ---- 2. road centre lines
+  // ---- 2. road markings, tactile strips and railings, as surveyed (stanley-roads.ts)
   lg.save();
   lg.scale(ART, ART);
   lg.translate(-tx0, -ty0);
-  lg.fillStyle = '#d8d0a0';
-  for (const [p, h] of OSM.roads) {
-    if (ROAD[h]?.[0] !== Gr.Road) continue;
-    for (let i = 0; i + 3 < p.length; i += 2) {
-      const ax = p[i], ay = p[i + 1], bx = p[i + 2], by = p[i + 3];
-      if (Math.max(ax, bx) < tx0 - 2 || Math.min(ax, bx) > tx0 + CHUNK + 2 || Math.max(ay, by) < ty0 - 2 || Math.min(ay, by) > ty0 + CHUNK + 2) continue;
-      const len = Math.hypot(bx - ax, by - ay);
-      for (let d = 0; d < len; d += 0.25) {
-        if (d % 5 > 2.5) continue;
-        const x = ax + ((bx - ax) * d) / len, y = ay + ((by - ay) * d) / len;
-        if (at_(Math.floor(x), Math.floor(y)) !== Gr.Road) continue;
-        lg.fillRect(Math.round(x * ART) / ART - 1 / ART, Math.round(y * ART) / ART - 1 / ART, 2 / ART, 2 / ART);
-      }
-    }
-  }
+  drawRoadMarks(lg, tx0, ty0);
 
   // ---- 3. buildings, from their outlines, back to front
   const near = BUILDINGS.filter((b) => !b.hidden && b.x1 >= tx0 - 2 && b.x0 <= tx0 + CHUNK + 2 && b.y1 >= ty0 - 2 && b.y0 <= ty0 + CHUNK + 2)
