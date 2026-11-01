@@ -5,11 +5,25 @@ traps that cost time.
 
 - **Repo:** <https://github.com/SSC-Program-Team/cit-game> (private, `main`)
 - **Live:** <https://ai.ssc.edu.hk/cit-game/> — a static build served by school Apache
-- **Status:** playable slice, v0.5. Top-down Stanley village, MC gigs and work tasks, employers on a
+- **Status:** v0.6: the school server (below) on top of the v0.5 slice. Top-down Stanley village, MC gigs and work tasks, employers on a
   real-time clock, shop, courses, library, warning-then-jail. See
   [stanley-expansion.md](design/stanley-expansion.md) for the decisions. The v0.4 notes below still
   hold for the console jobs, missions and prison; where they mention `map.png`, the road band or
   spot anchors, they describe the old side-on street, which v0.5 replaced.
+
+## v0.6: the school server (rebuilt 2026-11-01)
+
+| Path | What it is |
+|---|---|
+| `src/rules.ts` | Every action that changes money, the clock, answers, gear or the record, as plain functions on a save: `act(save, name, args, now)` returns events. The server runs it; solo play runs the same code in the browser. Also rent ($150 a day), gear wear and repair, 30-day licences, net worth |
+| `server/main.ts` | The school server: `node:http`, `node:sqlite`, `server/ws.ts`. Owns saves, holds quizzes (the browser never gets an answer before it picks), ticks real-time work, sends nearby players 5x a second, leaderboard, `/admin` |
+| `src/net.ts` | The browser side: one WebSocket to `api/ws`, a name on first visit, solo fallback (`?solo`) |
+| `src/protocol.ts` | Messages both ways, coat colours, the name rule |
+| `server/admin.html` | The teacher page |
+| `scripts/test-rules.ts` | Checks the rules (part of `npm run check`) |
+
+Deploying it: [deploy.md](deploy.md). `main.ts` no longer changes the save itself: it calls
+`act()` and reacts to the events (`handle()`).
 
 ## v0.5 in one screen
 

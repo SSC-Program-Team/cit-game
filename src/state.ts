@@ -1,105 +1,27 @@
-export type Jail = { until: number; act: string; law: string; offence: string; fix: string };
+/**
+ * The browser's copy of your save. Online, the school server owns the real one and sends it back
+ * after every action (net.ts); editing this copy changes nothing there. Solo, this is the save,
+ * kept in localStorage and not on the leaderboard.
+ */
+import { fresh, migrate, type Save } from './rules.ts';
 
-/** an employer you work for. Times are wall-clock ms: tasks arrive in real time. */
-export type Work = {
-  id: string;
-  hired: number;
-  /** when the last task was issued */
-  last: number;
-  /** issue times of unfinished tasks, oldest first */
-  tasks: number[];
-  /** the boss has warned you about the oldest task */
-  warned: boolean;
-  done: number;
-};
-
-export type RecordEntry = { id: string; day: number; jailed: boolean };
-
-export type Save = {
-  v: 2;
-  money: number;
-  energy: number;
-  day: number;
-  minutes: number;
-  /** world position in pixels */
-  x: number;
-  /** map version the position belongs to (2 = the 1 m OSM map) */
-  mapv?: number;
-  y: number;
-  done: string[];
-  mastery: Record<string, number>;
-  /** per client or employer: trust */
-  rep: Record<string, number>;
-  /** wall-clock release time, so closing the tab does not shorten the sentence */
-  jail: Jail | null;
-  /** an open callout on the street and its seconds left */
-  mission: { id: string; left: number } | null;
-  /** item ids you own */
-  inv: string[];
-  /** course ids passed */
-  certs: string[];
-  work: Work | null;
-  /** employer id -> wall-clock time you may reapply */
-  fired: Record<string, number>;
-  /** gigs done, as `${day}:${gigId}` */
-  gigs: string[];
-  record: RecordEntry[];
-  /** the last few question ids, so the same one does not come straight back */
-  seen: string[];
-  /** questions answered / right, for the status screen */
-  answered: number;
-  right: number;
-};
-
-const KEY = 'citgame.save.v1';
-
-const fresh = (): Save => ({
-  v: 2,
-  money: 1280,
-  energy: 5,
-  day: 1,
-  minutes: 9 * 60,
-  x: -1,
-  y: -1,
-  done: [],
-  mastery: {},
-  rep: {},
-  jail: null,
-  mission: null,
-  inv: ['laptop1'],
-  certs: [],
-  work: null,
-  fired: {},
-  gigs: [],
-  record: [],
-  seen: [],
-  answered: 0,
-  right: 0,
-});
+export type { Save };
 
 export const state: Save = fresh();
 
-export function load(): void {
+/** the v0.5 key, so a solo save from before the server carries on */
+const KEY = 'citgame.save.v1';
+
+export function loadSolo(): void {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw) as Omit<Partial<Save>, 'v'> & { v?: number };
-    if (parsed.v === 1) {
-      // v1 was one street drawn side-on: keep money, progress and any sentence, but not the position
-      Object.assign(state, fresh(), {
-        money: parsed.money ?? 1280, done: parsed.done ?? [], mastery: parsed.mastery ?? {},
-        rep: parsed.rep ?? {}, jail: parsed.jail ?? null, day: parsed.day ?? 1,
-      });
-      return;
-    }
-    if (parsed.v !== 2) return;
-    Object.assign(state, fresh(), parsed, { v: 2 });
+    if (raw) Object.assign(state, migrate(JSON.parse(raw)));
   } catch {
     /* a corrupt save must never block play */
   }
 }
 
-export function save(): void {
+export function saveSolo(): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
   } catch {
@@ -107,29 +29,14 @@ export function save(): void {
   }
 }
 
-export function reset(): void {
+export function resetSolo(): void {
   Object.assign(state, fresh());
-  save();
+  saveSolo();
 }
 
-export function addMoney(n: number): void {
-  // minibus fares come in ten-cent steps
-  state.money = Math.max(0, Math.round((state.money + n) * 10) / 10);
-  save();
-}
-
-export function addMinutes(n: number): void {
-  state.minutes += n;
-  while (state.minutes >= 24 * 60) {
-    state.minutes -= 24 * 60;
-    state.day += 1;
-  }
-  save();
-}
-
-export function addMastery(topic: string, delta: number): void {
-  state.mastery[topic] = Math.max(0, Math.min(100, (state.mastery[topic] ?? 0) + delta));
-  save();
+/** take the server's copy */
+export function adopt(s: Partial<Save>): void {
+  Object.assign(state, s);
 }
 
 export function clock(): string {

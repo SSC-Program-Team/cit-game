@@ -5,7 +5,12 @@
  * Modes, in priority order: prison > console job > MC quiz > menu > the village.
  * See docs/design/stanley-expansion.md for what each system is for.
  */
-import { state, save, clock, load, reset, addMoney, addMinutes, addMastery } from './state';
+import { state, clock, resetSolo } from './state';
+import { net, act, startNet, sendPos, serverNow, updateOthers } from './net';
+import {
+  has, coverFor, payBoost, condition, licenceLive, repairCost, netWorth, ago, employer, MISSION_PAY, NO_SHOW_FEE,
+  SLEEP_FARE, RENT, RENEW_WINDOW, type Ev, type QuizView,
+} from './rules';
 import { audio } from './audio';
 import { JOBS, MISSIONS, OFFER, type JobDef, type Crime, type Prop } from './jobs';
 import { GLYPHS } from './font';
@@ -15,11 +20,10 @@ import {
   escalatorAt, setBuildingPhotos, MARKET_POINTS, PLAZA_POINTS, buildingsNear, behindBuilding, drawBuildingOver, type Place,
 } from './world';
 import { ROUTES, routesAt, type Route, type Stop } from './minibus';
-import { QUESTIONS, TOPIC_NAMES, FORM_RATE, type Form, type Question, type Tier, type Topic } from './questions';
+import { TOPIC_NAMES, type Tier, type Topic } from './questions';
 import {
   ITEMS, item, SHOP_STOCK, PIRATE_STOCK, NEED_NAMES, COURSES, COURSE_QUESTIONS, COURSE_PASS,
-  EMPLOYERS, TASK_EVERY, TASK_CAP, TASK_QUESTIONS, REHIRE_WAIT, fireAfter, DAY, HOUR,
-  boardFor, gigRate, OFFENCES, WARNING_FINE, type Employer, type Gig, type Offence,
+  EMPLOYERS, TASK_EVERY, TASK_QUESTIONS, fireAfter, DAY, boardFor, gigRate, OFFENCES, type Employer, type Gig,
 } from './economy';
 
 const W = 640;
@@ -40,7 +44,8 @@ function toggleZoom(): void {
   audio.play('ui');
 }
 
-(window as unknown as { __cit: typeof state }).__cit = state;
+(window as unknown as { __cit: typeof state; __net: typeof net }).__cit = state;
+(window as unknown as { __net: typeof net }).__net = net;
 
 // buildings' real looks (from the Lands Department 3D map): the map draws without them until loaded
 {
@@ -162,22 +167,10 @@ const inRect = (r: Rect, x: number, y: number, slop = 2): boolean =>
 const money = (n: number): string => `$${n.toLocaleString('en-US', { maximumFractionDigits: 1 })}`;
 
 // ------------------------------------------------------------- the clock ---
-/** wall clock, shiftable by the __skip test hook so real-time work can be tested */
-let skew = 0;
-const now = (): number => Date.now() + skew;
-
-function ago(ms: number): string {
-  const h = Math.floor(ms / HOUR);
-  if (h < 1) return `${Math.max(1, Math.floor(ms / 60000))}m`;
-  if (h < 24) return `${h}h`;
-  return `${Math.floor(h / 24)}d ${h % 24}h`;
-}
+/** the wall clock work tasks and prison run on: the school server's when there is one */
+const now = serverNow;
 
 // ------------------------------------------------------------------ state ---
-const MISSION_WINDOW = 90;
-const MISSION_PAY = 2;
-const NO_SHOW_FEE = 100;
-const JAIL_MS = 30 * 60 * 1000;
 /**
  * Walking pace in px/s. The map is 1 m per 16 px tile and the walk from Stanley Plaza to the SSC
  * back gate is about 600 m, which the owner wants to take about five minutes: 600 * 16 / 300.
@@ -216,7 +209,6 @@ let quiz: Quiz | null = null;
 let menu: Menu | null = null;
 let stepTimer = 0;
 let nextMission = 75;
-let declined = false;
 let toast: { text: string; colour: string; t: number } | null = null;
 let frames = 0;
 let tickTimer = 0;
@@ -301,80 +293,69 @@ function pickMenu(i: number): void {
 }
 
 // --------------------------------------------------------------- the quiz ---
-type Prepared = { q: Question; options: string[]; answer: number };
-
 const LETTERS = ['A', 'B', 'C', 'D'];
 
-function prepare(q: Question): Prepared {
-  // shuffle the options so a letter cannot be memorised; keep track of the right one
-  const order = [0, 1, 2, 3].sort(() => Math.random() - 0.5);
-  return { q, options: order.map((i) => q.options[i]), answer: order.indexOf(q.answer) };
-}
-
-function drawQuestions(topics: Topic[], n: number, forms: [Form, Form] = [1, 6]): Prepared[] {
-  const pool = QUESTIONS.filter((q) => topics.includes(q.topic) && q.form >= forms[0] && q.form <= forms[1]);
-  const fresh = pool.filter((q) => !state.seen.includes(q.id)).sort(() => Math.random() - 0.5);
-  const stale = pool.filter((q) => state.seen.includes(q.id)).sort(() => Math.random() - 0.5);
-  return [...fresh, ...stale].slice(0, n).map(prepare);
-}
-
+/**
+ * A quiz the server is holding. We get the questions with their options shuffled, never the
+ * answers: picking one asks the server, which says right or wrong, which letter was right, and why.
+ */
 class Quiz {
-  i = 0;
+  i: number;
   picked: number | null = null;
+  /** the right option for the question just answered */
+  answer = -1;
+  why = '';
   right = 0;
-  /** the form of each question answered right: gigs pay by it */
-  rightForms: Form[] = [];
+  /** waiting for the server's verdict */
+  busy = false;
+  /** the end screen, once the last answer is in */
+  final: { lines: string[]; colour: string } | null = null;
   summary: string[] | null = null;
   summaryColour = '#7be08a';
 
-  constructor(
-    readonly title: string,
-    readonly sub: string,
-    readonly tier: Tier,
-    readonly qs: Prepared[],
-    /** returns the lines of the end screen; may set summaryColour */
-    readonly onDone: (right: number, n: number, quiz: Quiz) => string[],
-    /** runs after the end screen is dismissed */
-    readonly after?: () => void,
-  ) {}
+  constructor(readonly view: QuizView) { this.i = view.i; }
 
-  get current(): Prepared { return this.qs[this.i]; }
+  get title(): string { return this.view.title; }
+  get sub(): string { return this.view.sub; }
+  get tier(): Tier { return this.view.tier; }
+  get qs(): QuizView['qs'] { return this.view.qs; }
+  get current(): QuizView['qs'][number] { return this.view.qs[this.i]; }
 
   pick(i: number): void {
-    if (this.summary || this.picked !== null || i < 0 || i > 3) return;
-    this.picked = i;
-    const p = this.current;
-    const ok = i === p.answer;
-    state.answered += 1;
-    if (ok) { this.right += 1; this.rightForms.push(p.q.form); state.right += 1; audio.play('ok'); } else audio.play('bad');
-    addMastery(p.q.topic, ok ? 4 : -2);
-    state.seen = [p.q.id, ...state.seen.filter((s) => s !== p.q.id)].slice(0, 24);
-    save();
+    if (this.summary || this.picked !== null || this.busy || i < 0 || i > 3) return;
+    this.busy = true;
+    const at = this.i;
+    act('quiz.answer', { q: at, i }).then((r) => {
+      this.busy = false;
+      const a = r.events.find((e): e is Extract<Ev, { t: 'answer' }> => e.t === 'answer');
+      if (!r.ok || !a || this.i !== at) return;
+      this.picked = i;
+      this.answer = a.answer;
+      this.why = a.why;
+      if (a.ok) this.right += 1;
+    });
   }
 
   next(): void {
     if (this.summary) {
       quiz = null;
-      if (this.after) this.after();
+      act('quiz.end');
       return;
     }
     if (this.picked === null) return;
+    if (this.i + 1 >= this.qs.length) {
+      if (!this.final) return; // the end screen is on its way
+      this.summary = this.final.lines;
+      this.summaryColour = this.final.colour;
+      return;
+    }
     this.picked = null;
     this.i += 1;
-    if (this.i >= this.qs.length) {
-      this.summary = this.onDone(this.right, this.qs.length, this);
-      save();
-    }
   }
 }
 
-function startQuiz(qz: Quiz): void {
-  if (!qz.qs.length) { flash('no questions for that topic yet', '#ff9a6a'); return; }
-  quiz = qz;
-  menu = null;
-  dialogue = null;
-  path = [];
-  audio.play('door');
+function startQuiz(kind: string, args: Record<string, unknown> = {}): void {
+  act('quiz.start', { kind, ...args });
 }
 
 // -------------------------------------------------------------------- job ---
@@ -427,7 +408,7 @@ class Job {
     const c = st.choices[i];
     if (!c) return;
     this.confirmLeave = false;
-    if (c.crime) { job = null; arrest(c.crime, 's161'); return; }
+    if (c.crime) { const id = this.def.id; job = null; act('job.crime', { id }); return; }
     if (c.ok) {
       this.stage += 1;
       if (this.stage >= this.def.stages.length) { this.settle(); return; }
@@ -440,20 +421,13 @@ class Job {
     audio.play('bad');
     this.feedbackColour = '#ff6a6a';
     if (st.free) { this.feedback = c.hint ?? ''; return; }
-    addMinutes(4);
-    save();
+    act('job.wrong', { id: this.def.id });
     this.feedback = 'wrong - four minutes gone';
     this.hint = c.hint ?? st.prompt;
   }
 
   private settle(): void {
-    audio.play('cash');
-    addMoney(this.pay);
-    addMastery(...this.def.mastery);
-    if (!state.done.includes(this.def.id)) state.done.push(this.def.id);
-    addMinutes(this.def.minutes);
-    news.unshift(this.def.wire);
-    save();
+    act('job.done', { id: this.def.id });
     this.step = 'paid';
     this.options = [];
   }
@@ -466,44 +440,15 @@ class Job {
 }
 
 // ---------------------------------------------------------------- the law ---
-function arrest(c: Crime, id: string): void {
-  audio.play('bad');
-  job = null;
-  quiz = null;
-  menu = null;
-  dialogue = null;
-  path = [];
-  pending = null;
-  keys.clear();
-  state.mission = null;
-  state.record.push({ id, day: state.day, jailed: true });
-  state.jail = { until: now() + JAIL_MS, ...c };
-  news.unshift('a stanley technician was detained tonight');
-  save();
-}
-
-/** warning first: a first minor offence is a fine and a confiscation; anything else is jail */
-function commit(o: Offence): void {
-  const prior = state.record.length;
-  if (o.serious || prior > 0) {
-    arrest({ act: o.act, law: o.law, offence: o.offence, fix: o.fix }, o.id);
-    return;
-  }
-  const fine = Math.min(state.money, WARNING_FINE);
-  addMoney(-fine);
-  const taken = state.inv.filter((id) => item(id)?.kind === 'pirated');
-  state.inv = state.inv.filter((id) => item(id)?.kind !== 'pirated');
-  state.record.push({ id: o.id, day: state.day, jailed: false });
-  news.unshift('police issue a warning over pirated software in stanley');
-  save();
-  audio.play('alert');
+/** the police: a warning (first minor offence) shows what happened and what it cost */
+function showWarning(w: Extract<Ev, { t: 'warning' }>): void {
   openMenu({
     title: 'police warning',
-    line: `an officer from stanley police station is waiting outside. ${o.act} this is a warning: next time it is a cell.`,
+    line: `an officer from stanley police station is waiting outside. ${w.act} this is a warning: next time it is a cell.`,
     items: [
-      { label: o.law, sub: o.offence, off: true, colour: '#ffc84a' },
-      { label: `fine paid: ${money(fine)}`, sub: taken.length ? `confiscated: ${taken.map((t) => item(t)!.name).join(', ')}` : 'nothing to confiscate', off: true },
-      { label: 'what would have stopped it', sub: o.fix, off: true },
+      { label: w.law, sub: w.offence, off: true, colour: '#ffc84a' },
+      { label: `fine paid: ${money(w.fine)}`, sub: w.taken.length ? `confiscated: ${w.taken.join(', ')}` : 'nothing to confiscate', off: true },
+      { label: 'what would have stopped it', sub: w.fix, off: true },
       { label: 'understood', act: () => { menu = null; } },
     ],
   });
@@ -511,64 +456,7 @@ function commit(o: Offence): void {
 
 const jailed = (): boolean => !!state.jail && now() < state.jail.until;
 
-function release(): void {
-  state.jail = null;
-  placePlayer(RELEASE.tx, RELEASE.ty);
-  nextMission = 90;
-  save();
-  say('stanley prison', 'released. the gate shuts behind you. tung tau wan road is quiet.');
-}
-
 // ------------------------------------------------------------- employment ---
-const employer = (id: string): Employer | undefined => EMPLOYERS.find((e) => e.id === id);
-
-/** issue tasks that fell due while we were away, then check for warnings and firing */
-function tickWork(): void {
-  const w = state.work;
-  if (!w) return;
-  const e = employer(w.id);
-  if (!e) { state.work = null; return; }
-  const t = now();
-  let changed = false;
-  while (t - w.last >= TASK_EVERY) {
-    w.last += TASK_EVERY;
-    if (w.tasks.length < TASK_CAP) { w.tasks.push(w.last); changed = true; }
-  }
-  const oldest = w.tasks[0];
-  if (oldest !== undefined) {
-    const age = t - oldest;
-    if (age >= fireAfter(e)) { fire(e, age); return; }
-    if (!w.warned && age >= fireAfter(e) / 2) {
-      w.warned = true;
-      changed = true;
-      news.unshift(`${e.boss} at ${e.name} wants that work done`);
-      flash(`${e.boss}: a task has waited ${ago(age)}. ${e.strict ? 'strict' : 'relaxed'} boss - fired at ${e.strict ? 3 : 5} days`, '#ff9a6a', 6);
-      audio.play('alert');
-    }
-  }
-  if (changed) save();
-}
-
-function fire(e: Employer, age: number): void {
-  state.work = null;
-  state.fired[e.id] = now() + REHIRE_WAIT;
-  state.rep[e.name] = (state.rep[e.name] ?? 0) - 20;
-  news.unshift(`${e.name} let its it helper go`);
-  save();
-  audio.play('bad');
-  say(e.boss, `you left a task for ${ago(age)}. i cannot run ${e.name} like this. you are fired. come back in a week if you want to try again.`);
-}
-
-function hire(e: Employer): void {
-  const t = now();
-  state.work = { id: e.id, hired: t, last: t, tasks: [t], warned: false, done: 0 };
-  news.unshift(`${e.name} hired a new it helper`);
-  save();
-  audio.play('cash');
-  menu = null;
-  say(e.boss, `you start now. a task lands every 5 hours, even when you are not here. ${e.strict ? 'leave one for 3 days and you are out.' : 'leave one for 5 days and we will have words - then you are out.'}`);
-}
-
 function workStatus(): string {
   const w = state.work;
   if (!w) return 'no job';
@@ -589,10 +477,8 @@ function openEmployer(e: Employer): void {
         : `nothing waiting. the next task lands in ${ago(w.last + TASK_EVERY - now())}. ${w.done} done so far.`,
       items: [
         { label: 'do a work task', right: money(e.wage), sub: `${TASK_QUESTIONS} questions - ${e.tier === 'dse' ? 'dse' : 'junior'} - paid whatever you score`,
-          off: !w.tasks.length, why: 'no tasks waiting yet', act: () => startWorkTask(e) },
-        { label: 'quit this job', sub: 'no penalty, but the tasks stop', act: () => {
-          state.work = null; save(); menu = null; say(e.boss, 'fair enough. the door is open if you change your mind.');
-        } },
+          off: !w.tasks.length, why: 'no tasks waiting yet', act: () => startQuiz('work') },
+        { label: 'quit this job', sub: 'no penalty, but the tasks stop', act: () => { menu = null; act('work.quit'); } },
         { label: 'leave', act: () => { menu = null; } },
       ],
     });
@@ -613,51 +499,13 @@ function openEmployer(e: Employer): void {
     line: `"${e.pitch}" wage ${money(e.wage)} per task. a task every 5 real hours. ${e.strict ? 'strict: fired if a task waits 3 days.' : 'relaxed: fired if a task waits 5 days.'}`,
     items: [
       { label: 'apply for the job', sub: blockers.length ? blockers.join(' - ') : `${e.tier === 'dse' ? 'dse' : 'junior'} level work`,
-        off: blockers.length > 0, why: blockers[0], act: () => hire(e) },
+        off: blockers.length > 0, why: blockers[0], act: () => { menu = null; act('work.apply', { id: e.id }); } },
       { label: 'leave', act: () => { menu = null; } },
     ],
   });
 }
 
-function startWorkTask(e: Employer): void {
-  startQuiz(new Quiz(`work task - ${e.name}`, `${e.boss} is watching`, e.tier, drawQuestions(e.topics, TASK_QUESTIONS, e.forms),
-    (right, n) => {
-      const w = state.work;
-      addMoney(e.wage);
-      audio.play('cash');
-      state.rep[e.name] = (state.rep[e.name] ?? 0) + (right - 1);
-      if (w) {
-        w.tasks.shift();
-        w.done += 1;
-        w.warned = !!w.tasks.length && now() - w.tasks[0] >= fireAfter(e) / 2;
-      }
-      addMinutes(60);
-      return [
-        `${right} of ${n} right`,
-        `wage paid: ${money(e.wage)}`,
-        right === n ? `${e.boss} nods. from ${e.boss}, that is high praise.` : right ? `${e.boss}: "fine. check your work next time."` : `${e.boss}: "did you even read it?"`,
-        state.work?.tasks.length ? `${state.work.tasks.length} more task(s) waiting` : 'nothing else waiting',
-      ];
-    }));
-}
-
 // -------------------------------------------------------------------- gigs ---
-const owns = (provides: string): boolean => state.inv.some((id) => item(id)?.provides === provides);
-const ownsLegit = (provides: string): boolean => state.inv.some((id) => item(id)?.provides === provides && item(id)?.kind !== 'pirated');
-
-function payBoost(): number {
-  return Math.max(...state.inv.map((id) => item(id)?.payBoost ?? 1));
-}
-
-function laptopCovers(need: string): boolean {
-  // a better laptop covers a lesser laptop requirement
-  const rank = (s: string): number => ({ laptop1: 1, laptop2: 2, laptop3: 3 } as Record<string, number>)[s] ?? 0;
-  if (!rank(need)) return false;
-  return state.inv.some((id) => rank(id) >= rank(need));
-}
-
-const has = (need: string): boolean => owns(need) || laptopCovers(need);
-
 function openBoard(): void {
   const gigs = boardFor(state.day);
   openMenu({
@@ -666,16 +514,17 @@ function openBoard(): void {
     items: [
       ...gigs.map((g): MenuItem => {
         const done = state.gigs.includes(`${state.day}:${g.id}`);
-        const missing = g.needs.filter((n) => !has(n));
-        const top = Math.round((gigRate(g) * g.questions * payBoost()) / 10) * 10;
+        const missing = g.needs.filter((n) => !has(state, n));
+        const top = Math.round((gigRate(g) * g.questions * payBoost(state)) / 10) * 10;
+        const pirated = g.needs.some((n) => item(coverFor(state, n) ?? '')?.kind === 'pirated');
         return {
           label: `[${g.tier === 'dse' ? 'dse' : 'junior'}] ${g.title}`,
           right: done ? 'done' : `about ${money(top)}`,
-          sub: `${g.client}, ${g.place} - f${g.forms[0]}-${g.forms[1]}, ${g.questions} qs - ${g.needs.length ? `needs ${g.needs.map((n) => NEED_NAMES[n] ?? n).join(', ')}` : 'no gear needed'}`,
+          sub: `${g.client}, ${g.place} - f${g.forms[0]}-${g.forms[1]}, ${g.questions} qs - ${g.needs.length ? `needs ${g.needs.map((n) => NEED_NAMES[n] ?? n).join(', ')}${pirated ? ' (yours is pirated)' : ''}` : 'no gear needed'}`,
           colour: g.tier === 'dse' ? '#ffc84a' : '#7be0d0',
           off: done || missing.length > 0 || state.energy <= 0,
-          why: done ? 'already done today' : missing.length ? `you need: ${missing.map((n) => NEED_NAMES[n] ?? n).join(', ')}` : 'too tired. take the bus home and sleep',
-          act: () => startGig(g),
+          why: done ? 'already done today' : missing.length ? `you need: ${missing.map((n) => needWhy(n)).join(', ')}` : 'too tired. take the bus home and sleep',
+          act: () => startQuiz('gig', { id: g.id }),
         };
       }),
       { label: 'leave', act: () => { menu = null; } },
@@ -683,41 +532,34 @@ function openBoard(): void {
   });
 }
 
-function startGig(g: Gig): void {
-  const pirated = g.needs.some((n) => owns(n) && !ownsLegit(n) && !laptopCovers(n));
-  startQuiz(new Quiz(`gig - ${g.title}`, `${g.client}, ${g.place}`, g.tier, drawQuestions(g.topics, g.questions, g.forms),
-    (right, n, qz) => {
-      const earned = qz.rightForms.reduce((sum, f) => sum + FORM_RATE[f], 0);
-      const pay = Math.round((earned * g.mult * payBoost()) / 10) * 10;
-      state.gigs = [...state.gigs.filter((k) => Number(k.split(':')[0]) >= state.day - 2), `${state.day}:${g.id}`];
-      state.energy = Math.max(0, state.energy - 1);
-      addMinutes(g.minutes);
-      if (pay) { addMoney(pay); audio.play('cash'); news.unshift(`${g.client} paid a freelancer ${money(pay)}`); }
-      else { state.rep[g.client] = (state.rep[g.client] ?? 0) - 2; qz.summaryColour = '#ff6a6a'; }
-      return [
-        `${right} of ${n} right`,
-        pay ? `paid: ${money(pay)}` : 'not paid: nothing was usable',
-        payBoost() > 1 ? `your laptop added ${Math.round((payBoost() - 1) * 100)}%` : 'a better laptop pays more',
-        pirated ? 'the client is checking your software licence...' : `${g.client} will remember you`,
-      ];
-    },
-    () => { if (pirated) commit(OFFENCES.piracyUse); }));
+/** why a need is not met: you do not have it, or yours is broken or ran out */
+function needWhy(n: string): string {
+  const owned = state.inv.find((id) => item(id)?.provides === n);
+  const name = NEED_NAMES[n] ?? n;
+  if (!owned) return name;
+  const it = item(owned)!;
+  if (it.kind === 'licence' && !licenceLive(state, owned)) return `${name} (licence ran out)`;
+  if (condition(state, owned) <= 0) return `${name} (broken)`;
+  return name;
 }
 
 // ------------------------------------------------------------------- shops ---
 const SHOP_SHELVES: Array<{ name: string; kinds: string[]; sub: string }> = [
   { name: 'laptops', kinds: ['laptop'], sub: 'a better laptop pays more on every gig, and some gigs need one' },
   { name: 'tools', kinds: ['tool'], sub: 'cable tester, camera, label printer' },
-  { name: 'software licences', kinds: ['licence'], sub: 'office, photo and accounting software, with real keys' },
+  { name: 'software licences', kinds: ['licence'], sub: 'office, photo and accounting software, with real keys. 30 days each' },
 ];
 
 function openShop(shelf?: number): void {
   if (shelf === undefined) {
+    const worn = state.inv.filter((id) => (item(id)?.kind === 'laptop' || item(id)?.kind === 'tool') && id !== 'laptop1' && condition(state, id) < 100);
     openMenu({
       title: 'pixel fix - ah yan',
-      line: '"everything here is legit. the receipt has a licence key on it."',
+      line: '"everything here is legit. the receipt has a licence key on it." gear wears with every gig; ah yan repairs it.',
       items: [
         ...SHOP_SHELVES.map((s, i): MenuItem => ({ label: s.name, sub: s.sub, act: () => openShop(i) })),
+        { label: 'repairs', sub: worn.length ? worn.map((id) => `${item(id)!.name} ${condition(state, id)}%`).join(', ') : 'nothing of yours needs fixing',
+          off: !worn.length, why: 'nothing needs fixing', act: () => openRepairs() },
         { label: 'leave', act: () => { menu = null; } },
       ],
     });
@@ -732,19 +574,39 @@ function openShop(shelf?: number): void {
       ...SHOP_STOCK.filter((id) => kinds.includes(item(id)!.kind)).map((id): MenuItem => {
         const it = item(id)!;
         const owned = state.inv.includes(id);
+        if (owned && it.kind === 'licence') {
+          const left = (state.lic[id] ?? 0) - state.day;
+          const canRenew = left <= RENEW_WINDOW;
+          return {
+            label: it.name, right: left > 0 ? `${left} days left` : 'ran out',
+            sub: canRenew ? `renew for ${money(it.price)}: 30 more days` : `renewal opens ${RENEW_WINDOW} days before it runs out`,
+            off: !canRenew || state.money < it.price, why: canRenew ? 'not enough money' : 'too early to renew',
+            act: () => { act('renew', { id }).then(() => openShop(shelf)); },
+          };
+        }
         return {
-          label: it.name, right: owned ? 'owned' : money(it.price), sub: it.blurb,
+          label: it.name, right: owned ? `owned ${condition(state, id)}%` : money(it.price), sub: it.blurb,
           off: owned || state.money < it.price, why: owned ? 'you have one' : 'not enough money',
-          act: () => {
-            addMoney(-it.price);
-            state.inv.push(id);
-            save();
-            audio.play('cash');
-            flash(`bought: ${it.name}`, '#7be08a');
-            openShop(shelf);
-          },
+          act: () => { act('buy', { id }).then(() => openShop(shelf)); },
         };
       }),
+      { label: 'back', act: () => openShop() },
+    ],
+  });
+}
+
+function openRepairs(): void {
+  const worn = state.inv.filter((id) => (item(id)?.kind === 'laptop' || item(id)?.kind === 'tool') && id !== 'laptop1' && condition(state, id) < 100);
+  openMenu({
+    title: 'pixel fix - repairs',
+    line: `ah yan fixes anything back to 100% for 60% of the value the wear took off. at 0% it does not count for gigs. you have ${money(state.money)}.`,
+    back: () => openShop(),
+    items: [
+      ...worn.map((id): MenuItem => ({
+        label: item(id)!.name, right: money(repairCost(state, id)), sub: `${condition(state, id)}%${condition(state, id) <= 0 ? ' - broken' : ''}`,
+        off: state.money < repairCost(state, id), why: 'not enough money',
+        act: () => { act('repair', { id }).then(() => openRepairs()); },
+      })),
       { label: 'back', act: () => openShop() },
     ],
   });
@@ -753,7 +615,7 @@ function openShop(shelf?: number): void {
 function openPirate(): void {
   openMenu({
     title: 'the phone stall',
-    line: '"same software, fifteen percent of the price. nobody checks." he also has two side jobs, if you are interested.',
+    line: '"same software, fifteen percent of the price. nobody checks. and it never runs out." he also has two side jobs, if you are interested.',
     items: [
       ...PIRATE_STOCK.map((id): MenuItem => {
         const it = item(id)!;
@@ -761,19 +623,13 @@ function openPirate(): void {
         return {
           label: it.name, right: owned ? 'owned' : money(it.price), sub: it.blurb, colour: '#ff9a6a',
           off: owned || state.money < it.price, why: owned ? 'you have one' : 'not enough money',
-          act: () => {
-            addMoney(-it.price);
-            state.inv.push(id);
-            save();
-            flash(`bought: ${it.name}. it has no receipt.`, '#ff9a6a');
-            openPirate();
-          },
+          act: () => { act('buy', { id }).then(() => openPirate()); },
         };
       }),
       { label: 'sell discs for him', right: '$800', sub: 'stand at the stall for an afternoon', colour: '#ff6a6a',
-        act: () => commit(OFFENCES.piracySell) },
+        act: () => { menu = null; act('crime', { id: 'piracySell' }); } },
       { label: "copy the stall holders' customer list", right: '$600', sub: 'he says it is for a lucky draw', colour: '#ff6a6a',
-        act: () => commit(OFFENCES.dataLeak) },
+        act: () => { menu = null; act('crime', { id: 'dataLeak' }); } },
       { label: 'walk away', act: () => { menu = null; } },
     ],
   });
@@ -792,21 +648,7 @@ function openCourses(): void {
           sub: `${c.blurb} topics: ${c.topics.map((t) => TOPIC_NAMES[t].toLowerCase()).join(', ')}`,
           colour: c.tier === 'dse' ? '#ffc84a' : '#7be0d0',
           off: passed || state.money < c.price, why: passed ? 'you have this certificate' : 'not enough money',
-          act: () => {
-            addMoney(-c.price);
-            startQuiz(new Quiz(`exam - ${c.name}`, 'stanley plaza training centre', c.tier, drawQuestions(c.topics, COURSE_QUESTIONS, c.forms),
-              (right, n, qz) => {
-                addMinutes(90);
-                if (right >= COURSE_PASS) {
-                  state.certs.push(c.id);
-                  audio.play('cash');
-                  news.unshift(`a stanley freelancer earned the ${c.name}`);
-                  return [`${right} of ${n}: passed`, `certificate: ${c.name}`, 'employers can see it now'];
-                }
-                qz.summaryColour = '#ff6a6a';
-                return [`${right} of ${n}: not passed (needs ${COURSE_PASS})`, 'study at the library, then try again', `retake fee: ${money(c.price)}`];
-              }));
-          },
+          act: () => startQuiz('course', { id: c.id }),
         };
       }),
       { label: 'leave', act: () => { menu = null; } },
@@ -836,11 +678,7 @@ function openLibrary(tier?: Tier): void {
     items: [
       ...topics.map((t): MenuItem => ({
         label: `${t} ${TOPIC_NAMES[t]}`, right: `mastery ${state.mastery[t] ?? 0}`,
-        act: () => startQuiz(new Quiz(`study - ${TOPIC_NAMES[t]}`, 'stanley public library', tier, drawQuestions([t], 5),
-          (right, n) => {
-            addMinutes(30);
-            return [`${right} of ${n} right`, `${TOPIC_NAMES[t]} mastery: ${state.mastery[t] ?? 0}`, right === n ? 'the librarian looks impressed' : 'read the explanations: they are the lesson'];
-          })),
+        act: () => startQuiz('study', { topic: t }),
       })),
       { label: 'back', act: () => openLibrary() },
     ],
@@ -866,19 +704,9 @@ function openPolice(): void {
 function openBus(): void {
   openMenu({
     title: 'bus shelter',
-    line: `take the bus home and sleep. it is day ${state.day}, ${clock()}. you wake on day ${state.day + 1} at 08:00 with full energy and a new notice board. real-time work tasks keep coming either way.`,
+    line: `take the bus home and sleep. it is day ${state.day}, ${clock()}. you wake on day ${state.day + 1} at 08:00 with full energy and a new notice board. rent is ${money(RENT)} a day. real-time work tasks keep coming either way.`,
     items: [
-      { label: 'go home and sleep', right: '$12', act: () => {
-        addMoney(-12);
-        state.day += 1;
-        state.minutes = 8 * 60;
-        state.energy = 5;
-        placePlayer(START.tx, START.ty);
-        save();
-        menu = null;
-        audio.play('door');
-        say(`day ${state.day}`, 'the 6 drops you at stanley again. the board in the market has new gigs.');
-      } },
+      { label: 'go home and sleep', right: money(SLEEP_FARE + RENT), sub: `bus ${money(SLEEP_FARE)} + rent ${money(RENT)}`, act: () => { menu = null; act('sleep'); } },
       { label: 'not yet', act: () => { menu = null; } },
     ],
   });
@@ -886,19 +714,43 @@ function openBus(): void {
 
 // ---------------------------------------------------------------- status ---
 function openStatus(): void {
-  const owned = state.inv.map((id) => item(id)?.name ?? id);
+  const gear = state.inv.map((id) => {
+    const it = item(id);
+    if (!it) return id;
+    if (it.kind === 'licence') return `${it.name} ${licenceLive(state, id) ? `(to day ${state.lic[id]})` : '(ran out)'}`;
+    if ((it.kind === 'laptop' || it.kind === 'tool') && id !== 'laptop1') return `${it.name} ${condition(state, id)}%`;
+    return it.name;
+  });
   const acc = state.answered ? Math.round((100 * state.right) / state.answered) : 0;
+  const online = net.mode === 'online';
   openMenu({
-    title: 'you',
-    line: `day ${state.day}, ${clock()}. ${money(state.money)}. ${state.answered} questions answered, ${acc}% right.`,
+    title: online ? net.me.name : 'you (solo)',
+    line: `day ${state.day}, ${clock()}. ${money(state.money)} cash, net worth ${money(netWorth(state))}. ${state.answered} questions answered, ${acc}% right.`,
     items: [
+      { label: 'richest on the server', right: online ? `you are #${net.board.you[0]}` : 'solo',
+        sub: online ? net.board.top.slice(0, 3).map(([n, w], i) => `${i + 1}. ${n} ${money(w)}`).join('   ') : 'play on the school server to be on the leaderboard',
+        off: !online, why: 'solo games are not on the leaderboard', act: () => openBoardTop(), colour: '#ffc84a' },
       { label: 'work', sub: workStatus(), off: true, colour: '#7ab8ff' },
-      { label: 'gear', sub: owned.join(', ') || 'nothing', off: true },
+      { label: 'gear', sub: gear.join(', ') || 'nothing', off: true },
       { label: 'certificates', sub: state.certs.map((c) => COURSES.find((x) => x.id === c)?.name ?? c).join(', ') || 'none yet', off: true },
       { label: 'record', sub: state.record.length ? `${state.record.length} offence(s). see stanley police station` : 'clean', off: true,
         colour: state.record.length ? '#ff9a6a' : '#7be08a' },
       { label: 'map data', sub: '(c) openstreetmap contributors (odbl). 3d map, ib1000 map and pedestrian network: lands department. road markings: transport department, hksar government', off: true, colour: '#6f7688' },
       { label: 'close', act: () => { menu = null; } },
+    ],
+  });
+}
+
+/** the leaderboard: net worth, cash plus gear at what it is worth now */
+function openBoardTop(): void {
+  const [rank, worth] = net.board.you;
+  openMenu({
+    title: 'richest in stanley',
+    line: `net worth is cash plus your gear and licences at what they are worth now. you are #${rank} with ${money(worth)}. it never resets.`,
+    back: () => openStatus(),
+    items: [
+      ...net.board.top.map(([n, w], i): MenuItem => ({ label: `${i + 1}. ${n}`, right: money(w), off: true, colour: n === net.me.name ? '#ffc84a' : undefined })),
+      { label: 'back', act: () => openStatus() },
     ],
   });
 }
@@ -917,43 +769,25 @@ function showWire(s: string | undefined, alert: boolean): void {
 function missionHeadline(): string {
   const d = missionDef();
   if (!d || !state.mission) return '';
-  return `${d.client}: ${d.symptom} - $${d.pay * MISSION_PAY} double pay - ${Math.ceil(state.mission.left)}s`;
+  return `${d.client}: ${d.symptom} - $${d.pay * MISSION_PAY} double pay - ${Math.max(0, Math.ceil((state.mission.until - now()) / 1000))}s`;
 }
 
+let missionAsk = false;
 function tickMissions(dt: number): void {
   if (state.mission) {
-    state.mission.left -= dt;
-    if (state.mission.left <= 0) missMission();
+    // closed and not taken: the rules charge the no-show fee on the next tick
+    if (now() > state.mission.until + 500 && state.missionTaken !== state.mission.id && !missionAsk) {
+      missionAsk = true;
+      act('tick').then(() => { missionAsk = false; });
+    }
     return;
   }
   nextMission -= dt;
-  if (nextMission > 0) return;
-  const open = MISSIONS.filter((d) => !state.done.includes(d.id));
-  if (!open.length) { nextMission = Infinity; return; }
-  const d = open[Math.floor(Math.random() * open.length)];
-  state.mission = { id: d.id, left: MISSION_WINDOW };
-  save();
-  showWire(undefined, true);
-  audio.play('alert');
-}
-
-function missMission(): void {
-  const d = missionDef();
-  state.mission = null;
-  noShow(d, 'missed the callout');
-}
-
-function noShow(d: JobDef | undefined, what: string): void {
+  if (nextMission > 0 || missionAsk) return;
+  if (MISSIONS.every((d) => state.done.includes(d.id))) { nextMission = Infinity; return; }
+  missionAsk = true;
   nextMission = 150 + Math.random() * 90;
-  if (d) {
-    state.rep[d.client] = (state.rep[d.client] ?? 0) - 10;
-    news.unshift(`${d.client} called ah ming instead`);
-  }
-  addMoney(-NO_SHOW_FEE);
-  flash(`${what} - no-show fee -$${NO_SHOW_FEE}`, '#ff6a6a', 4);
-  audio.play('bad');
-  save();
-  showWire(news[0], false);
+  act('mission.new').then(() => { missionAsk = false; });
 }
 
 // --------------------------------------------------------------- minibus ---
@@ -1013,10 +847,9 @@ function board(r: Route, from: string, to: Stop): void {
   const path = journey(r, from, to.id);
   menu = null;
   if (path.length < 2) { flash('the minibus is not running that way right now', '#ff9a6a'); return; }
-  addMoney(-r.fare);
-  audio.play('cash');
-  flash(`paid ${money(r.fare)} on the ${r.no}`, '#7be08a');
-  ride = { route: r, to, path, i: 0, x: path[0].x, y: path[0].y, angle: 0 };
+  act('fare', { route: r.no }).then((res) => {
+    if (res.ok) ride = { route: r, to, path, i: 0, x: path[0].x, y: path[0].y, angle: 0 };
+  });
 }
 
 function endRide(): void {
@@ -1026,9 +859,8 @@ function endRide(): void {
   const p = PLACES.find((x) => x.id === r.to.id);
   if (p) placePlayer(p.tx, p.ty);
   // in-game time: about 25 km/h through the village, at least two minutes
-  addMinutes(Math.max(2, Math.round((r.path.length * 3) / 400)));
+  act('ride.end', { minutes: Math.max(2, Math.round((r.path.length * 3) / 400)) });
   audio.play('door');
-  save();
 }
 
 function moveAlong(v: { path: Pt[]; i: number; x: number; y: number; angle: number }, dir: 1 | -1, dist: number): boolean {
@@ -1096,7 +928,7 @@ function markerFor(p: Place): Marker {
     const e = EMPLOYERS.find((x) => x.place === p.id);
     if (e && state.work?.id === e.id && state.work.tasks.length) return { colour: '#7ab8ff', label: `${state.work.tasks.length}` };
   }
-  if (p.kind === 'offer' && declined) return null;
+  if (p.kind === 'offer' && state.declined) return null;
   return null;
 }
 
@@ -1105,10 +937,17 @@ function activate(p: Place): void {
   path = [];
   const j = jobAt(p);
   if (j) {
-    if (j.mission) { state.mission = null; nextMission = 150 + Math.random() * 90; }
-    job = new Job(j.def, j.mission);
+    if (j.mission) {
+      act('mission.take', { id: j.def.id }).then((r) => {
+        if (!r.ok) return;
+        nextMission = 150 + Math.random() * 90;
+        job = new Job(j.def, true);
+        audio.play('ui');
+      });
+      return;
+    }
+    job = new Job(j.def, false);
     audio.play('ui');
-    save();
     return;
   }
   switch (p.kind) {
@@ -1139,12 +978,12 @@ function activate(p: Place): void {
       break;
     }
     case 'offer':
-      if (!declined) {
+      if (!state.declined) {
         openMenu({
           title: OFFER.who, line: OFFER.line,
           items: [
-            { label: OFFER.walk, act: () => { declined = true; menu = null; flash('he shrugs and lights a cigarette'); } },
-            { label: OFFER.take, colour: '#ff6a6a', act: () => arrest(OFFER.crime, 's161') },
+            { label: OFFER.walk, act: () => { menu = null; act('offer.decline'); flash('he shrugs and lights a cigarette'); } },
+            { label: OFFER.take, colour: '#ff6a6a', act: () => { menu = null; act('crime', { id: 'offer' }); } },
           ],
         });
         return;
@@ -1168,8 +1007,7 @@ const placeY = (p: Place): number => p.ty * TILE + TILE / 2 + 4;
 function placePlayer(tx: number, ty: number): void {
   player.x = tx * TILE + TILE / 2;
   player.y = ty * TILE + TILE / 2 + 4;
-  state.x = player.x;
-  state.y = player.y;
+  sendPos(player.x, player.y);
   path = [];
 }
 
@@ -1260,7 +1098,7 @@ function leaveJob(): void {
   const left = job;
   job = null;
   audio.play('door');
-  if (left.mission) noShow(left.def, 'walked out of the callout');
+  if (left.mission) act('mission.leave');
   else flash(`left ${left.def.client}. the job is still there`);
 }
 
@@ -1419,16 +1257,20 @@ function updateCars(dt: number): void {
   }
 }
 
+let releaseAsk = false;
 function update(dt: number): void {
   if (state.jail) {
-    if (!jailed()) release();
+    // the sentence is over: the rules let you out on the next tick (the server does it every few seconds)
+    if (!jailed() && !releaseAsk) { releaseAsk = true; act('tick').then(() => { releaseAsk = false; }); }
     return;
   }
+  // real time: solo, the rules run here every second; online, the school server ticks and pushes
   tickTimer += dt;
-  if (tickTimer > 1) { tickTimer = 0; tickWork(); }
+  if (tickTimer > 1) { tickTimer = 0; if (net.mode === 'solo') act('tick'); }
   if (toast) { toast.t -= dt; if (toast.t <= 0) toast = null; }
 
   updateWalkers(dt);
+  updateOthers(dt);
   updateCars(dt);
   updateMinibuses(dt);
   if (ride) return;
@@ -1471,7 +1313,7 @@ function update(dt: number): void {
   const carry = escalatorAt(player.x, player.y);
   if (carry) {
     move(0, carry * 24 * dt);
-    state.x = player.x; state.y = player.y;
+    sendPos(player.x, player.y);
   }
 
   if (vx || vy) {
@@ -1482,8 +1324,7 @@ function update(dt: number): void {
       // snagged on a corner while following a path: snap to the waypoint
       player.x = path[0].x; player.y = path[0].y; moved = true;
     }
-    state.x = player.x;
-    state.y = player.y;
+    sendPos(player.x, player.y);
     if (vx) player.facing = vx > 0 ? 1 : -1;
     if (moved) {
       player.walked += step;
@@ -1530,8 +1371,9 @@ function drawPlayer(alpha = 1): void {
   ctx.fillStyle = '#343a54';
   ctx.fillRect(-3, -5, 3, 5 - Math.max(0, swing));
   ctx.fillRect(1, -5, 3, 5 + Math.min(0, swing));
-  ctx.fillStyle = '#4fa3ff'; ctx.fillRect(-4, -13, 9, 9);
-  ctx.fillStyle = '#2f6fb5'; ctx.fillRect(2, -13, 3, 9);
+  // your coat: the colour everyone else on the server sees you in
+  ctx.fillStyle = net.me.coat; ctx.fillRect(-4, -13, 9, 9);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(2, -13, 3, 9);
   ctx.fillStyle = '#f2bd8d'; ctx.fillRect(-4, -18, 8, 5);
   ctx.fillStyle = '#141520'; ctx.fillRect(-4, -20, 8, 3);
   ctx.fillRect(1, -16, 1, 1);
@@ -1700,8 +1542,13 @@ function drawCity(): void {
     .filter((w) => w.x > cam.x - 60 && w.x < cam.x + VW + 60 && w.y > cam.y - 60 && w.y < cam.y + VH + 60)
     .map((w) => ({ y: w.y, draw: () => drawFigure(w.x - cam.x, w.y - cam.y, w.coat, w.frame, w.facing) }));
   for (const p of PLACES) {
-    if (!p.person || (p.kind === 'offer' && declined)) continue;
+    if (!p.person || (p.kind === 'offer' && state.declined)) continue;
     sprites.push({ y: placeY(p) - 10, draw: () => drawFigure(placeX(p) - cam.x + 10, placeY(p) - cam.y - 10, p.person!, 0, -1) });
+  }
+  // other players, in their own coat colour, with their name over them
+  for (const o of net.others.values()) {
+    if (o.x < cam.x - 60 || o.x > cam.x + VW + 60 || o.y < cam.y - 60 || o.y > cam.y + VH + 60) continue;
+    sprites.push({ y: o.y, draw: () => drawFigure(o.x - cam.x, o.y - cam.y, o.coat, o.frame, o.facing) });
   }
   if (!ride) sprites.push({ y: player.y, draw: () => drawPlayer() });
   // anyone standing behind a building (on the ground its picture covers) is hidden by it: the
@@ -1737,6 +1584,15 @@ function drawCity(): void {
   const taken: Rect[] = [];
   const free = (r: Rect): boolean => !taken.some((q) => r.x < q.x + q.w && q.x < r.x + r.w && r.y < q.y + q.h && q.y < r.y + r.h);
   text('6 central', S(bx + cam.x + 4), T(by + cam.y) - 9, '#e8e4d8');
+  for (const o of net.others.values()) {
+    const x = S(o.x), y = T(o.y) - Math.round(28 * figScale() * zoom) - 4;
+    if (x < -40 || x > W + 40 || y < -10 || y > H + 10) continue;
+    const w = tw(o.name) + 6;
+    ctx.fillStyle = 'rgba(8,10,18,0.8)'; ctx.fillRect(x - w / 2, y - 1, w, 10);
+    ctx.fillStyle = o.coat; ctx.fillRect(x - w / 2, y + 9, w, 1);
+    text(o.name, x - w / 2 + 3, y + 1, '#ffffff');
+    taken.push({ x: x - w / 2, y: y - 1, w, h: 11 });
+  }
   // places first: a chip with the icon and the name, in the place's colour
   for (const p of PLACES) {
     const x = S(placeX(p)), y = T(placeY(p)) - Math.round(20 * zoom) - 12;
@@ -1794,7 +1650,7 @@ function drawCity(): void {
     text(near.name, 27, 342, '#ffffff');
     const after = 27 + tw(near.name) + 6;
     const j = jobAt(near);
-    if (j?.mission && state.mission) text(`(callout $${j.def.pay * MISSION_PAY} - ${Math.ceil(state.mission.left)}s)`, after, 342, '#ff4a5f');
+    if (j?.mission && state.mission) text(`(callout $${j.def.pay * MISSION_PAY} - ${Math.max(0, Math.ceil((state.mission.until - now()) / 1000))}s)`, after, 342, '#ff4a5f');
     else if (j) text(`(job $${j.def.pay})`, after, 342, '#ffc84a');
     else text(`(${({ minibus: 'ride', board: 'gigs', shop: 'buy gear', pirate: 'a man with discs', employer: 'work', library: 'study', course: 'courses', police: 'your record', prison: 'stay out', flavour: 'look', offer: 'a man in a cap', bus: 'go home', job: 'shop', lift: 'pick a floor' } as Record<string, string>)[near.kind]})`, after, 342, '#9aa0b8');
   } else {
@@ -1855,7 +1711,7 @@ function drawMenu(): void {
 
 function quizLayout(): { qLines: string[]; optTop: number } {
   const p = quiz!.current;
-  const qLines = wrap(p.q.q, 96);
+  const qLines = wrap(p.q, 96);
   return { qLines, optTop: Math.max(112, 58 + qLines.length * 11 + 10) };
 }
 
@@ -1880,7 +1736,7 @@ function drawQuiz(): void {
 
   const p = qz.current;
   textRight(`${qz.i + 1} / ${qz.qs.length}`, 628, 10, '#9aa0b8');
-  textRight(`f${p.q.form} - ${TOPIC_NAMES[p.q.topic]}`, 628, 25, '#6f7688');
+  textRight(`f${p.form} - ${TOPIC_NAMES[p.topic]}`, 628, 25, '#6f7688');
   const { qLines, optTop } = quizLayout();
   qLines.forEach((l, i) => prose(l, 24, 50 + i * 11, l.startsWith(' ') ? '#7be08a' : '#ffffff'));
 
@@ -1889,7 +1745,7 @@ function drawQuiz(): void {
     let fill = 'rgba(28,34,48,0.98)';
     let edge = '#3a4054';
     if (qz.picked !== null) {
-      if (i === p.answer) { fill = 'rgba(30,70,44,0.98)'; edge = '#7be08a'; }
+      if (i === qz.answer) { fill = 'rgba(30,70,44,0.98)'; edge = '#7be08a'; }
       else if (i === qz.picked) { fill = 'rgba(80,28,32,0.98)'; edge = '#ff6a6a'; }
     }
     ctx.fillStyle = fill; ctx.fillRect(r.x, r.y, r.w, r.h);
@@ -1899,10 +1755,10 @@ function drawQuiz(): void {
   });
 
   if (qz.picked !== null) {
-    const ok = qz.picked === p.answer;
+    const ok = qz.picked === qz.answer;
     const y = optTop + 4 * 30 + 6;
-    text(ok ? 'right' : `wrong - the answer is ${LETTERS[p.answer]}`, 24, y, ok ? '#7be08a' : '#ff6a6a');
-    wrap(p.q.why, 98).forEach((l, i) => prose(l, 24, y + 14 + i * 11, '#c8ccdc'));
+    text(ok ? 'right' : `wrong - the answer is ${LETTERS[qz.answer]}`, 24, y, ok ? '#7be08a' : '#ff6a6a');
+    wrap(qz.why, 98).forEach((l, i) => prose(l, 24, y + 14 + i * 11, '#c8ccdc'));
     const r = quizNextRect;
     ctx.fillStyle = 'rgba(28,34,48,0.98)'; ctx.fillRect(r.x, r.y, r.w, r.h);
     ctx.strokeStyle = '#46e0e6'; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
@@ -2130,11 +1986,13 @@ function drawPrison(): void {
 let last = performance.now();
 /** test hook only: run the game this many steps per frame */
 let timeScale = 1;
+/** the street draws while we connect; nothing moves until the save is in */
+let ready = false;
 function frame(t: number): void {
   const dt = Math.min(0.05, (t - last) / 1000);
   last = t;
   frames += 1;
-  for (let i = 0; i < timeScale; i += 1) update(dt);
+  if (ready) for (let i = 0; i < timeScale; i += 1) update(dt);
   // everything is drawn in 640x360 units; the canvas has PXR real pixels per unit
   ctx.setTransform(PXR, 0, 0, PXR, 0, 0);
   ctx.imageSmoothingEnabled = false;
@@ -2145,27 +2003,69 @@ function frame(t: number): void {
   requestAnimationFrame(frame);
 }
 
-function start(): void {
-  load();
-  if (state.mission && !missionDef()) state.mission = null;
+/** everything the rules say happened: sounds, toasts, the quiz, the police, the wire */
+function handle(events: Ev[]): void {
+  for (const e of events) {
+    switch (e.t) {
+      case 'sound': audio.play(e.s); break;
+      case 'toast': flash(e.text, e.colour, e.secs); break;
+      case 'say': say(e.who, e.text); break;
+      case 'news': news.unshift(e.text); break;
+      case 'quiz':
+        quiz = new Quiz(e.view);
+        menu = null; dialogue = null; path = [];
+        break;
+      case 'summary':
+        if (quiz) quiz.final = { lines: e.lines, colour: e.colour };
+        break;
+      case 'warning': showWarning(e); break;
+      case 'arrest':
+        job = null; quiz = null; menu = null; dialogue = null; path = []; pending = null; ride = null;
+        keys.clear();
+        break;
+      case 'released':
+        placePlayer(RELEASE.tx, RELEASE.ty);
+        nextMission = 90;
+        say('stanley prison', 'released. the gate shuts behind you. tung tau wan road is quiet.');
+        break;
+      case 'sleep':
+        placePlayer(START.tx, START.ty);
+        say(`day ${e.day}`, 'the 6 drops you at stanley again. the board in the market has new gigs.');
+        break;
+      case 'mission': showWire(undefined, true); break;
+      case 'missionGone':
+        nextMission = 150 + Math.random() * 90;
+        if (job?.mission) job = null;
+        showWire(news[0], false);
+        break;
+      default: break;
+    }
+  }
+}
+
+async function start(): Promise<void> {
   setWorldText((g, s, x, y, colour) => { glyphs(g, s.toUpperCase(), x, y, colour); });
+  spawnWalkers();
+  setTimeout(startShuttles, 50);
+  requestAnimationFrame(frame);
+  await startNet({
+    events: handle,
+    wire: (t) => { news.unshift(t); showWire(t, false); },
+  });
+  if (state.mission && !missionDef()) state.mission = null;
   const tx = Math.floor(state.x / TILE), ty = Math.floor(state.y / TILE);
   // saves from the 8 m map have positions on a different scale
   if (state.x < 0 || state.mapv !== 2 || solidTile(tx, ty)) placePlayer(START.tx, START.ty);
-  else { player.x = state.x; player.y = state.y; }
-  state.mapv = 2;
-  spawnWalkers();
-  setTimeout(startShuttles, 50);
-  tickWork();
+  else { player.x = state.x; player.y = state.y; sendPos(player.x, player.y); }
+  ready = true;
+  if (net.mode === 'solo') await act('tick');
   if (state.mission) showWire(undefined, true);
   if (!state.jail && !dialogue) {
     if (state.work?.tasks.length) say('welcome back', workStatus());
     else if (state.answered === 0) {
-      say('stanley', 'you get off the 6 at stanley with a used laptop and $1,280. the notice board in the market has gigs; the library is free; cafes are hiring. tap or use wasd to walk, e to use.');
+      say('stanley', `${net.mode === 'online' ? `welcome, ${net.me.name}. ` : ''}you get off the 6 at stanley with a used laptop and $1,280. the notice board in the market has gigs; the library is free; cafes are hiring. rent is $150 a day, so keep earning. tap or use wasd to walk, e to use.`);
     }
   }
-  save();
-  requestAnimationFrame(frame);
 }
 
 start();
@@ -2174,22 +2074,24 @@ start();
 const hooks = window as unknown as Record<string, unknown>;
 hooks.__audio = audio;
 hooks.__job = () => (job ? { id: job.def.id, step: job.step, stage: job.stage, shown: job.shown, opts: job.options, mission: job.mission } : null);
-hooks.__quiz = () => (quiz ? { title: quiz.title, i: quiz.i, n: quiz.qs.length, answer: quiz.summary ? -1 : quiz.current.answer, picked: quiz.picked, right: quiz.right, summary: quiz.summary } : null);
+hooks.__quiz = () => (quiz ? { title: quiz.title, i: quiz.i, n: quiz.qs.length, answer: quiz.answer, picked: quiz.picked, right: quiz.right, summary: quiz.summary, busy: quiz.busy } : null);
 hooks.__menu = () => (menu ? { title: menu.title, items: menu.items.map((i) => ({ label: i.label, off: !!i.off, sub: i.sub })) } : null);
 hooks.__dialogue = () => dialogue;
 Object.defineProperty(window, '__frames', { get: () => frames });
 /** open a callout now instead of waiting for the street timer */
 hooks.__mission = () => { nextMission = 0; };
 /** jump the wall clock forward to test real-time work */
-hooks.__skip = (hours: number) => { skew += hours * HOUR; tickWork(); };
+hooks.__skip = (hours: number) => { if (net.mode === 'solo') { net.skew += hours * 3600000; act('tick'); } };
 /** stand at a place and use it */
 hooks.__goto = (id: string) => { const p = PLACES.find((x) => x.id === id); if (p) { placePlayer(p.tx, p.ty); activate(p); } };
-hooks.__reset = () => { reset(); location.reload(); };
+hooks.__reset = () => { if (net.mode === 'solo') { resetSolo(); location.reload(); } };
 hooks.__tp = (x: number, y: number) => placePlayer(x, y);
 hooks.__speed = (n: number) => { timeScale = Math.max(1, Math.min(40, Math.round(n))); };
 hooks.__route = (tx: number, ty: number) => { pending = null; path = findPath(player.x, player.y, tx * TILE + 8, ty * TILE + 12); return path.length; };
 hooks.__pos = () => ({ x: player.x, y: player.y, moving: path.length > 0 });
 hooks.__items = ITEMS.map((i) => i.id);
+/** run an action as if from the game (tests) */
+hooks.__act = act;
 hooks.__day = DAY;
 /** the whole map as a PNG data URL, for checking the layout */
 hooks.__world = (scale = 2) => renderOverview(scale).toDataURL();

@@ -26,6 +26,63 @@ rsync -rc --delete dist/ developer@172.100.0.211:/var/www/html/cit-game/
 2. `base: './'` matters — without it the built asset paths resolve from the domain root and
    `/cit-game/` serves a blank page.
 
+## The school server (v0.6): money, the leaderboard, other players
+
+From v0.6 the game talks to a small Node server for everything that changes money, the clock,
+answers, gear or the record (`server/main.ts`, rules in `src/rules.ts`). Without it the game
+offers solo play (saved on the device, not on the leaderboard). It needs **Node 22.6 or later**
+and no packages: `node:http`, `node:sqlite` and its own WebSocket.
+
+```bash
+cd ~/cit-game
+npm run build                               # dist/, as before
+rsync -rc --delete dist/ developer@172.100.0.211:/var/www/html/cit-game/
+rsync -rc server src package.json developer@172.100.0.211:~/cit-game/   # the server and the rules it runs
+```
+
+On the AI server, run it as a user service (`~/.config/systemd/user/cit-game.service`):
+
+```ini
+[Unit]
+Description=cit-game school server
+After=network.target
+
+[Service]
+WorkingDirectory=%h/cit-game
+Environment=PORT=8787 HOST=127.0.0.1 STATIC= DB=%h/cit-game-data/cit-game.sqlite
+Environment=ADMIN_KEY=change-me-to-something-long
+ExecStart=/usr/bin/node --experimental-strip-types --experimental-sqlite --no-warnings server/main.ts
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload && systemctl --user enable --now cit-game
+loginctl enable-linger developer            # keep it running when nobody is logged in (needs sudo once)
+curl -s localhost:8787/cit-game/api/health  # {"ok":true,"online":0}
+```
+
+`STATIC=` (empty) because Apache keeps serving the built game; the server only answers `api/`
+and `admin`. Apache proxies those, WebSocket included. In the `ai.ssc.edu.hk` vhost (needs
+`proxy`, `proxy_http` and `proxy_wstunnel`):
+
+```apache
+ProxyPass        /cit-game/api/ws  ws://127.0.0.1:8787/cit-game/api/ws
+ProxyPass        /cit-game/api/    http://127.0.0.1:8787/cit-game/api/
+ProxyPassReverse /cit-game/api/    http://127.0.0.1:8787/cit-game/api/
+ProxyPass        /cit-game/admin   http://127.0.0.1:8787/cit-game/admin
+ProxyPreserveHost On
+```
+
+- Teacher page: <https://ai.ssc.edu.hk/cit-game/admin> (asks for `ADMIN_KEY`): every player's net
+  worth, earnings, accuracy, mastery by topic, record and last visit; rename, pause or reset.
+- The database is one SQLite file (`DB`). Back it up by copying it while the service is stopped,
+  or with `sqlite3 cit-game.sqlite ".backup copy.sqlite"` while it runs.
+- Try it on one machine first: `npm run build && ADMIN_KEY=test npm run server`, then open
+  <http://127.0.0.1:8787/cit-game/> in two browsers. Add `?solo` to the URL to skip the server.
+
 ## Retired: the Cloudflare Tunnel preview
 
 `cloudflared-cit` and `cit-game-web` were disabled once the school server took over.
