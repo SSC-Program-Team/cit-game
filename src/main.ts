@@ -9,7 +9,8 @@ import { state, clock, resetSolo } from './state';
 import { net, act, startNet, sendPos, serverNow, updateOthers, soloOwners } from './net';
 import { HOMES, home, HOMES_AT, type Home } from './homes';
 import { CARS, car as carModel, CAR_BUYBACK } from './cars';
-import { CROSSINGS, crossingLight, walkLight, rulesOfTheRoad, type Vehicle } from './traffic';
+import { CROSSINGS, crossingLight, vehicleAspect, walkAspect, rulesOfTheRoad, type Vehicle } from './traffic';
+import { ROADS } from './stanley-roads';
 import {
   has, coverFor, payBoost, condition, licenceLive, repairCost, netWorth, ago, employer, MISSION_PAY, NO_SHOW_FEE,
   SLEEP_FARE, RENT, RENEW_WINDOW, HOME_FEES, TENANT_PER_REAL_DAY, HOME_SELL, tenantsOwe, taxiFare, roadMetres, type Ev, type QuizView,
@@ -21,7 +22,7 @@ import {
   TILE, MAP_W, MAP_H, PLACES, START, RELEASE, drawWorld, setWorldText, renderOverview, solidAt, solidTile,
   walkableTile, findPath, isSea, areaNear, ROAD_LINES, walkDistance, roadRoute, BUILDING_LABELS, ESCALATORS,
   escalatorAt, setBuildingPhotos, MARKET_POINTS, PLAZA_POINTS, buildingsNear, behindBuilding, drawBuildingOver, type Place,
-  drivableTile, driveRoute, nearestOnNetwork, nearestDrivable,
+  drivableTile, driveRoute, nearestOnNetwork, nearestDrivable, fenceAudit,
 } from './world';
 import { ROUTES, routesAt, type Route, type Stop } from './minibus';
 import { TOPIC_NAMES, type Tier, type Topic } from './questions';
@@ -2254,7 +2255,8 @@ function drawCity(): void {
   // and green man for people
   for (const c of CROSSINGS) {
     if (c.x * TILE < cam.x - 60 || c.x * TILE > cam.x + VW + 60 || c.y * TILE < cam.y - 60 || c.y * TILE > cam.y + VH + 60) continue;
-    const light = crossingLight(c, clockSecs), walk = walkLight(c, clockSecs);
+    const light = vehicleAspect(c, clockSecs), wa = walkAspect(c, clockSecs);
+    const walk = wa === 'walk' || (wa === 'flash' && Math.floor(clockSecs * 2.5) % 2 === 0);
     for (const [ref, lx, ly] of c.lights) {
       const x = Math.round(lx * TILE - cam.x), y = Math.round(ly * TILE - cam.y);
       if (ref === 'PBUTT') { ctx.fillStyle = '#2d3136'; ctx.fillRect(x - 2, y - 2, 4, 4); ctx.fillStyle = '#e8c23a'; ctx.fillRect(x - 1, y - 1, 2, 2); continue; }
@@ -2262,17 +2264,29 @@ function drawCity(): void {
       ctx.fillStyle = '#5e646a'; ctx.fillRect(x - 1, y - 16, 2, 16);
       if (ref.startsWith('S')) {
         ctx.fillStyle = '#1e2226'; ctx.fillRect(x - 4, y - 30, 8, 18);
-        ctx.fillStyle = light === 'red' ? '#ff3a2a' : '#4a1a16'; ctx.fillRect(x - 2, y - 28, 4, 4);
-        ctx.fillStyle = light === 'amber' ? '#ffb020' : '#4a3a16'; ctx.fillRect(x - 2, y - 23, 4, 4);
+        ctx.fillStyle = '#e8c23a'; ctx.fillRect(x - 5, y - 31, 10, 1); ctx.fillRect(x - 5, y - 13, 10, 1); // the yellow edge of the backing board
+        ctx.fillStyle = light === 'red' || light === 'redamber' ? '#ff3a2a' : '#4a1a16'; ctx.fillRect(x - 2, y - 28, 4, 4);
+        ctx.fillStyle = light === 'amber' || light === 'redamber' ? '#ffb020' : '#4a3a16'; ctx.fillRect(x - 2, y - 23, 4, 4);
         ctx.fillStyle = light === 'green' ? '#3aff6a' : '#163a20'; ctx.fillRect(x - 2, y - 18, 4, 4);
       } else {
         ctx.fillStyle = '#1e2226'; ctx.fillRect(x - 4, y - 26, 8, 12);
-        ctx.fillStyle = walk ? '#3aff6a' : '#ff3a2a';
+        ctx.fillStyle = wa === 'stop' ? '#ff3a2a' : walk ? '#3aff6a' : '#163a20';
         // a little figure: walking when green, standing when red
         ctx.fillRect(x - 1, y - 24, 2, 2); ctx.fillRect(x - 1, y - 22, 2, 4);
-        if (walk) { ctx.fillRect(x - 2, y - 18, 1, 2); ctx.fillRect(x + 1, y - 18, 1, 2); } else ctx.fillRect(x - 1, y - 18, 2, 2);
+        if (wa !== 'stop') { ctx.fillRect(x - 2, y - 18, 1, 2); ctx.fillRect(x + 1, y - 18, 1, 2); } else ctx.fillRect(x - 1, y - 18, 2, 2);
       }
     }
+  }
+  // a zebra's beacons: a yellow globe on a black-and-white post, flashing about once a second
+  const beaconOn = Math.floor(clockSecs * 1.6) % 2 === 0;
+  for (const [bx, by] of ROADS.beacons) {
+    const x = Math.round(bx * TILE - cam.x), y = Math.round(by * TILE - cam.y);
+    if (x < -30 || y < -40 || x > VW + 30 || y > VH + 30) continue;
+    ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(x - 1, y + 1, 6, 3);
+    for (let i = 0; i < 6; i += 1) { ctx.fillStyle = i % 2 ? '#f2f2ee' : '#1e2226'; ctx.fillRect(x - 1, y - 3 - i * 3, 3, 3); }
+    if (beaconOn) { ctx.fillStyle = 'rgba(255,200,40,0.28)'; ctx.fillRect(x - 6, y - 32, 13, 13); }
+    ctx.fillStyle = beaconOn ? '#ffc21e' : '#b8861a'; ctx.fillRect(x - 3, y - 30, 7, 9); ctx.fillRect(x - 4, y - 28, 9, 5);
+    ctx.fillStyle = beaconOn ? '#fff2b0' : '#d8a840'; ctx.fillRect(x - 2, y - 29, 2, 2);
   }
 
   for (const sh of shuttles) drawMinibus(sh.x, sh.y, sh.angle, sh.route.no);
@@ -2900,3 +2914,4 @@ hooks.__walk = (a: string, b: string) => {
   const pa = PLACES.find((p) => p.id === a), pb = PLACES.find((p) => p.id === b);
   return pa && pb ? walkDistance(pa, pb) : -1;
 };
+hooks.__fences = () => { const a = fenceAudit(); return { blocked: a.blocked.length, narrowOnWays: a.narrow.filter((n) => n[4]).length, strips: a.strips.length }; };

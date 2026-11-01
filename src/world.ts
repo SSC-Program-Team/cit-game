@@ -58,6 +58,10 @@ const mapped = new Uint8Array(N);
  *  drawn as a thin line over the ground that was there (under), not as a metre-thick wall.
  *  1 wall, 2 fence */
 const thin = new Uint8Array(N);
+/** the iB1000 walls and fences as built: snapped to the edge of the footway they run along (step 5a) */
+let WALLS: number[][] = IB.wall, FENCES: number[][] = IB.fence;
+/** outdoor footways of the pedestrian network, 2 m wide (step 5) */
+const FOOTWAY = new Uint8Array(N);
 const under = new Uint8Array(N);
 /** tiles of a seawall's granite coping (iB1000), and for each seawall which side the sea is on (+1/-1
  *  to the left of its direction of drawing) */
@@ -624,9 +628,13 @@ export const BOARDWALK_NAMES = new Set(['Stanley Promenade', 'Hsbc Seafront Prom
   SHAPES.forEach((p, i) => !HIDDEN.has(i) && fillPoly(p, (k) => { if (grid[k] !== Gr.Sea && !mapped[k]) { grid[k] = Gr.Building; bid[k] = i; } }));
   // 5. walls and fences (retaining walls are only a change of level). Where one crosses a mapped
   //    path there is a gate in real life: the path stays open
+  // The Lands Department's outdoor footways, 2 m wide, are never walled or fenced across either (the
+  // survey puts them beside the real pavement; OSM's path can be a metre or two off it)
+  const footway = FOOTWAY;
+  for (const w of PED) if (!w.indoor && !w.crossesRoad) stampLine(w.p, 2, (k) => { footway[k] = 1; });
   for (const [p, kind] of OSM.walls) {
     if (kind === 'retaining_wall') continue;
-    traceLine(p, (k) => { if (grid[k] !== Gr.Sea && grid[k] !== Gr.Building && !mapped[k]) grid[k] = Gr.Wall; });
+    traceLine(p, (k) => { if (grid[k] !== Gr.Sea && grid[k] !== Gr.Building && !mapped[k] && !footway[k]) grid[k] = Gr.Wall; });
   }
   // 5a. the iB1000 map's walls and fences (about 900 and 500 here; OSM has a tenth of that). Only
   //     open ground is fenced: a road, path, steps or anything the pedestrian network walks on stays
@@ -637,12 +645,90 @@ export const BOARDWALK_NAMES = new Set(['Stanley Promenade', 'Hsbc Seafront Prom
     const open = (g: number): boolean => g === Gr.Hill || g === Gr.Grass || g === Gr.Scrub || g === Gr.Park || g === Gr.School || g === Gr.Built || g === Gr.Yard || g === Gr.Cemetery || g === Gr.Pitch || g === Gr.Beach || g === Gr.Rock;
     const put = (lines: number[][], kind: number): void => {
       for (const p of lines) traceLine(p, (k) => {
-        if (gate[k] || mapped[k] || !open(grid[k])) return;
+        if (gate[k] || mapped[k] || footway[k] || !open(grid[k])) return;
         under[k] = grid[k]; thin[k] = kind; grid[k] = Gr.Wall;
       });
     };
-    put(IB.wall, 1);
-    put(IB.fence, 2);
+    // a fence or wall that runs a metre or two off a footway stands on the footway's edge instead:
+    // in Stanley they are the railings and garden walls along the pavement, and the survey and the
+    // paths disagree by about that much, which left strips of grass and gaps too narrow to walk
+    const SNAP = 3;
+    const walkway = (g: number): boolean => g === Gr.Path || g === Gr.Steps || g === Gr.Plaza || g === Gr.Pier || g === Gr.Escalator;
+    const near = new Int32Array(N).fill(-1), dist = new Uint8Array(N).fill(255);
+    let q: number[] = [];
+    for (let k = 0; k < N; k += 1) if (walkway(grid[k]) || footway[k]) { near[k] = k; dist[k] = 0; q.push(k); }
+    for (let d = 1; d <= SNAP; d += 1) {
+      const next: number[] = [];
+      for (const k of q) {
+        const x = k % MAP_W, y = (k - x) / MAP_W;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= MAP_W || ny >= MAP_H) continue;
+          const n = ny * MAP_W + nx;
+          if (dist[n] !== 255 || grid[n] === Gr.Building || grid[n] === Gr.Sea) continue;
+          dist[n] = d; near[n] = near[k]; next.push(n);
+        }
+      }
+      q = next;
+    }
+    const snap = (lines: number[][]): number[][] => lines.map((p) => {
+      // half-metre steps along the line, each pulled in to a metre from the nearest footway tile
+      const out: number[] = [];
+      for (let i = 0; i + 3 < p.length; i += 2) {
+        const ax = p[i], ay = p[i + 1], bx = p[i + 2], by = p[i + 3];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) * 2));
+        for (let s = i === 0 ? 0 : 1; s <= n; s += 1) {
+          let x = ax + ((bx - ax) * s) / n, y = ay + ((by - ay) * s) / n;
+          const tx = Math.floor(x), ty = Math.floor(y);
+          if (tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H) {
+            const k = ty * MAP_W + tx, d = dist[k];
+            if (d >= 2 && d <= SNAP && !gate[k]) {
+              const w = near[k], wx = (w % MAP_W) + 0.5, wy = Math.floor(w / MAP_W) + 0.5;
+              const l = Math.hypot(x - wx, y - wy) || 1;
+              x = wx + ((x - wx) / l) * 1.05; y = wy + ((y - wy) / l) * 1.05;
+            }
+          }
+          out.push(Math.round(x * 10) / 10, Math.round(y * 10) / 10);
+        }
+      }
+      return out;
+    });
+    WALLS = snap(IB.wall);
+    FENCES = snap(IB.fence);
+    put(WALLS, 1);
+    put(FENCES, 2);
+    // a footway is never squeezed to a single tile between a fence or wall and something else solid:
+    // where it would be, the fence gives way (a gap of a metre or so, as at a real path's end)
+    const clear = (k: number): void => { grid[k] = under[k]; thin[k] = 0; };
+    const isThin = (k: number): boolean => grid[k] === Gr.Wall && thin[k] > 0;
+    const solidK = (k: number): boolean => { const g = grid[k]; return g === Gr.Wall || g === Gr.Building || g === Gr.Sea || g === Gr.Wood; };
+    for (let pass = 0; pass < 2; pass += 1) {
+      for (let y = 1; y < MAP_H - 1; y += 1) for (let x = 1; x < MAP_W - 1; x += 1) {
+        const k = y * MAP_W + x;
+        if (!(walkway(grid[k]) || FOOTWAY[k]) || solidK(k)) continue;
+        for (const d of [1, MAP_W, MAP_W + 1, MAP_W - 1]) {
+          const a = k - d, b = k + d;
+          if (!solidK(a) || !solidK(b)) continue;
+          if (isThin(a)) clear(a);
+          if (isThin(b)) clear(b);
+        }
+      }
+    }
+    // and scraps of fence or wall a tile or two long, left over where footways cut through, go
+    const seen = new Uint8Array(N);
+    for (let k0 = 0; k0 < N; k0 += 1) {
+      if (seen[k0] || !isThin(k0)) continue;
+      const comp = [k0]; seen[k0] = 1;
+      for (let i = 0; i < comp.length && comp.length <= 3; i += 1) {
+        const k = comp[i], x = k % MAP_W;
+        for (const d of [1, -1, MAP_W, -MAP_W, MAP_W + 1, MAP_W - 1, -MAP_W + 1, -MAP_W - 1]) {
+          const n = k + d;
+          if (n < 0 || n >= N || Math.abs((n % MAP_W) - x) > 1 || seen[n] || !isThin(n)) continue;
+          seen[n] = 1; comp.push(n);
+        }
+      }
+      if (comp.length <= 2) for (const k of comp) clear(k);
+    }
   }
   // 5d. seawalls (iB1000): a granite wall along the line. The metre and a half on the land side is
   //     its coping (paving) and rock or sand behind that turns to grass; at its foot on the sea side
@@ -1720,12 +1806,41 @@ const MARK_ON_ROAD = ROADS.marks.map((m) => {
   for (let i = 0; i < p.length; i += 2) { n += 1; if (car(p[i], p[i + 1])) on += 1; }
   return on * 2 >= n;
 });
-const TACTILE_BOX = ROADS.tactile.map((p) => boxOf(p));
+/** the tactile strips come as loose edges: joined end to end into the outlines of the strips */
+const TACTILE: number[][] = (() => {
+  const segs = ROADS.tactile.map((p) => p.slice());
+  const out: number[][] = [];
+  const same = (ax: number, ay: number, bx: number, by: number): boolean => Math.hypot(ax - bx, ay - by) < 0.01;
+  while (segs.length) {
+    let line = segs.pop()!;
+    for (let grew = true; grew;) {
+      grew = false;
+      // a strip's outline, once closed, is done (strips side by side share corners)
+      if (line.length >= 8 && same(line[0], line[1], line[line.length - 2], line[line.length - 1])) break;
+      for (let i = 0; i < segs.length; i += 1) {
+        const q = segs[i], n = line.length, m = q.length;
+        const rev = (r: number[]): number[] => { const o: number[] = []; for (let j = r.length - 2; j >= 0; j -= 2) o.push(r[j], r[j + 1]); return o; };
+        if (same(line[n - 2], line[n - 1], q[0], q[1])) line = line.concat(q.slice(2));
+        else if (same(line[n - 2], line[n - 1], q[m - 2], q[m - 1])) line = line.concat(rev(q).slice(2));
+        else if (same(line[0], line[1], q[m - 2], q[m - 1])) line = q.concat(line.slice(2));
+        else if (same(line[0], line[1], q[0], q[1])) line = rev(q).concat(line.slice(2));
+        else continue;
+        segs.splice(i, 1); grew = true; break;
+      }
+    }
+    out.push(line);
+  }
+  return out;
+})();
+const TACTILE_BOX = TACTILE.map((p) => boxOf(p));
 const RAIL_BOX = ROADS.rails.map(([, p]) => boxOf(p));
-const WALL_BOX = IB.wall.map((p) => boxOf(p));
+const WALL_BOX = WALLS.map((p) => boxOf(p));
 const SEAWALL_BOX = ROADS.seawalls.map((p) => boxOf(p, 3));
-const FENCE_BOX = IB.fence.map((p) => boxOf(p));
+const FENCE_BOX = FENCES.map((p) => boxOf(p));
 const PAINT: Record<string, string> = { w: '#ecebe4', y: '#f2c230', r: '#a8443a' };
+/** the filled shapes ('p' marks), by the drawing feature they came from */
+const MARK_GROUPS = new Map<number, number[]>();
+ROADS.marks.forEach((m, i) => { if (m[1] === 'p') { const k = m[3]; if (!MARK_GROUPS.has(k)) MARK_GROUPS.set(k, []); MARK_GROUPS.get(k)!.push(i); } });
 /** a line of paint one art pixel (or more) wide, stepped along at an eighth of a metre, so it stays
  *  crisp like the rest of the pixel art. dash/gap in metres (0: solid); offset shifts it sideways */
 function paintLine(g: CanvasRenderingContext2D, p: number[], px: number, dash = 0, gap = 0, offset = 0, roadOnly = false): void {
@@ -1750,10 +1865,19 @@ function drawRoadMarks(g: CanvasRenderingContext2D, tx0: number, ty0: number): v
   const x0 = tx0 - 2, y0 = ty0 - 2, x1 = tx0 + CHUNK + 2, y1 = ty0 + CHUNK + 2;
   const hit = (b: Box): boolean => b.x1 >= x0 && b.x0 <= x1 && b.y1 >= y0 && b.y0 <= y1;
   // tactile warning strips: yellow studded paving where a crossing meets the kerb
-  g.fillStyle = '#d9b02a';
-  ROADS.tactile.forEach((p, i) => { if (hit(TACTILE_BOX[i])) paintLine(g, p, 4); });
-  g.fillStyle = '#b8901c';
-  ROADS.tactile.forEach((p, i) => { if (hit(TACTILE_BOX[i])) paintLine(g, p, 1, 0.25, 0.25); });
+  // closed outlines are filled, studded with blisters; anything left open is a line of them
+  TACTILE.forEach((p, i) => {
+    if (!hit(TACTILE_BOX[i])) return;
+    const closedRing = p.length >= 8 && Math.hypot(p[0] - p[p.length - 2], p[1] - p[p.length - 1]) < 0.01;
+    if (!closedRing) { g.fillStyle = '#d9b02a'; paintLine(g, p, 3); return; }
+    g.save();
+    g.beginPath(); g.moveTo(p[0], p[1]); for (let j = 2; j < p.length; j += 2) g.lineTo(p[j], p[j + 1]); g.closePath();
+    g.fillStyle = '#d9b02a'; g.fill(); g.clip();
+    const b = TACTILE_BOX[i]; g.fillStyle = '#b8901c';
+    for (let y = Math.floor(b.y0 * 4) / 4; y < b.y1; y += 0.25) for (let x = Math.floor(b.x0 * 4) / 4; x < b.x1; x += 0.25) g.fillRect(x, y, 1 / ART, 1 / ART);
+    g.restore();
+  });
+
   // paint: filled shapes first (arrow heads, red surfacing), then lines
   ROADS.marks.forEach((m, i) => {
     if (!MARK_ON_ROAD[i] || !hit(MARK_BOX[i]) || m[1] !== 'f') return;
@@ -1765,9 +1889,36 @@ function drawRoadMarks(g: CanvasRenderingContext2D, tx0: number, ty0: number): v
     g.closePath();
     g.fill();
   });
+  // painted shapes from outlines (zebra stripes, the yellow bars of a signal crossing, arrows,
+  // words): each word or symbol filled whole, so the holes in its letters stay open
+  for (const [, idx] of MARK_GROUPS) {
+    if (!idx.some((i) => MARK_ON_ROAD[i] && hit(MARK_BOX[i]))) continue;
+    g.fillStyle = PAINT[ROADS.marks[idx[0]][0]] ?? PAINT.w;
+    g.beginPath();
+    for (const i of idx) {
+      const p = ROADS.marks[i][5];
+      g.moveTo(p[0], p[1]);
+      for (let j = 2; j < p.length; j += 2) g.lineTo(p[j], p[j + 1]);
+      g.closePath();
+    }
+    g.fill('evenodd');
+  }
   ROADS.marks.forEach((m, i) => {
-    if (!MARK_ON_ROAD[i] || !hit(MARK_BOX[i]) || m[1] === 'f') return;
+    if (!MARK_ON_ROAD[i] || !hit(MARK_BOX[i]) || m[1] === 'f' || m[1] === 'p') return;
     const [col, kind, width, dash, gap, p] = m;
+    // road studs along the edges of a crossing: small raised squares about a metre apart
+    if (kind === 's') { g.fillStyle = '#f4f2ea'; paintLine(g, p, 2, 0.25, 0.85); return; }
+    // zigzag lines, a 2 m zig either side of the line, 0.3 m out
+    if (kind === 'z') {
+      const zz: number[] = [];
+      for (let j = 0; j + 3 < p.length; j += 2) {
+        const ax = p[j], ay = p[j + 1], bx = p[j + 2], by = p[j + 3], len = Math.hypot(bx - ax, by - ay) || 1;
+        const nx = -(by - ay) / len, ny = (bx - ax) / len, n = Math.max(1, Math.round(len));
+        for (let t = 0; t <= n; t += 1) { const o = t % 2 ? 0.3 : -0.3; zz.push(ax + ((bx - ax) * t) / n + nx * o, ay + ((by - ay) * t) / n + ny * o); }
+      }
+      g.fillStyle = PAINT.w; paintLine(g, zz, 1, 0, 0, 0, true);
+      return;
+    }
     g.fillStyle = PAINT[col] ?? PAINT.w;
     const px = Math.max(1, Math.round(width * ART));
     // paint stays on the carriageway: where the survey and the map disagree by a metre, a line
@@ -1798,7 +1949,7 @@ function drawRoadMarks(g: CanvasRenderingContext2D, tx0: number, ty0: number): v
     }
   };
   const px = 1 / ART;
-  IB.wall.forEach((p, i) => {
+  WALLS.forEach((p, i) => {
     if (!hit(WALL_BOX[i])) return;
     along(p, (x, y) => {
       if (!barrier(x, y, 1)) return;
@@ -1808,7 +1959,7 @@ function drawRoadMarks(g: CanvasRenderingContext2D, tx0: number, ty0: number): v
       g.fillStyle = '#b9b1a2'; g.fillRect(X - px, Y - 2 * px, 3 * px, px);
     });
   });
-  IB.fence.forEach((p, i) => {
+  FENCES.forEach((p, i) => {
     if (!hit(FENCE_BOX[i])) return;
     along(p, (x, y, d) => {
       if (!barrier(x, y, 2)) return;
@@ -1839,7 +1990,74 @@ function drawRoadMarks(g: CanvasRenderingContext2D, tx0: number, ty0: number): v
       }
     }
   });
-  // signal posts are drawn live by main.ts (their lights change)
+  // LOOK RIGHT / LOOK LEFT at the kerb of a crossing: a line of English, the Chinese under it and
+  // an arrow the way to look, about 2.4 m long (the words too small to read from up here)
+  for (const [side, lx, ly, deg] of ROADS.looks) {
+    if (lx < x0 || lx > x1 || ly < y0 || ly > y1) continue;
+    const a = (-deg * Math.PI) / 180, ux = Math.cos(a), uy = Math.sin(a), vx = -uy, vy = ux;
+    const dot = (along: number, across: number, w = 1, h = 1): void => {
+      const x = lx + ux * along + vx * across, y = ly + uy * along + vy * across;
+      g.fillRect(Math.floor(x * ART) / ART, Math.floor(y * ART) / ART, w * px, h * px);
+    };
+    g.fillStyle = PAINT.w;
+    const dir = side === 'R' ? 1 : -1;
+    // the words: LOOK ___ as broken strokes, then 望右 / 望左 as two blocks under them
+    for (let t = -1.2; t <= 0.6; t += px) if ((t + 1.2) % 0.22 < 0.16 && Math.abs(t + 0.3) > 0.06) { dot(t * dir, -0.18); dot(t * dir, -0.06); }
+    for (let t = -0.7; t <= 0.1; t += px) if ((t + 0.7) % 0.42 < 0.34) { dot(t * dir, 0.12, 1, 2); dot(t * dir, 0.3); }
+    // the arrow
+    for (let t = 0.75; t <= 1.3; t += px) dot(t * dir, -0.12);
+    for (let k = 0; k <= 0.18; k += px) { dot((1.3 - k) * dir, -0.12 - k); dot((1.3 - k) * dir, -0.12 + k); }
+  }
+  // traffic signs on their posts, from the Transport Department's drawings, by figure number:
+  // stop, give way, the blue discs that order, the red rings that forbid, warning triangles,
+  // and plates. Several on one post stack up it.
+  const stacked = new Map<string, number>();
+  for (const [fig, sx, sy] of ROADS.signs) {
+    if (sx < x0 || sx > x1 || sy < y0 || sy > y1 || fig === 'SEPA') continue;
+    const key = `${Math.round(sx * 2)},${Math.round(sy * 2)}`;
+    const n = stacked.get(key) ?? 0;
+    stacked.set(key, n + 1);
+    if (n > 2) continue;
+    const X = Math.floor(sx * ART) / ART, Y = Math.floor(sy * ART) / ART - n * 7 * px;
+    if (n === 0) { g.fillStyle = 'rgba(0,0,0,0.3)'; g.fillRect(X + px, Y + px, 2 * px, 2 * px); g.fillStyle = '#7a8088'; g.fillRect(X, Y - 3 * px, px, 4 * px); }
+    drawSign(g, fig, X + px / 2, Y - 6 * px, px);
+  }
+  // signal posts and zebra beacons are drawn live by main.ts (their lights change)
+}
+
+/** a Hong Kong traffic sign face about 0.8 m across, centred on (x, y), in map metres */
+function drawSign(g: CanvasRenderingContext2D, fig: string, x: number, y: number, px: number): void {
+  const n = Number(fig);
+  const disc = (r: number, c: string): void => { g.fillStyle = c; g.beginPath(); g.arc(x, y, r * px, 0, Math.PI * 2); g.fill(); };
+  if (n === 101) { // stop: a red octagon
+    g.fillStyle = '#c8242c'; g.beginPath();
+    for (let i = 0; i < 8; i += 1) { const a = (i + 0.5) * Math.PI / 4; g.lineTo(x + Math.cos(a) * 3.4 * px, y + Math.sin(a) * 3.4 * px); }
+    g.fill(); g.fillStyle = '#fff'; g.fillRect(x - 2 * px, y - 0.5 * px, 4 * px, px);
+  } else if (n === 102) { // give way: a white triangle, point down, red border
+    g.fillStyle = '#c8242c'; g.beginPath(); g.moveTo(x - 3.6 * px, y - 2.6 * px); g.lineTo(x + 3.6 * px, y - 2.6 * px); g.lineTo(x, y + 3.4 * px); g.fill();
+    g.fillStyle = '#fff'; g.beginPath(); g.moveTo(x - 2 * px, y - 1.6 * px); g.lineTo(x + 2 * px, y - 1.6 * px); g.lineTo(x, y + 1.6 * px); g.fill();
+  } else if (n === 115 || n === 112) { // no entry: a red disc, a white bar
+    disc(3.3, '#c8242c'); g.fillStyle = '#fff'; g.fillRect(x - 2.2 * px, y - 0.6 * px, 4.4 * px, 1.2 * px);
+  } else if ((n >= 106 && n <= 111) || n === 116 || n === 130 || n === 169) { // orders: blue disc, white arrow
+    disc(3.3, '#1f5fb8'); g.fillStyle = '#fff';
+    if (n === 106) { g.fillRect(x - 0.5 * px, y - 1.5 * px, px, 3.4 * px); g.fillRect(x - 1.5 * px, y - 1.5 * px, 3 * px, px); g.fillRect(x - 0.5 * px, y - 2.5 * px, px, px); }
+    else { // keep left: the arrow points down to the left
+      for (let i = -1.5; i <= 1.5; i += 1) g.fillRect(x - i * px - 0.5 * px, y + i * px - 0.5 * px, px, px);
+      g.fillRect(x - 2 * px, y + 0.5 * px, px, 2 * px); g.fillRect(x - 2 * px, y + 1.5 * px, 2 * px, px);
+    }
+  } else if (n >= 100 && n < 200) { // prohibitions: red ring, white face, a black symbol
+    disc(3.4, '#c8242c'); disc(2.4, '#fff'); g.fillStyle = '#222'; g.fillRect(x - 1.2 * px, y - 0.5 * px, 2.4 * px, px);
+  } else if (n >= 200 && n < 300) { // warnings: red triangle, white face
+    g.fillStyle = '#c8242c'; g.beginPath(); g.moveTo(x, y - 3.6 * px); g.lineTo(x + 3.6 * px, y + 2.6 * px); g.lineTo(x - 3.6 * px, y + 2.6 * px); g.fill();
+    g.fillStyle = '#fff'; g.beginPath(); g.moveTo(x, y - 1.8 * px); g.lineTo(x + 2 * px, y + 1.6 * px); g.lineTo(x - 2 * px, y + 1.6 * px); g.fill();
+    g.fillStyle = '#222'; g.fillRect(x - 0.5 * px, y - 0.4 * px, px, 1.4 * px);
+  } else if (n >= 700 && n < 800) { // information: a blue panel
+    g.fillStyle = '#1f5fb8'; g.fillRect(x - 3 * px, y - 3 * px, 6 * px, 6 * px); g.fillStyle = '#fff'; g.fillRect(x - 1 * px, y - 1.5 * px, 2 * px, 3 * px);
+  } else { // plates and the rest: a small white plate with a line of black text
+    g.fillStyle = '#3a3e44'; g.fillRect(x - 3.5 * px, y - 2 * px, 7 * px, 4 * px);
+    g.fillStyle = '#f2f2ee'; g.fillRect(x - 3 * px, y - 1.5 * px, 6 * px, 3 * px);
+    g.fillStyle = '#222'; g.fillRect(x - 2 * px, y - 0.5 * px, 4 * px, px);
+  }
 }
 
 /** the label next to the art pixel being painted (set per pixel, so no closure is made each time) */
@@ -2833,4 +3051,43 @@ function umbrella(g: CanvasRenderingContext2D, px: number, py: number, r: number
   g.fillStyle = '#e8e4d8'; g.fillRect(px + 7, py - 2, 2, 14);
   g.fillStyle = cols[Math.floor(r * 4)]; g.beginPath(); g.arc(px + 8, py - 4, 11, Math.PI, 0); g.fill();
   g.fillStyle = '#f2eee4'; g.fillRect(px + 2, py + 6, 14, 5);
+}
+
+/** debugging: where fences and walls leave too little room to walk, and where a fence stands a
+ *  little off a path leaving a strip of grass between them */
+export function fenceAudit(): { narrow: number[][]; strips: number[][]; fenceTiles: number; fences: number[][]; blocked: number[][] } {
+  const narrow: number[][] = [], strips: number[][] = [], fences: number[][] = [];
+  let fenceTiles = 0;
+  const fence = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < MAP_W && y < MAP_H && grid[y * MAP_W + x] === Gr.Wall && thin[y * MAP_W + x] > 0;
+  const solid = (x: number, y: number): boolean => solidTile(x, y);
+  const pathy = (x: number, y: number): boolean => { const g = at_(x, y); return g === Gr.Path || g === Gr.Steps || g === Gr.Plaza || g === Gr.Pier; };
+  for (let y = 1; y < MAP_H - 1; y += 1) for (let x = 1; x < MAP_W - 1; x += 1) {
+    if (fence(x, y)) { fenceTiles += 1; fences.push([x, y, thin[y * MAP_W + x]]); }
+    if (solid(x, y)) continue;
+    // a one-tile gap with a fence on at least one side and something solid on the other
+    for (const [dx, dy] of [[1, 0], [0, 1], [1, 1], [1, -1]]) {
+      const a = solid(x - dx, y - dy), b = solid(x + dx, y + dy);
+      if (a && b && (fence(x - dx, y - dy) || fence(x + dx, y + dy))) { narrow.push([x, y, dx, dy, pathy(x, y) || FOOTWAY[y * MAP_W + x] ? 1 : 0]); break; }
+    }
+    // a strip of open ground one or two tiles wide between a path and a fence
+    if (!pathy(x, y)) for (const [dx, dy] of [[1, 0], [0, 1], [-1, 0], [0, -1]]) {
+      if (pathy(x - dx, y - dy) && (fence(x + dx, y + dy) || (!solid(x + dx, y + dy) && !pathy(x + dx, y + dy) && fence(x + 2 * dx, y + 2 * dy)))) { strips.push([x, y]); break; }
+    }
+  }
+  // the Lands Department's footways: every metre along them that you cannot stand on, and why
+  const blocked: number[][] = [];
+  for (const w of PED) {
+    if (w.indoor) continue;
+    const p = w.p;
+    for (let i = 0; i + 3 < p.length; i += 2) {
+      const ax = p[i], ay = p[i + 1], bx = p[i + 2], by = p[i + 3], n = Math.ceil(Math.hypot(bx - ax, by - ay));
+      for (let t = 0; t <= n; t += 1) {
+        const x = Math.floor(ax + ((bx - ax) * t) / Math.max(1, n)), y = Math.floor(ay + ((by - ay) * t) / Math.max(1, n));
+        if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) continue;
+        const g = grid[y * MAP_W + x];
+        if (g === Gr.Wall) blocked.push([x, y, thin[y * MAP_W + x], PED.indexOf(w)]);
+      }
+    }
+  }
+  return { narrow, strips, fenceTiles, fences, blocked };
 }

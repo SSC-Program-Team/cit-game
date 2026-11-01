@@ -37,6 +37,16 @@ place (Tab or tap), call a taxi or get an arrow. The minimap sits top right. Tax
 road nearest you, wait 2.5 minutes, drive you there under the same rules, and the rules charge
 the real red-taxi meter over the road distance (`taxi.ride`).
 
+Road furniture as Hong Kong has it (from the Transport Department's drawings): zebra stripes and the
+yellow bars of a signal crossing are filled (not outlines), with road studs along a signal crossing's
+edges; zebras have flashing yellow beacons on black-and-white posts; LOOK RIGHT / LOOK LEFT at the
+kerbs; BUS STOP and TAXI words in yellow; about 380 traffic signs on their posts by figure number
+(stop, give way, no entry, keep left, prohibitions, warnings, plates); vehicle signals go red, red
+and amber, green, amber; the green man flashes before red. Walls and fences (iB1000) never stand on
+a footway of the pedestrian network, ones a metre or two off a footway are moved to its edge, and a
+footway is never squeezed to one tile between a fence and something solid (`fenceAudit()` in
+world.ts, `__fences()` in the console, counts what is left).
+
 Deploying it: [deploy.md](deploy.md). `main.ts` no longer changes the save itself: it calls
 `act()` and reacts to the events (`handle()`).
 

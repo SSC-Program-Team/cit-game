@@ -35,6 +35,17 @@ export function crossingLight(c: Crossing, t: number): 'green' | 'amber' | 'red'
   const p = (t + c.offset) % CYCLE;
   return p < 20 ? 'green' : p < 23 ? 'amber' : 'red';
 }
+/** what the vehicle heads show: as in Hong Kong (and Britain), red and amber together for the last
+ *  two seconds of red, before green */
+export function vehicleAspect(c: Crossing, t: number): 'green' | 'amber' | 'red' | 'redamber' {
+  const p = (t + c.offset) % CYCLE;
+  return p < 20 ? 'green' : p < 23 ? 'amber' : p >= CYCLE - 2 ? 'redamber' : 'red';
+}
+/** what the pedestrian heads show: the green man, flashing for his last two seconds, else red */
+export function walkAspect(c: Crossing, t: number): 'walk' | 'flash' | 'stop' {
+  const p = (t + c.offset) % CYCLE;
+  return p >= 24 && p < 30 ? 'walk' : p >= 30 && p < 32 ? 'flash' : 'stop';
+}
 /** the green man shows a second after vehicles get red, and goes before they get green */
 export function walkLight(c: Crossing, t: number): boolean {
   const p = (t + c.offset) % CYCLE;
