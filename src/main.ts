@@ -2210,13 +2210,25 @@ function drawCity(): void {
   const bay = terminusBay();
   if (bay) {
     ctx.save(); ctx.translate(Math.round(bay.x - cam.x), Math.round(bay.y - cam.y)); ctx.rotate(bay.angle);
-    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(-92, -16, 192, 40);
-    ctx.fillStyle = '#e8c23a'; ctx.fillRect(-96, -20, 192, 40);
-    ctx.fillStyle = '#f2e6a0'; ctx.fillRect(-96, -20, 192, 4);
-    ctx.fillStyle = '#c84a2a'; ctx.fillRect(-96, 10, 192, 10);
-    ctx.fillStyle = '#3a5a7a'; for (let i = 8; i < 180; i += 22) ctx.fillRect(-96 + i, -12, 16, 14);
-    ctx.fillStyle = '#1c2a3a'; ctx.fillRect(84, -16, 8, 32); // windscreen at the front
+    // a double-decker from above (12 m x 2.5 m): yellow body, white roof, front to +x
+    ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fillRect(-91, -15, 192, 40);
+    ctx.fillStyle = '#b8901a'; ctx.fillRect(-96, -20, 192, 40); // body edge
+    ctx.fillStyle = '#e8c23a'; ctx.fillRect(-95, -19, 190, 38);
+    ctx.fillStyle = '#c8323c'; ctx.fillRect(-95, -19, 190, 2); ctx.fillRect(-95, 17, 190, 2); // red side band, just showing
+    ctx.fillStyle = '#f2eee2'; ctx.fillRect(-88, -15, 170, 30); // roof
+    ctx.fillStyle = '#dcd8cc'; ctx.fillRect(-88, -15, 170, 2);
+    ctx.fillStyle = '#1c2a3a'; ctx.fillRect(82, -17, 12, 34); // front windscreen, top deck curving down
+    ctx.fillStyle = '#3a5a7a'; ctx.fillRect(84, -14, 3, 28);
+    ctx.fillStyle = '#9aa0a8'; ctx.fillRect(-82, -11, 22, 22); // air conditioning pod at the back
+    ctx.fillStyle = '#7a8088'; for (let i = -80; i < -62; i += 4) ctx.fillRect(i, -9, 2, 18);
+    ctx.fillStyle = '#c8c4b8'; ctx.fillRect(-30, -6, 12, 12); ctx.fillRect(30, -6, 12, 12); // roof hatches
+    ctx.fillStyle = '#2a2a30'; ctx.fillRect(-96, -14, 2, 28); // rear
+    ctx.fillStyle = '#2a2a30'; ctx.fillRect(90, -23, 4, 3); ctx.fillRect(90, 20, 4, 3); // mirrors
     ctx.restore();
+    // the route number on the roof, upright so it reads, like the minibuses'
+    const bsx = Math.round(bay.x - cam.x), bsy = Math.round(bay.y - cam.y);
+    ctx.fillStyle = '#e8c23a'; ctx.fillRect(bsx - 10, bsy - 6, 20, 12);
+    text('6', bsx - tw('6') / 2, bsy - 4, '#c8323c');
   }
 
   for (const c of cars) if (c.x >= 0) drawCar(c.x, c.y, c.angle, c.model, c.colour);
@@ -2341,7 +2353,6 @@ function drawCity(): void {
   const T = (wy: number): number => Math.round((wy - cam.y) * zoom);
   const taken: Rect[] = [];
   const free = (r: Rect): boolean => !taken.some((q) => r.x < q.x + q.w && q.x < r.x + r.w && r.y < q.y + q.h && q.y < r.y + r.h);
-  { const b = terminusBay(); if (b) text('6 central', S(b.x) - 30, T(b.y) - 34, '#e8e4d8'); }
   for (const [id, o] of net.others) {
     if (net.cars.get(id)?.driving) continue;
     const x = S(o.x), y = T(o.y) - Math.round(28 * figScale() * zoom) - 4;
