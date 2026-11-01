@@ -7,7 +7,7 @@
  */
 import { OSM } from './stanley-osm.ts';
 import { PED } from './stanley-ped.ts';
-import { ROADS } from './stanley-roads.ts';
+import { ROADS, IB } from './stanley-roads.ts';
 import { ROUTES } from './minibus.ts';
 import { COVER, ROOF } from './stanley-cover.ts';
 import { SHAPE_3D, EXTRA_3D } from './stanley-shapes.ts';
@@ -54,6 +54,11 @@ export const bid = new Int32Array(N).fill(-1);
 const PLAZA_MASK = new Uint8Array(N);
 /** tiles of a mapped road, path or steps: never built over or fenced off */
 const mapped = new Uint8Array(N);
+/** walls and fences from the Lands Department's iB1000 map: solid like any wall (grid says Wall), but
+ *  drawn as a thin line over the ground that was there (under), not as a metre-thick wall.
+ *  1 wall, 2 fence */
+const thin = new Uint8Array(N);
+const under = new Uint8Array(N);
 
 /** is this metre in the village core, where open ground is paved rather than garden */
 const core = (x: number, y: number): boolean => (x >= 460 && x <= 845 && y >= 300 && y <= 700) || (x >= 280 && x <= 470 && y >= 260 && y <= 490);
@@ -619,6 +624,22 @@ export const BOARDWALK_NAMES = new Set(['Stanley Promenade', 'Hsbc Seafront Prom
     if (kind === 'retaining_wall') continue;
     traceLine(p, (k) => { if (grid[k] !== Gr.Sea && grid[k] !== Gr.Building && !mapped[k]) grid[k] = Gr.Wall; });
   }
+  // 5a. the iB1000 map's walls and fences (about 900 and 500 here; OSM has a tenth of that). Only
+  //     open ground is fenced: a road, path, steps or anything the pedestrian network walks on stays
+  //     open, as do the map's gates. Pockets this seals off get a gate in step 7.
+  {
+    const gate = new Uint8Array(N);
+    for (const p of IB.gate) stampLine(p, 2, (k) => { gate[k] = 1; });
+    const open = (g: number): boolean => g === Gr.Hill || g === Gr.Grass || g === Gr.Scrub || g === Gr.Park || g === Gr.School || g === Gr.Built || g === Gr.Yard || g === Gr.Cemetery || g === Gr.Pitch || g === Gr.Beach || g === Gr.Rock;
+    const put = (lines: number[][], kind: number): void => {
+      for (const p of lines) traceLine(p, (k) => {
+        if (gate[k] || mapped[k] || !open(grid[k])) return;
+        under[k] = grid[k]; thin[k] = kind; grid[k] = Gr.Wall;
+      });
+    };
+    put(IB.wall, 1);
+    put(IB.fence, 2);
+  }
   // 5b. outside the aerial photo, open hillside gets invented copses, so it matches the wooded
   //     hills the photo shows (Stanley's slopes are mostly trees). Artistic, not surveyed.
   for (let y = 0; y < MAP_H; y += 1) for (let x = 0; x < MAP_W; x += 1) {
@@ -717,7 +738,7 @@ export const BOARDWALK_NAMES = new Set(['Stanley Promenade', 'Hsbc Seafront Prom
         for (const n of [k, k + 1, k + MAP_W, k - 1, k - MAP_W]) {
           if (n < 0 || n >= N) continue;
           if (grid[n] === Gr.Wood) grid[n] = Gr.Scrub;
-          else if (grid[n] === Gr.Wall && (n === k || n === k + 1 || n === k + MAP_W)) grid[n] = Gr.Path;
+          else if (grid[n] === Gr.Wall && (n === k || n === k + 1 || n === k + MAP_W)) { grid[n] = thin[n] ? under[n] : Gr.Path; thin[n] = 0; }
         }
         if (prev[k] === -1) break;
       }
@@ -1407,6 +1428,7 @@ const NATURAL = new Set<number>([Gr.Hill, Gr.Grass, Gr.Wood, Gr.Scrub, Gr.Beach,
 /** the ground class under a tile, with buildings standing on paving */
 const groundAt = (x: number, y: number): number => {
   const g = at_(x, y);
+  if (g === Gr.Wall && thin[y * MAP_W + x]) return under[y * MAP_W + x];
   return g === Gr.Building ? (core(x, y) ? Gr.Built : Gr.Path) : g;
 };
 
@@ -1558,6 +1580,8 @@ const MARK_ON_ROAD = ROADS.marks.map((m) => {
 });
 const TACTILE_BOX = ROADS.tactile.map((p) => boxOf(p));
 const RAIL_BOX = ROADS.rails.map(([, p]) => boxOf(p));
+const WALL_BOX = IB.wall.map((p) => boxOf(p));
+const FENCE_BOX = IB.fence.map((p) => boxOf(p));
 const PAINT: Record<string, string> = { w: '#ecebe4', y: '#f2c230', r: '#a8443a' };
 /** a line of paint one art pixel (or more) wide, stepped along at an eighth of a metre, so it stays
  *  crisp like the rest of the pixel art. dash/gap in metres (0: solid); offset shifts it sideways */
@@ -1616,6 +1640,41 @@ function drawRoadMarks(g: CanvasRenderingContext2D, tx0: number, ty0: number): v
     g.fillStyle = barrier ? '#b9b6ad' : '#9aa0a6';
     paintLine(g, p, barrier ? 4 : 1);
     if (!barrier) { g.fillStyle = '#5e646a'; paintLine(g, p, 2, 0.13, 1.87); }
+  });
+  // the iB1000 walls (grey stone, a lit top) and fences (green metal railing: posts and a rail),
+  // drawn only where the tile is still a barrier, so a gate step 7 cut shows as a gap
+  const barrier = (x: number, y: number, kind: number): boolean => {
+    const tx = Math.floor(x), ty = Math.floor(y);
+    return tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H && grid[ty * MAP_W + tx] === Gr.Wall && thin[ty * MAP_W + tx] === kind;
+  };
+  const along = (p: number[], fn: (x: number, y: number, d: number) => void): void => {
+    let run = 0;
+    for (let i = 0; i + 3 < p.length; i += 2) {
+      const ax = p[i], ay = p[i + 1], bx = p[i + 2], by = p[i + 3], len = Math.hypot(bx - ax, by - ay);
+      for (let d = 0; d < len; d += 1 / ART, run += 1 / ART) fn(ax + ((bx - ax) * d) / len, ay + ((by - ay) * d) / len, run);
+    }
+  };
+  const px = 1 / ART;
+  IB.wall.forEach((p, i) => {
+    if (!hit(WALL_BOX[i])) return;
+    along(p, (x, y) => {
+      if (!barrier(x, y, 1)) return;
+      const X = Math.floor(x * ART) / ART, Y = Math.floor(y * ART) / ART;
+      g.fillStyle = 'rgba(0,0,0,0.3)'; g.fillRect(X, Y + 2 * px, 3 * px, 3 * px);
+      g.fillStyle = '#6b665e'; g.fillRect(X - px, Y - px, 3 * px, 3 * px);
+      g.fillStyle = '#b9b1a2'; g.fillRect(X - px, Y - 2 * px, 3 * px, px);
+    });
+  });
+  IB.fence.forEach((p, i) => {
+    if (!hit(FENCE_BOX[i])) return;
+    along(p, (x, y, d) => {
+      if (!barrier(x, y, 2)) return;
+      const X = Math.floor(x * ART) / ART, Y = Math.floor(y * ART) / ART;
+      g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(X + px, Y + 2 * px, px, px);
+      g.fillStyle = '#3f6a45'; g.fillRect(X, Y, px, px);
+      g.fillStyle = '#6f9c72'; g.fillRect(X, Y - px, px, px);
+      if (d % 2 < 1 / ART) { g.fillStyle = '#24392a'; g.fillRect(X - px, Y - 2 * px, 2 * px, 3 * px); }
+    });
   });
   // signal posts: a dark pole with the signal head; pedestrian signals and push buttons smaller
   for (const [ref, x, y] of ROADS.lights) {
