@@ -16,6 +16,10 @@ export const net = {
   others: new Map<string, Other>(),
   board: { top: [] as Array<[string, number]>, you: [0, 0] as [number, number] },
   paused: false,
+  /** who owns which home (online: everyone's; solo: just yours) */
+  owners: new Map<string, string>(),
+  /** players' cars near you: owner id -> where and whose */
+  cars: new Map<string, { name: string; coat: string; model: string; x: number; y: number; angle: number; driving: boolean }>(),
   /** server clock minus ours */
   offset: 0,
   /** solo test hook: shift the wall clock forward (hours) */
@@ -183,6 +187,14 @@ function receive(m: ToClient): void {
     }
     case 'wire': on.wire(m.text); return;
     case 'board': net.board = { top: m.top, you: m.you }; return;
+    case 'homes':
+      for (const [id, name] of m.owners) { if (name) net.owners.set(id, name); else net.owners.delete(id); }
+      return;
+    case 'cars': {
+      net.cars.clear();
+      for (const [id, name, coat, model, x, y, angle, driving] of m.list) net.cars.set(id, { name, coat, model, x, y, angle, driving: !!driving });
+      return;
+    }
     case 'paused':
       net.paused = true;
       on.events([{ t: 'say', who: 'your teacher', text: 'your game is paused for now. ask your teacher.' }]);
@@ -219,16 +231,23 @@ export function act(name: string, args: Record<string, unknown> = {}): Promise<R
 
 let lastPos = 0, lastX = -1, lastY = -1, soloSaved = 0;
 /** where you are: to the server a few times a second while you move; solo, into the save */
-export function sendPos(x: number, y: number): void {
+export function sendPos(x: number, y: number, drive?: number): void {
   state.x = x; state.y = y; state.mapv = 2;
   const t = performance.now();
   if (net.mode === 'solo') {
     if (t - soloSaved > 2000) { soloSaved = t; saveSolo(); }
     return;
   }
-  if (t - lastPos < 200 || (Math.abs(x - lastX) < 1 && Math.abs(y - lastY) < 1)) return;
+  if (t - lastPos < 200 || (Math.abs(x - lastX) < 1 && Math.abs(y - lastY) < 1 && drive === undefined)) return;
   lastPos = t; lastX = x; lastY = y;
-  send({ t: 'pos', x: Math.round(x), y: Math.round(y) });
+  send({ t: 'pos', x: Math.round(x), y: Math.round(y), drive: drive === undefined ? undefined : Math.round(drive * 100) / 100 });
+}
+
+/** solo: the owners map is just your own homes */
+export function soloOwners(): void {
+  if (net.mode !== 'solo') return;
+  net.owners.clear();
+  for (const id of Object.keys(state.homes)) net.owners.set(id, 'you');
 }
 
 /** ease other players towards where the server last saw them */

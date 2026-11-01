@@ -6,10 +6,12 @@
  * See docs/design/stanley-expansion.md for what each system is for.
  */
 import { state, clock, resetSolo } from './state';
-import { net, act, startNet, sendPos, serverNow, updateOthers } from './net';
+import { net, act, startNet, sendPos, serverNow, updateOthers, soloOwners } from './net';
+import { HOMES, home, HOMES_AT, type Home } from './homes';
+import { CARS, car as carModel, CAR_BUYBACK } from './cars';
 import {
   has, coverFor, payBoost, condition, licenceLive, repairCost, netWorth, ago, employer, MISSION_PAY, NO_SHOW_FEE,
-  SLEEP_FARE, RENT, RENEW_WINDOW, type Ev, type QuizView,
+  SLEEP_FARE, RENT, RENEW_WINDOW, HOME_FEES, TENANT_PER_REAL_DAY, HOME_SELL, tenantsOwe, type Ev, type QuizView,
 } from './rules';
 import { audio } from './audio';
 import { JOBS, MISSIONS, OFFER, type JobDef, type Crime, type Prop } from './jobs';
@@ -18,6 +20,7 @@ import {
   TILE, MAP_W, MAP_H, PLACES, START, RELEASE, drawWorld, setWorldText, renderOverview, solidAt, solidTile,
   walkableTile, findPath, isSea, areaNear, ROAD_LINES, walkDistance, roadRoute, BUILDING_LABELS, ESCALATORS,
   escalatorAt, setBuildingPhotos, MARKET_POINTS, PLAZA_POINTS, buildingsNear, behindBuilding, drawBuildingOver, type Place,
+  drivableTile, driveRoute, nearestOnNetwork,
 } from './world';
 import { ROUTES, routesAt, type Route, type Stop } from './minibus';
 import { TOPIC_NAMES, type Tier, type Topic } from './questions';
@@ -213,24 +216,98 @@ let toast: { text: string; colour: string; t: number } | null = null;
 let frames = 0;
 let tickTimer = 0;
 const walkers: Walker[] = [];
-/** cars drive the real road lines from end to end, then turn onto whichever road meets them */
-type Car = { x: number; y: number; line: number; i: number; dir: 1 | -1; colour: string; wait: number; dx: number; dy: number };
-const lineEnds = ROAD_LINES.map((l) => [l[0], l[l.length - 1]]);
-function nextLine(x: number, y: number, not: number): { line: number; dir: 1 | -1 } | null {
-  const near: Array<{ line: number; dir: 1 | -1 }> = [];
-  lineEnds.forEach(([a, b], i) => {
-    if (i === not) return;
-    if (Math.hypot(a.x - x, a.y - y) < 4 * TILE) near.push({ line: i, dir: 1 });
-    if (Math.hypot(b.x - x, b.y - y) < 4 * TILE) near.push({ line: i, dir: -1 });
-  });
-  return near.length ? near[Math.floor(Math.random() * near.length)] : null;
+/**
+ * Traffic (§11.3): cars drive 150-900 m routes over the real road network in the left-hand lane,
+ * slow for bends, and brake for a car ahead in their lane, for you, and for anyone in the road.
+ * Anyone who wanders more than about 600 m away comes back in out of sight, so the streets near
+ * you stay busy.
+ */
+type Car = { x: number; y: number; angle: number; speed: number; route: Array<{ x: number; y: number }>; colour: string; model: string; wait: number };
+const CAR_COLOURS = ['#c8382f', '#e0e0e8', '#3a6ac8', '#3aa86a', '#e8c23a', '#2a2a30', '#d86a3a', '#6a6a72', '#e0e0e8', '#3a6ac8', '#c8382f', '#2a2a30', '#9aa0a8', '#f2eee4'];
+const NPC_MODELS = ['hatch', 'saloon', 'saloon', 'suv', 'ev', 'hatch', 'saloon'];
+const cars: Car[] = CAR_COLOURS.map((colour, i) => ({ x: -1, y: -1, angle: 0, speed: 0, route: [], colour, model: NPC_MODELS[i % NPC_MODELS.length], wait: i * 0.4 }));
+
+/** a random tile of the road network between lo and hi metres from a point */
+function networkTileNear(mx: number, my: number, lo: number, hi: number): { tx: number; ty: number } | null {
+  for (let tries = 0; tries < 60; tries += 1) {
+    const r = lo + Math.random() * (hi - lo), a = Math.random() * Math.PI * 2;
+    const t = nearestOnNetwork(mx + Math.cos(a) * r, my + Math.sin(a) * r, 12);
+    if (t && Math.hypot(t.tx - mx, t.ty - my) >= lo * 0.7) return t;
+  }
+  return null;
 }
-const cars: Car[] = ['#c8382f', '#e0e0e8', '#3a6ac8', '#3aa86a', '#e8c23a', '#2a2a30', '#d86a3a', '#6a6a72',
-  '#e0e0e8', '#3a6ac8', '#c8382f', '#2a2a30'].map((colour, i) => {
-  const line = Math.floor((i / 12) * ROAD_LINES.length);
-  const p = ROAD_LINES[line]?.[0] ?? { x: 0, y: 0 };
-  return { x: p.x, y: p.y, line, i: 0, dir: 1, colour, wait: i * 0.5, dx: 1, dy: 0 };
-});
+
+/** shift a route into the left-hand lane: about 1.6 m left of the middle on main roads, less on lanes */
+function keepLeft(r: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> {
+  return r.map((p, i) => {
+    const a = r[Math.max(0, i - 1)], b = r[Math.min(r.length - 1, i + 1)];
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+    const main = drivableTile(Math.floor(p.x / TILE), Math.floor(p.y / TILE)) && nearestOnNetwork(p.x / TILE, p.y / TILE, 0) !== null;
+    const off = (main ? 1.6 : 0.9) * TILE;
+    return { x: p.x + (dy / d) * off, y: p.y - (dx / d) * off };
+  });
+}
+
+function newRoute(c: Car, near: { x: number; y: number }): void {
+  const from = c.x < 0 || Math.hypot(c.x - near.x, c.y - near.y) > 600 * TILE
+    ? networkTileNear(near.x / TILE, near.y / TILE, 120, 360)
+    : { tx: Math.floor(c.x / TILE), ty: Math.floor(c.y / TILE) };
+  if (!from) return;
+  const to = networkTileNear(from.tx, from.ty, 150, 900);
+  if (!to) return;
+  const r = driveRoute(from.tx * TILE + 8, from.ty * TILE + 8, to.tx * TILE + 8, to.ty * TILE + 8);
+  if (r.length < 4) { c.wait = 2; return; }
+  const left = keepLeft(r);
+  if (c.x < 0 || Math.hypot(c.x - near.x, c.y - near.y) > 600 * TILE) { c.x = left[0].x; c.y = left[0].y; c.speed = 0; }
+  c.route = left;
+}
+
+let carRoutes = 0;
+function updateCars(dt: number): void {
+  const me = drive ? { x: drive.x, y: drive.y } : { x: player.x, y: player.y };
+  carRoutes = 0;
+  for (const c of cars) {
+    if (c.wait > 0) { c.wait -= dt; continue; }
+    if (!c.route.length) {
+      // one new route a frame: they cost a search of the road network
+      if (carRoutes < 1) { carRoutes += 1; newRoute(c, me); c.wait = c.route.length ? 0 : 1; }
+      continue;
+    }
+    const m = carModel(c.model) ?? CARS[0];
+    const vmax = (Math.min(30, m.speed) / 3.6) * TILE;
+    const t0 = c.route[0], t1 = c.route[1] ?? t0;
+    const bend = Math.abs(Math.atan2(Math.sin(Math.atan2(t1.y - t0.y, t1.x - t0.x) - c.angle), Math.cos(Math.atan2(t1.y - t0.y, t1.x - t0.x) - c.angle)));
+    let target = vmax * (bend > 0.5 ? 0.45 : 1);
+    // brake for anything just ahead in the lane: other cars, you, other players, people in the road
+    const ahead = (x: number, y: number, len: number): void => {
+      const dx = x - c.x, dy = y - c.y;
+      const along = dx * Math.cos(c.angle) + dy * Math.sin(c.angle), across = -dx * Math.sin(c.angle) + dy * Math.cos(c.angle);
+      if (along > 0 && along < len && Math.abs(across) < 1.6 * TILE) target = Math.min(target, Math.max(0, (along - 4 * TILE) * 1.5));
+    };
+    for (const o of cars) if (o !== c && o.x >= 0 && Math.abs(o.x - c.x) < 200 && Math.abs(o.y - c.y) < 200) {
+      const dh = Math.abs(Math.atan2(Math.sin(o.angle - c.angle), Math.cos(o.angle - c.angle)));
+      if (dh < 1.2) ahead(o.x, o.y, 10 * TILE);
+    }
+    if (drive) ahead(drive.x, drive.y, 10 * TILE);
+    else if (drivableTile(Math.floor(player.x / TILE), Math.floor(player.y / TILE))) ahead(player.x, player.y, 7 * TILE);
+    if (state.car && !drive) ahead(state.car.x, state.car.y, 9 * TILE);
+    for (const o of net.cars.values()) ahead(o.x, o.y, 10 * TILE);
+    for (const o of net.others.values()) if (drivableTile(Math.floor(o.x / TILE), Math.floor(o.y / TILE))) ahead(o.x, o.y, 7 * TILE);
+    for (const w of walkers) if (Math.abs(w.x - c.x) < 120 && Math.abs(w.y - c.y) < 120 && drivableTile(Math.floor(w.x / TILE), Math.floor(w.y / TILE))) ahead(w.x, w.y, 6 * TILE);
+    c.speed = c.speed < target ? Math.min(target, c.speed + 50 * dt) : Math.max(target, c.speed - 160 * dt);
+    let dist = c.speed * dt;
+    while (dist > 0 && c.route.length) {
+      const t = c.route[0];
+      const dd = Math.hypot(t.x - c.x, t.y - c.y);
+      if (dd > 0.5) {
+        const want = Math.atan2(t.y - c.y, t.x - c.x);
+        c.angle += Math.atan2(Math.sin(want - c.angle), Math.cos(want - c.angle)) * Math.min(1, 8 * dt);
+      }
+      if (dd <= dist) { c.x = t.x; c.y = t.y; c.route.shift(); dist -= dd; } else { c.x += ((t.x - c.x) / dd) * dist; c.y += ((t.y - c.y) / dd) * dist; dist = 0; }
+    }
+    if (!c.route.length) c.wait = 1 + Math.random() * 3;
+  }
+}
 
 function say(title: string, line: string): void {
   const lines = wrap(line, 96);
@@ -712,6 +789,264 @@ function openBus(): void {
   });
 }
 
+// ------------------------------------------------------------------ homes ---
+/** a long list in the pixel menu: seven rows a page, then 'more' */
+function paged(items: MenuItem[], page: number, reopen: (page: number) => void, back: MenuItem): MenuItem[] {
+  const per = 7;
+  const rows = items.slice(page * per, page * per + per);
+  if (items.length > (page + 1) * per) rows.push({ label: `more (${page + 2} of ${Math.ceil(items.length / per)})`, act: () => reopen(page + 1) });
+  else if (page > 0) rows.push({ label: 'first page', act: () => reopen(0) });
+  rows.push(back);
+  return rows;
+}
+
+const ownerOf = (id: string): string => net.owners.get(id) ?? '';
+const mine = (id: string): boolean => !!state.homes[id];
+function homeStatus(h: Home): string {
+  if (mine(h.id)) return state.residence === h.id ? 'yours - you live here' : `yours - let, about ${money(Math.round(h.price * TENANT_PER_REAL_DAY))} a real day`;
+  const o = ownerOf(h.id);
+  return o ? `sold to ${o}` : 'for sale';
+}
+
+const BANDS: Array<[number, number, string]> = [
+  [0, 20000, 'under $20,000'], [20000, 50000, '$20,000 - $50,000'], [50000, 100000, '$50,000 - $100,000'],
+  [100000, 250000, '$100,000 - $250,000'], [250000, Infinity, 'over $250,000'],
+];
+
+function openAgency(): void {
+  const owned = Object.keys(state.homes).map((id) => home(id)!).filter(Boolean);
+  openMenu({
+    title: 'bayside property agency - mr lam',
+    line: `"every home in stanley, by price." your first home is where you live: no rent, just fees of ${HOME_FEES * 100}% of its price a day, and you sleep at your own door. any others are let: tenants pay ${TENANT_PER_REAL_DAY * 100}% a real day. selling gets you ${HOME_SELL * 100}% of what you paid. you have ${money(state.money)}.`,
+    items: [
+      ...BANDS.map(([lo, hi, label]): MenuItem => {
+        const list = HOMES.filter((h) => h.price >= lo && h.price < hi);
+        const free = list.filter((h) => !ownerOf(h.id) && !mine(h.id)).length;
+        return { label, right: `${free} for sale`, sub: `${list.length} homes`, act: () => openBand(lo, hi, label, 0) };
+      }),
+      { label: 'your homes', right: `${owned.length}`, sub: owned.length ? owned.map((h) => h.name).join(', ') : 'none yet', off: !owned.length, why: 'you do not own a home yet',
+        act: () => openHomeList(owned, 'your homes', 0, () => openAgency()) },
+      { label: 'leave', act: () => { menu = null; } },
+    ],
+  });
+}
+
+/** one row per building: a house, or a block of flats with its flats inside */
+function openBand(lo: number, hi: number, label: string, page: number): void {
+  const byB = new Map<number, Home[]>();
+  for (const h of HOMES) if (h.price >= lo && h.price < hi) byB.set(h.b, [...(byB.get(h.b) ?? []), h]);
+  const rows = [...byB.values()].sort((a, b) => a[0].price - b[0].price).map((hs): MenuItem => {
+    const h = hs[0];
+    if (hs.length === 1) return { label: h.name, right: money(h.price), sub: `${h.kind === 'house' ? 'house' : 'flat'}, ${h.area} m2 - ${homeStatus(h)}`, colour: mine(h.id) ? '#ffc84a' : ownerOf(h.id) ? '#8a90a8' : undefined, act: () => openHome(h, () => openBand(lo, hi, label, page)) };
+    const free = hs.filter((x) => !ownerOf(x.id) && !mine(x.id)).length;
+    const block = h.name.replace(/^flat [0-9]+[a-f], /, '');
+    return { label: block, right: `from ${money(h.price)}`, sub: `${hs.length} flats here, ${free} for sale`, act: () => openHomeList(hs, block, 0, () => openBand(lo, hi, label, page)) };
+  });
+  openMenu({ title: `homes ${label}`, line: 'tap a home to see it, buy it or find it.', back: () => openAgency(), items: paged(rows, page, (n) => openBand(lo, hi, label, n), { label: 'back', act: () => openAgency() }) });
+}
+
+function openHomeList(hs: Home[], title: string, page: number, back: () => void): void {
+  const rows = hs.map((h): MenuItem => ({ label: h.name, right: money(h.price), sub: `${h.area} m2 - ${homeStatus(h)}`, colour: mine(h.id) ? '#ffc84a' : ownerOf(h.id) ? '#8a90a8' : undefined, act: () => openHome(h, () => openHomeList(hs, title, page, back)) }));
+  openMenu({ title, line: `you have ${money(state.money)}.`, back, items: paged(rows, page, (n) => openHomeList(hs, title, n, back), { label: 'back', act: back }) });
+}
+
+function openHome(h: Home, back: () => void): void {
+  const yours = mine(h.id), o = ownerOf(h.id);
+  const here = Math.hypot(player.x / TILE - h.tx, player.y / TILE - h.ty) < 6;
+  const fees = Math.max(1, Math.round(h.price * HOME_FEES));
+  const items: MenuItem[] = [];
+  if (!yours && !o) {
+    items.push({ label: 'buy it', right: money(h.price), sub: state.residence ? `let to tenants: about ${money(Math.round(h.price * TENANT_PER_REAL_DAY))} a real day` : `you would live here: fees ${money(fees)} a day instead of ${money(RENT)} rent`,
+      off: state.money < h.price, why: 'not enough money', act: () => { act('home.buy', { id: h.id }).then(() => openHome(h, back)); } });
+  }
+  if (yours && state.residence === h.id && here) items.push({ label: 'sleep here', sub: 'wake at 08:00 tomorrow, at your own door', act: () => { menu = null; act('sleep', { at: 'home' }); } });
+  if (yours && state.residence !== h.id) items.push({ label: 'live here', sub: 'move in: the old home gets tenants instead', act: () => { act('home.live', { id: h.id }).then(() => openHome(h, back)); } });
+  if (yours) items.push({ label: 'sell it', right: money(Math.round(state.homes[h.id].paid * HOME_SELL)), sub: 'back through the agent: 90% of what you paid', act: () => { act('home.sell', { id: h.id }).then(() => openHome(h, back)); } });
+  if (!here) items.push({ label: 'show me the way', sub: 'an arrow to its front door', act: () => { guide = { x: h.tx * TILE + 8, y: h.ty * TILE + 8, label: h.name }; menu = null; } });
+  items.push({ label: 'back', act: back });
+  openMenu({
+    title: h.name,
+    line: `${h.kind === 'house' ? 'a house' : `a flat on the ${h.floor}/f`}, ${h.area} m2. ${money(h.price)}. ${homeStatus(h)}.`,
+    back, items,
+  });
+}
+
+/** the board by a building's front door: what is for sale there */
+function openHomeBoard(b: number): void {
+  const hs = HOMES_AT.get(b) ?? [];
+  if (hs.length === 1) { openHome(hs[0], () => { menu = null; }); return; }
+  openHomeList(hs, hs[0].name.replace(/^flat [0-9]+[a-f], /, ''), 0, () => { menu = null; });
+}
+
+/** a building's home board near the player, if any (and no place is nearer) */
+function homeBoardNear(): number | null {
+  let best: number | null = null, bd = 1.6;
+  for (const [b, hs] of HOMES_AT) {
+    const d = Math.hypot(player.x / TILE - (hs[0].tx + 0.5), player.y / TILE - (hs[0].ty + 0.5));
+    if (d < bd) { bd = d; best = b; }
+  }
+  return best;
+}
+
+/** walking to a home board you tapped */
+let boardPending: number | null = null;
+/** 'show me the way': an arrow to somewhere */
+let guide: { x: number; y: number; label: string } | null = null;
+
+// ------------------------------------------------------------------- cars ---
+function openMotors(): void {
+  const mineCar = state.car ? carModel(state.car.model) : undefined;
+  const trade = state.car ? Math.round(state.car.value * CAR_BUYBACK) : 0;
+  openMenu({
+    title: 'stanley motors',
+    line: `a car loses 1% of its price each day, down to 40%, and costs parking and fuel every day. we buy back at 80% of what it is worth${mineCar ? `: yours, ${money(trade)}` : ''}. you have ${money(state.money)}.`,
+    items: [
+      ...CARS.map((m): MenuItem => {
+        const has_ = state.car?.model === m.id;
+        const pay = m.price - trade;
+        return {
+          label: m.name, right: has_ ? 'yours' : money(m.price), sub: `${m.blurb} ${money(m.daily)} a day.${trade && !has_ ? ` with yours in part exchange: ${money(pay)}` : ''}`,
+          off: has_ || state.money < pay, why: has_ ? 'you have one' : 'not enough money',
+          act: () => {
+            const spot = PLACES.find((p) => p.id === 'motors')!;
+            const at = parkingNear(spot.tx * TILE + 8, spot.ty * TILE + 8);
+            act('car.buy', { model: m.id, x: at.x, y: at.y, angle: 0 }).then((r) => { if (r.ok) menu = null; });
+          },
+        };
+      }),
+      ...(mineCar ? [{ label: 'sell your car', right: money(trade), sub: `your ${mineCar.name}, worth ${money(state.car!.value)} now`, act: () => { act('car.sell').then(() => openMotors()); } }] : []),
+      { label: 'leave', act: () => { menu = null; } },
+    ],
+  });
+}
+
+/** a kerbside spot near a point (world pixels): the nearest drivable tile */
+function parkingNear(x: number, y: number): { x: number; y: number } {
+  const t = nearestOnNetwork(x / TILE, y / TILE, 60);
+  return t ? { x: t.tx * TILE + 8, y: t.ty * TILE + 8 } : { x, y };
+}
+
+type Drive = { x: number; y: number; angle: number; speed: number; route: Array<{ x: number; y: number }>; then: Place | null };
+/** you, driving your car */
+let drive: Drive | null = null;
+
+const nearMyCar = (): boolean => !!state.car && Math.hypot(player.x - state.car.x, player.y - state.car.y) < 3.5 * TILE;
+
+function startDrive(): void {
+  const c = state.car;
+  if (!c || drive) return;
+  drive = { x: c.x, y: c.y, angle: c.angle, speed: 0, route: [], then: null };
+  path = []; pending = null;
+  audio.play('door');
+  flash('arrows to drive, or tap where to go. c to park.', '#7be08a');
+}
+
+/** park where you are and step out onto the pavement beside the car */
+function stopDrive(): void {
+  const d = drive;
+  if (!d) return;
+  drive = null;
+  act('car.park', { x: Math.round(d.x), y: Math.round(d.y), angle: Math.round(d.angle * 100) / 100 });
+  if (state.car) { state.car.x = d.x; state.car.y = d.y; state.car.angle = d.angle; }
+  let best = { x: d.x, y: d.y }, bd = Infinity;
+  for (let dy = -5; dy <= 5; dy += 1) for (let dx = -5; dx <= 5; dx += 1) {
+    const tx = Math.floor(d.x / TILE) + dx, ty = Math.floor(d.y / TILE) + dy;
+    if (!walkableTile(tx, ty) || drivableTile(tx, ty)) continue;
+    const dd = Math.hypot(dx, dy);
+    if (dd < bd) { bd = dd; best = { x: tx * TILE + 8, y: ty * TILE + 12 }; }
+  }
+  player.x = best.x; player.y = best.y;
+  sendPos(player.x, player.y);
+  audio.play('door');
+  if (d.then) { pending = d.then; path = findPath(player.x, player.y, placeX(d.then), placeY(d.then)); if (!path.length) { const p = pending; pending = null; activate(p); } }
+}
+
+/** drive somewhere by the roads; a place: as near as the roads go, then park and walk in */
+function driveTo(x: number, y: number, then: Place | null): void {
+  if (!drive) return;
+  const r = driveRoute(drive.x, drive.y, x, y);
+  if (!r.length) { flash('no road goes there', '#ff9a6a'); return; }
+  drive.route = r;
+  // pull out facing the way to go
+  if (Math.abs(drive.speed) < 5) drive.angle = Math.atan2(r[0].y - drive.y, r[0].x - drive.x);
+  drive.then = then;
+}
+
+function updateDrive(dt: number): void {
+  const d = drive!;
+  const m = carModel(state.car?.model ?? 'hatch')!;
+  const vmax = (m.speed / 3.6) * TILE, acc = 70 * m.pep;
+  let steer = 0, gas = 0;
+  if (keys.has('arrowleft') || keys.has('a')) steer -= 1;
+  if (keys.has('arrowright') || keys.has('d')) steer += 1;
+  if (keys.has('arrowup') || keys.has('w')) gas += 1;
+  if (keys.has('arrowdown') || keys.has('s')) gas -= 1;
+  if (steer || gas) d.route = [];
+  if (!steer && !gas && d.route.length) {
+    // on a route: run along it like the minibus does, speeding up and slowing for bends and the end
+    let left = 0;
+    for (let i = 0, px = d.x, py = d.y; i < d.route.length; i += 1) { left += Math.hypot(d.route[i].x - px, d.route[i].y - py); px = d.route[i].x; py = d.route[i].y; }
+    const t0 = d.route[0];
+    const next = d.route[1] ?? t0;
+    const bend = Math.abs(Math.atan2(next.y - t0.y, next.x - t0.x) - Math.atan2(t0.y - d.y, t0.x - d.x));
+    const target = Math.min(vmax * 0.85, Math.max(25, left * 1.1)) * (bend > 0.6 && bend < 5.7 ? 0.55 : 1);
+    d.speed = d.speed < target ? Math.min(target, d.speed + acc * dt) : Math.max(target, d.speed - acc * 2 * dt);
+    let dist = d.speed * dt;
+    while (dist > 0 && d.route.length) {
+      const t = d.route[0];
+      const dd = Math.hypot(t.x - d.x, t.y - d.y);
+      if (dd > 0.01) {
+        const want = Math.atan2(t.y - d.y, t.x - d.x);
+        let diff = want - d.angle;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        d.angle += diff * Math.min(1, 10 * dt);
+      }
+      if (dd <= dist) { d.x = t.x; d.y = t.y; d.route.shift(); dist -= dd; } else { d.x += ((t.x - d.x) / dd) * dist; d.y += ((t.y - d.y) / dd) * dist; dist = 0; }
+    }
+    player.x = d.x; player.y = d.y;
+    sendPos(d.x, d.y, d.angle);
+    if (!d.route.length) { d.speed = 0; if (d.then) stopDrive(); }
+    return;
+  }
+  if (gas > 0) d.speed = Math.min(vmax, d.speed + acc * gas * dt);
+  else if (gas < 0) d.speed = Math.max(-vmax * 0.3, d.speed + acc * 1.6 * gas * dt);
+  else d.speed *= Math.max(0, 1 - 1.8 * dt);
+  if (Math.abs(d.speed) > 2) d.angle += steer * 2.2 * dt * Math.sign(d.speed) * Math.min(1, Math.abs(d.speed) / 60);
+  const nx = d.x + Math.cos(d.angle) * d.speed * dt, ny = d.y + Math.sin(d.angle) * d.speed * dt;
+  // driving yourself, the nose must stay on something a car can use; on a route the car is steered
+  // along drivable tiles already, so only its middle is checked
+  const half = (m.len / 2) * TILE * Math.sign(d.speed || 1);
+  const fx = nx + Math.cos(d.angle) * half, fy = ny + Math.sin(d.angle) * half;
+  const routed = d.route.length > 0;
+  if (drivableTile(Math.floor(nx / TILE), Math.floor(ny / TILE)) && (routed || drivableTile(Math.floor(fx / TILE), Math.floor(fy / TILE)))) { d.x = nx; d.y = ny; }
+  else if (routed) { d.speed = 0; const t = d.route[0]; d.angle = Math.atan2(t.y - d.y, t.x - d.x); }
+  else d.speed = 0;
+  player.x = d.x; player.y = d.y;
+  sendPos(d.x, d.y, d.angle);
+}
+
+/** a car from above: body in its owner's coat colour, glass, roof */
+function drawCar(x: number, y: number, angle: number, model: string, coat: string): void {
+  const m = carModel(model) ?? CARS[0];
+  const L = m.len * TILE, Wd = m.wid * TILE;
+  const sx = Math.round(x - cam.x), sy = Math.round(y - cam.y);
+  if (sx < -100 || sy < -100 || sx > viewW() + 100 || sy > viewH() + 100) return;
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.save(); ctx.translate(3, 4); ctx.rotate(angle); ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fillRect(-L / 2, -Wd / 2, L, Wd); ctx.restore();
+  ctx.rotate(angle);
+  ctx.fillStyle = coat; ctx.fillRect(-L / 2, -Wd / 2, L, Wd);
+  ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fillRect(-L / 2, -Wd / 2, L, 3);
+  ctx.fillStyle = '#1c2a3a'; ctx.fillRect(L * 0.08, -Wd / 2 + 3, L * 0.16, Wd - 6); // windscreen
+  ctx.fillRect(-L * 0.36, -Wd / 2 + 3, L * 0.1, Wd - 6); // rear window
+  ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(-L * 0.26, -Wd / 2 + 3, L * 0.34, Wd - 6); // roof
+  ctx.fillStyle = '#f2eec8'; ctx.fillRect(L / 2 - 2, -Wd / 2 + 2, 2, 4); ctx.fillRect(L / 2 - 2, Wd / 2 - 6, 2, 4);
+  ctx.fillStyle = '#c8323c'; ctx.fillRect(-L / 2, -Wd / 2 + 2, 2, 4); ctx.fillRect(-L / 2, Wd / 2 - 6, 2, 4);
+  if (m.id === 'coupe') { ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fillRect(-L / 2, -2, L, 4); }
+  ctx.restore();
+}
+
 // ---------------------------------------------------------------- status ---
 function openStatus(): void {
   const gear = state.inv.map((id) => {
@@ -731,6 +1066,9 @@ function openStatus(): void {
         sub: online ? net.board.top.slice(0, 3).map(([n, w], i) => `${i + 1}. ${n} ${money(w)}`).join('   ') : 'play on the school server to be on the leaderboard',
         off: !online, why: 'solo games are not on the leaderboard', act: () => openBoardTop(), colour: '#ffc84a' },
       { label: 'work', sub: workStatus(), off: true, colour: '#7ab8ff' },
+      { label: 'homes', sub: Object.keys(state.homes).length ? Object.keys(state.homes).map((id) => `${home(id)?.name ?? id}${state.residence === id ? ' (home)' : ''}`).join(', ') + (net.mode ? ` - tenants due ${money(Math.round(tenantsOwe(state, now())))}` : '') : 'none: you rent. see bayside property agency',
+        off: !Object.keys(state.homes).length, why: 'you do not own a home', act: () => openHomeList(Object.keys(state.homes).map((id) => home(id)!).filter(Boolean), 'your homes', 0, () => openStatus()) },
+      { label: 'car', sub: state.car ? `${carModel(state.car.model)?.name}, worth ${money(state.car.value)}` : 'none. stanley motors, by the terminus', off: true },
       { label: 'gear', sub: gear.join(', ') || 'nothing', off: true },
       { label: 'certificates', sub: state.certs.map((c) => COURSES.find((x) => x.id === c)?.name ?? c).join(', ') || 'none yet', off: true },
       { label: 'record', sub: state.record.length ? `${state.record.length} offence(s). see stanley police station` : 'clean', off: true,
@@ -959,6 +1297,8 @@ function activate(p: Place): void {
     case 'police': openPolice(); return;
     case 'bus': openBus(); return;
     case 'minibus': openMinibus(p); return;
+    case 'agency': openAgency(); return;
+    case 'motors': openMotors(); return;
     case 'lift': {
       // Stanley Plaza's lift: pick a floor, the doors close, and you step out there
       const here = Number(p.id.slice(4));
@@ -1070,6 +1410,24 @@ canvas.addEventListener('pointerdown', (ev) => {
   if (inRect(runRect, x, y, 0)) { running = !running; audio.play('ui'); return; }
   if (inRect(zoomRect, x, y, 0)) { toggleZoom(); return; }
   const wx = x / zoom + cam.x, wy = y / zoom + cam.y;
+  if (drive) {
+    // driving: a tap on a place drives as near as the roads go, parks and walks you in
+    const p = PLACES.find((q) => Math.hypot(wx - placeX(q), wy - (placeY(q) - 16)) <= 12 / zoom);
+    driveTo(p ? placeX(p) : wx, p ? placeY(p) : wy, p ?? null);
+    return;
+  }
+  // a tap on a home board walks there and shows what is for sale
+  for (const [b, hs] of HOMES_AT) {
+    const bx = hs[0].tx * TILE + 8 + 14, by = hs[0].ty * TILE - 6;
+    if (Math.abs(wx - bx) <= 9 / zoom && Math.abs(wy - by) <= 9 / zoom) {
+      pending = null;
+      path = findPath(player.x, player.y, hs[0].tx * TILE + 8, hs[0].ty * TILE + 12);
+      boardPending = b;
+      if (!path.length) { boardPending = null; openHomeBoard(b); }
+      return;
+    }
+  }
+  boardPending = null;
   // a tap on a place (or its label) walks there and opens it
   for (const p of PLACES) {
     if (Math.hypot(wx - placeX(p), wy - (placeY(p) - 16)) <= 12 / zoom) {
@@ -1133,7 +1491,19 @@ window.addEventListener('keydown', (ev) => {
     if (n >= 0) pickMenu(n);
     return;
   }
-  if (k === 'e' || k === 'E' || k === 'Enter') { if (dialogue) dialogue = null; else if (near) activate(near); return; }
+  if (k === 'c' || k === 'C') {
+    if (drive) stopDrive();
+    else if (nearMyCar()) startDrive();
+    else if (state.car) flash('your car is not here. walk to it first', '#9aa0b8');
+    return;
+  }
+  if (drive && (k === 'e' || k === 'E' || k === 'Enter')) { stopDrive(); return; }
+  if (k === 'e' || k === 'E' || k === 'Enter') {
+    if (dialogue) dialogue = null;
+    else if (near) activate(near);
+    else { const b = homeBoardNear(); if (b !== null) openHomeBoard(b); }
+    return;
+  }
   if (k === 'Escape' || k === ' ') { if (dialogue) { dialogue = null; ev.preventDefault(); } return; }
   if (k === 'i' || k === 'I' || k === 'Tab') { openStatus(); ev.preventDefault(); return; }
   if (k === 'z' || k === 'Z') { toggleZoom(); return; }
@@ -1215,12 +1585,17 @@ function updateWalkers(dt: number): void {
         w.wait = 1.5 + Math.random() * 6; // stopping to look at the stalls
         continue;
       }
-      for (let tries = 0; tries < 8; tries += 1) {
-        tx = Math.floor(w.x / TILE) + Math.floor(Math.random() * 40) - 20;
-        ty = Math.floor(w.y / TILE) + Math.floor(Math.random() * 30) - 15;
-        if (walkableTile(tx, ty)) break;
+      // somewhere 40-300 m away, along the real footpaths; anyone far from you comes back near you
+      const far = Math.hypot(w.x - player.x, w.y - player.y) > 600 * TILE;
+      const ox = far ? player.x / TILE : w.x / TILE, oy = far ? player.y / TILE : w.y / TILE;
+      for (let tries = 0; tries < 10; tries += 1) {
+        const r = far ? 80 + Math.random() * 120 : 40 + Math.random() * 260, a = Math.random() * Math.PI * 2;
+        tx = Math.floor(ox + Math.cos(a) * r);
+        ty = Math.floor(oy + Math.sin(a) * r);
+        if (walkableTile(tx, ty) && !drivableTile(tx, ty)) break;
       }
-      w.path = findPath(w.x, w.y, tx * TILE + 8, ty * TILE + 8).slice(0, 80);
+      if (far) { w.x = tx * TILE + 8; w.y = ty * TILE + 8; w.wait = 1; continue; }
+      w.path = findPath(w.x, w.y, tx * TILE + 8, ty * TILE + 8);
       w.wait = 2 + Math.random() * 5;
       continue;
     }
@@ -1232,28 +1607,6 @@ function updateWalkers(dt: number): void {
     w.y += ((t.y - w.y) / d) * v;
     if (Math.abs(t.x - w.x) > 0.5) w.facing = t.x > w.x ? 1 : -1;
     w.frame += dt * 6;
-  }
-}
-
-function updateCars(dt: number): void {
-  for (const c of cars) {
-    if (c.wait > 0) { c.wait -= dt; continue; }
-    const line = ROAD_LINES[c.line];
-    if (!line) continue;
-    const ni = c.i + c.dir;
-    if (ni < 0 || ni >= line.length) {
-      const next = nextLine(c.x, c.y, c.line);
-      if (next) { c.line = next.line; c.dir = next.dir; c.i = next.dir === 1 ? 0 : ROAD_LINES[next.line].length - 1; }
-      else { c.dir = c.dir === 1 ? -1 : 1; c.wait = 2; }
-      continue;
-    }
-    const t = line[ni];
-    const d = Math.hypot(t.x - c.x, t.y - c.y);
-    if (d < 3) { c.i = ni; continue; }
-    c.dx = (t.x - c.x) / d; c.dy = (t.y - c.y) / d;
-    // drive on the left, as in Hong Kong
-    c.x += c.dx * 110 * dt;
-    c.y += c.dy * 110 * dt;
   }
 }
 
@@ -1274,6 +1627,7 @@ function update(dt: number): void {
   updateCars(dt);
   updateMinibuses(dt);
   if (ride) return;
+  if (drive && !menu && !quiz && !job) { updateDrive(dt); near = null; return; }
 
   if (job) { job.update(dt); return; }
   if (quiz || menu) return;
@@ -1306,6 +1660,7 @@ function update(dt: number): void {
     if (d < 2) {
       path.shift();
       if (!path.length && pending) { const p = pending; pending = null; activate(p); }
+      if (!path.length && boardPending !== null) { const b = boardPending; boardPending = null; openHomeBoard(b); }
     } else { vx = (t.x - player.x) / d; vy = (t.y - player.y) / d; }
   }
 
@@ -1337,6 +1692,7 @@ function update(dt: number): void {
   }
 
   near = nearestPlace();
+  if (guide && Math.hypot(player.x - guide.x, player.y - guide.y) < 3 * TILE) { flash(`you are at ${guide.label}`, '#7be08a'); guide = null; }
 }
 
 // ------------------------------------------------------------------- draw ---
@@ -1423,15 +1779,37 @@ function drawHud(): void {
   if (audio.muted) text('m', 560, 21, '#6f7688');
 }
 
+/** 'show me the way': an arrow at the edge of the screen pointing to the target, with the distance */
+function drawGuide(): void {
+  if (!guide) return;
+  const sx = (guide.x - cam.x) * zoom, sy = (guide.y - cam.y) * zoom;
+  const px = ((drive ? drive.x : player.x) - cam.x) * zoom, py = ((drive ? drive.y : player.y) - cam.y) * zoom;
+  const ang = Math.atan2(sy - py, sx - px);
+  const m = Math.round(Math.hypot(guide.x - player.x, guide.y - player.y) / TILE);
+  const onScreen = sx > 20 && sx < W - 20 && sy > 50 && sy < H - 40;
+  const ax = onScreen ? sx : Math.max(30, Math.min(W - 30, px + Math.cos(ang) * 400));
+  const ay = onScreen ? sy - 18 : Math.max(60, Math.min(H - 50, py + Math.sin(ang) * 400));
+  ctx.save();
+  ctx.translate(Math.round(ax), Math.round(ay));
+  ctx.rotate(onScreen ? Math.PI / 2 : ang);
+  ctx.fillStyle = '#ffc84a';
+  ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(-6, -7); ctx.lineTo(-2, 0); ctx.lineTo(-6, 7); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  const label = `${guide.label} ${m} m`;
+  const lx = Math.max(4, Math.min(W - tw(label) - 4, Math.round(ax - tw(label) / 2)));
+  ctx.fillStyle = 'rgba(8,10,18,0.85)'; ctx.fillRect(lx - 3, Math.round(ay) + 11, tw(label) + 6, 11);
+  text(label, lx, Math.round(ay) + 12, '#ffc84a');
+}
+
 /** colour per kind of place, for the entrance pads and labels */
 const KIND_COLOUR: Partial<Record<Place['kind'], string>> = {
   job: '#ffc84a', employer: '#ffc84a', shop: '#7be08a', pirate: '#d8a0ff', minibus: '#46d07a', bus: '#ff9a4a',
   library: '#9ad0ff', course: '#c8a0ff', police: '#6aa0ff', prison: '#ff6a6a', board: '#ffe28a', offer: '#d8a0ff',
-  flavour: '#e8e4d8', lift: '#7ab0d8',
+  flavour: '#e8e4d8', lift: '#7ab0d8', agency: '#7be0b0', motors: '#ffb07a',
 };
 const KIND_ICON: Partial<Record<Place['kind'], string>> = {
   job: '!', employer: 'w', shop: '$', pirate: '?', minibus: 'm', bus: 'b', library: '#', course: '+', police: 'p',
-  prison: 'x', board: 'n', offer: '?', flavour: 'i', lift: 'l',
+  prison: 'x', board: 'n', offer: '?', flavour: 'i', lift: 'l', agency: 'h', motors: 'c',
 };
 
 /** a green minibus stop: a pole and the green-and-white sign with its route numbers */
@@ -1449,7 +1827,7 @@ function drawStopSign(p: Place): void {
 
 function drawCity(): void {
   const VW = viewW(), VH = viewH();
-  const fx = ride ? ride.x : player.x, fy = ride ? ride.y : player.y;
+  const fx = ride ? ride.x : drive ? drive.x : player.x, fy = ride ? ride.y : drive ? drive.y : player.y;
   cam.x = Math.max(0, Math.min(MAP_W * TILE - VW, Math.round(fx - VW / 2)));
   cam.y = Math.max(-35 / zoom, Math.min(MAP_H * TILE - VH + 28 / zoom, Math.round(fy - VH / 2)));
   // keep the camera on whole canvas pixels so the art does not shimmer
@@ -1495,16 +1873,23 @@ function drawCity(): void {
   ctx.fillStyle = '#c84a2a'; ctx.fillRect(bx, by + 30, 192, 10);
   ctx.fillStyle = '#3a5a7a'; for (let i = 8; i < 180; i += 22) ctx.fillRect(bx + i, by + 8, 16, 14);
 
-  for (const c of cars) {
-    const cx = Math.round(c.x - c.dy * 28 - cam.x), cy = Math.round(c.y + c.dx * 28 - cam.y);
-    if (cx < -80 || cy < -80 || cx > VW + 80 || cy > VH + 80) continue;
-    const vertical = Math.abs(c.dy) > Math.abs(c.dx);
-    const w = vertical ? 30 : 64, h = vertical ? 64 : 30;
-    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(cx - w / 2 + 2, cy - h / 2 + 2, w, h);
-    ctx.fillStyle = c.colour; ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
-    ctx.fillStyle = '#1a2a3a';
-    if (vertical) { ctx.fillRect(cx - w / 2 + 3, cy + (c.dy < 0 ? -h / 2 + 10 : h / 2 - 22), w - 6, 12); ctx.fillRect(cx - w / 2 + 3, cy + (c.dy < 0 ? h / 2 - 14 : -h / 2 + 6), w - 6, 8); }
-    else { ctx.fillRect(cx + (c.dx < 0 ? -w / 2 + 10 : w / 2 - 22), cy - h / 2 + 3, 12, h - 6); ctx.fillRect(cx + (c.dx < 0 ? w / 2 - 14 : -w / 2 + 6), cy - h / 2 + 3, 8, h - 6); }
+  for (const c of cars) if (c.x >= 0) drawCar(c.x, c.y, c.angle, c.model, c.colour);
+
+  // players' cars: yours where you parked it (or under you), everyone else's from the server
+  for (const [id, c] of net.cars) if (id !== net.me.id) drawCar(c.x, c.y, c.angle, c.model, c.coat);
+  if (state.car && !drive) drawCar(state.car.x, state.car.y, state.car.angle, state.car.model, net.me.coat);
+  if (drive && state.car) drawCar(drive.x, drive.y, drive.angle, state.car.model, net.me.coat);
+
+  // home boards by the front doors: green for sale, blue yours, grey sold
+  for (const hs of HOMES_AT.values()) {
+    const h0 = hs[0];
+    const x = h0.tx * TILE + 8 + 14 - cam.x, y = h0.ty * TILE - cam.y;
+    if (x < -20 || y < -30 || x > VW + 20 || y > VH + 20) continue;
+    const yours = hs.some((h) => mine(h.id)), free = hs.some((h) => !mine(h.id) && !ownerOf(h.id));
+    ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(Math.round(x) + 1, Math.round(y) - 1, 4, 2);
+    ctx.fillStyle = '#6a6f78'; ctx.fillRect(Math.round(x), Math.round(y) - 12, 2, 12);
+    ctx.fillStyle = yours ? '#3a8ae8' : free ? '#2f9a52' : '#7a7f88'; ctx.fillRect(Math.round(x) - 6, Math.round(y) - 20, 14, 9);
+    ctx.fillStyle = '#f2eee4'; ctx.fillRect(Math.round(x) - 4, Math.round(y) - 17, 10, 1); ctx.fillRect(Math.round(x) - 4, Math.round(y) - 15, 7, 1);
   }
 
   for (const sh of shuttles) drawMinibus(sh.x, sh.y, sh.angle, sh.route.no);
@@ -1546,11 +1931,12 @@ function drawCity(): void {
     sprites.push({ y: placeY(p) - 10, draw: () => drawFigure(placeX(p) - cam.x + 10, placeY(p) - cam.y - 10, p.person!, 0, -1) });
   }
   // other players, in their own coat colour, with their name over them
-  for (const o of net.others.values()) {
+  for (const [id, o] of net.others) {
+    if (net.cars.get(id)?.driving) continue; // in their car
     if (o.x < cam.x - 60 || o.x > cam.x + VW + 60 || o.y < cam.y - 60 || o.y > cam.y + VH + 60) continue;
     sprites.push({ y: o.y, draw: () => drawFigure(o.x - cam.x, o.y - cam.y, o.coat, o.frame, o.facing) });
   }
-  if (!ride) sprites.push({ y: player.y, draw: () => drawPlayer() });
+  if (!ride && !drive) sprites.push({ y: player.y, draw: () => drawPlayer() });
   // anyone standing behind a building (on the ground its picture covers) is hidden by it: the
   // building joins the depth sort at its front edge, so people in front still stand in front
   const feet: Array<[number, number]> = walkers.map((w) => [w.x, w.y]);
@@ -1584,7 +1970,8 @@ function drawCity(): void {
   const taken: Rect[] = [];
   const free = (r: Rect): boolean => !taken.some((q) => r.x < q.x + q.w && q.x < r.x + r.w && r.y < q.y + q.h && q.y < r.y + r.h);
   text('6 central', S(bx + cam.x + 4), T(by + cam.y) - 9, '#e8e4d8');
-  for (const o of net.others.values()) {
+  for (const [id, o] of net.others) {
+    if (net.cars.get(id)?.driving) continue;
     const x = S(o.x), y = T(o.y) - Math.round(28 * figScale() * zoom) - 4;
     if (x < -40 || x > W + 40 || y < -10 || y > H + 10) continue;
     const w = tw(o.name) + 6;
@@ -1637,13 +2024,27 @@ function drawCity(): void {
   if (dark > 0) { ctx.fillStyle = `rgba(14,20,52,${dark.toFixed(3)})`; ctx.fillRect(0, 0, W, H); }
 
   drawHud();
+  drawGuide();
 
   // prompt line
   ctx.fillStyle = '#0a0c14'; ctx.fillRect(0, 332, W, 28);
   ctx.fillStyle = '#232a3a'; ctx.fillRect(0, 332, W, 1);
+  const board = !ride && !drive && !near ? homeBoardNear() : null;
   if (ride) {
     text(`on the gmb ${ride.route.no} to ${ride.to.name}`, 8, 342, '#7be08a');
     text('tap to get off at your stop', 330, 342, '#6f7688');
+  } else if (drive) {
+    const kmh = Math.round((Math.abs(drive.speed) / TILE) * 3.6);
+    text(`driving - ${kmh} km/h`, 8, 342, '#7be08a');
+    text('arrows steer   tap to go somewhere   c park', 190, 342, '#6f7688');
+  } else if (board !== null) {
+    const hs = HOMES_AT.get(board)!;
+    ctx.fillStyle = '#46e0e6'; ctx.fillRect(8, 339, 13, 14);
+    text('e', 12, 342, '#08110c');
+    const label = hs.length > 1 ? hs[0].name.replace(/^flat [0-9]+[a-f], /, '') : hs[0].name;
+    text(label, 27, 342, '#ffffff');
+    const free = hs.filter((h) => !mine(h.id) && !ownerOf(h.id)).length;
+    text(`(${hs.some((h) => mine(h.id)) ? 'yours' : free ? `${free} for sale from ${money(hs.find((h) => !mine(h.id) && !ownerOf(h.id))!.price)}` : 'sold'})`, 33 + tw(label), 342, '#9aa0b8');
   } else if (near) {
     ctx.fillStyle = '#46e0e6'; ctx.fillRect(8, 339, 13, 14);
     text('e', 12, 342, '#08110c');
@@ -1652,9 +2053,9 @@ function drawCity(): void {
     const j = jobAt(near);
     if (j?.mission && state.mission) text(`(callout $${j.def.pay * MISSION_PAY} - ${Math.max(0, Math.ceil((state.mission.until - now()) / 1000))}s)`, after, 342, '#ff4a5f');
     else if (j) text(`(job $${j.def.pay})`, after, 342, '#ffc84a');
-    else text(`(${({ minibus: 'ride', board: 'gigs', shop: 'buy gear', pirate: 'a man with discs', employer: 'work', library: 'study', course: 'courses', police: 'your record', prison: 'stay out', flavour: 'look', offer: 'a man in a cap', bus: 'go home', job: 'shop', lift: 'pick a floor' } as Record<string, string>)[near.kind]})`, after, 342, '#9aa0b8');
+    else text(`(${({ minibus: 'ride', board: 'gigs', shop: 'buy gear', pirate: 'a man with discs', employer: 'work', library: 'study', course: 'courses', police: 'your record', prison: 'stay out', flavour: 'look', offer: 'a man in a cap', bus: 'go home', job: 'shop', lift: 'pick a floor', agency: 'homes for sale', motors: 'cars' } as Record<string, string>)[near.kind]})`, after, 342, '#9aa0b8');
   } else {
-    text('wasd / tap to walk   shift run   e use   i status   z zoom', 8, 342, '#6f7688');
+    text(nearMyCar() ? 'c drive your car   wasd / tap to walk   e use   i status' : 'wasd / tap to walk   shift run   e use   i status   z zoom', 8, 342, nearMyCar() ? '#7be08a' : '#6f7688');
   }
   ctx.fillStyle = '#232a3a'; ctx.fillRect(zoomRect.x, zoomRect.y, zoomRect.w, zoomRect.h);
   const zl = zoom < 1 ? 'zoom in' : 'zoom out';
@@ -2028,10 +2429,13 @@ function handle(events: Ev[]): void {
         nextMission = 90;
         say('stanley prison', 'released. the gate shuts behind you. tung tau wan road is quiet.');
         break;
-      case 'sleep':
-        placePlayer(START.tx, START.ty);
-        say(`day ${e.day}`, 'the 6 drops you at stanley again. the board in the market has new gigs.');
+      case 'sleep': {
+        const h = e.home ? home(e.home) : undefined;
+        if (h) { placePlayer(h.tx, h.ty); say(`day ${e.day}`, `you wake up at ${h.name}. 08:00.`); }
+        else { placePlayer(START.tx, START.ty); say(`day ${e.day}`, 'the 6 drops you at stanley again. the board in the market has new gigs.'); }
         break;
+      }
+      case 'homeChange': soloOwners(); break;
       case 'mission': showWire(undefined, true); break;
       case 'missionGone':
         nextMission = 150 + Math.random() * 90;
@@ -2058,7 +2462,7 @@ async function start(): Promise<void> {
   if (state.x < 0 || state.mapv !== 2 || solidTile(tx, ty)) placePlayer(START.tx, START.ty);
   else { player.x = state.x; player.y = state.y; sendPos(player.x, player.y); }
   ready = true;
-  if (net.mode === 'solo') await act('tick');
+  if (net.mode === 'solo') { soloOwners(); await act('tick'); }
   if (state.mission) showWire(undefined, true);
   if (!state.jail && !dialogue) {
     if (state.work?.tasks.length) say('welcome back', workStatus());
@@ -2092,6 +2496,11 @@ hooks.__pos = () => ({ x: player.x, y: player.y, moving: path.length > 0 });
 hooks.__items = ITEMS.map((i) => i.id);
 /** run an action as if from the game (tests) */
 hooks.__act = act;
+hooks.__home = home;
+hooks.__homesList = HOMES;
+hooks.__cars = () => cars.map((c) => ({ x: Math.round(c.x / TILE), y: Math.round(c.y / TILE), kmh: Math.round((c.speed / TILE) * 3.6), left: c.route.length }));
+hooks.__drive = () => (drive ? { x: Math.round(drive.x / TILE), y: Math.round(drive.y / TILE), kmh: Math.round((Math.abs(drive.speed) / TILE) * 3.6), left: drive.route.length } : null);
+hooks.__driveTo = (id: string) => { const p = PLACES.find((q) => q.id === id); if (!p || !drive) return false; driveTo(placeX(p), placeY(p), p); return drive.route.length; };
 hooks.__day = DAY;
 /** the whole map as a PNG data URL, for checking the layout */
 hooks.__world = (scale = 2) => renderOverview(scale).toDataURL();

@@ -18,6 +18,8 @@ import {
   TASK_QUESTIONS, REHIRE_WAIT, fireAfter, boardFor, OFFENCES, WARNING_FINE, GIGS, type Employer, type Gig, type Offence,
 } from './economy.ts';
 import { ROUTES } from './minibus.ts';
+import { HOMES, home } from './homes.ts';
+import { car as carModel, CAR_LOSS_PER_DAY, CAR_FLOOR, CAR_BUYBACK } from './cars.ts';
 
 // ------------------------------------------------------------------- save ---
 export type Jail = { until: number; act: string; law: string; offence: string; fix: string };
@@ -101,6 +103,12 @@ export type Save = {
   /** the street offer you walked away from */
   declined: boolean;
   quiz: HeldQuiz | null;
+  /** homes you own: what you paid, and (let homes) the real time tenants last paid up to */
+  homes: Record<string, { paid: number; rentTo: number }>;
+  /** the home you live in: no rent, fees instead, and you sleep at its door */
+  residence: string | null;
+  /** your car, where it is parked (world pixels) and what it is worth now */
+  car: { model: string; paid: number; value: number; x: number; y: number; angle: number } | null;
 };
 
 export const START_MONEY = 1280;
@@ -109,6 +117,7 @@ export const fresh = (): Save => ({
   v: 3, money: START_MONEY, energy: 5, day: 1, minutes: 9 * 60, x: -1, y: -1, done: [], mastery: {}, rep: {},
   jail: null, mission: null, missionTaken: null, inv: ['laptop1'], cond: {}, lic: {}, certs: [], work: null,
   fired: {}, gigs: [], record: [], seen: [], answered: 0, right: 0, earned: 0, declined: false, quiz: null,
+  homes: {}, residence: null, car: null,
 });
 
 /** bring an older or partial save up to date */
@@ -119,7 +128,10 @@ export function migrate(raw: unknown): Save {
   Object.assign(s, r, { v: 3 });
   // v2 kept the callout as seconds left on the street: drop it, a new one comes along
   if (r.v !== 3) { s.mission = null; s.missionTaken = null; s.quiz = null; }
-  for (const k of ['cond', 'lic', 'mastery', 'rep', 'fired'] as const) if (!s[k] || typeof s[k] !== 'object') s[k] = {};
+  for (const k of ['cond', 'lic', 'mastery', 'rep', 'fired', 'homes'] as const) if (!s[k] || typeof s[k] !== 'object') s[k] = {};
+  for (const id of Object.keys(s.homes)) if (!home(id)) delete s.homes[id];
+  if (s.residence && !s.homes[s.residence]) s.residence = null;
+  if (s.car && !carModel(s.car.model)) s.car = null;
   for (const k of ['inv', 'certs', 'gigs', 'record', 'seen', 'done'] as const) if (!Array.isArray(s[k])) s[k] = [];
   if (!s.inv.includes('laptop1')) s.inv.unshift('laptop1');
   // licences bought before they ran out: give them their 30 days from now
@@ -143,6 +155,11 @@ export const SLEEP_FARE = 12;
 export const RENT = 150;
 export const LICENCE_DAYS = 30;
 export const RENEW_WINDOW = 7;
+/** homes (§11.1): living in one costs fees instead of rent; others are let to tenants, paid by the
+ *  real hour so sleeping over and over cannot farm it; selling returns 90% */
+export const HOME_FEES = 0.0003;
+export const TENANT_PER_REAL_DAY = 0.003;
+export const HOME_SELL = 0.9;
 /** a gig wears the laptop you use 1% and each tool it needs 4% */
 export const WEAR_LAPTOP = 1;
 export const WEAR_TOOL = 4;
@@ -170,9 +187,15 @@ export type Ev =
   | { t: 'warning'; law: string; offence: string; act: string; fix: string; fine: number; taken: string[] }
   | { t: 'arrest' }
   | { t: 'released' }
-  | { t: 'sleep'; day: number }
+  | { t: 'sleep'; day: number; home?: string }
   | { t: 'mission'; id: string; until: number }
-  | { t: 'missionGone' };
+  | { t: 'missionGone' }
+  /** a home changed hands: the server tells everyone, so the boards by the doors stay right */
+  | { t: 'homeChange'; id: string; sold: boolean }
+  | { t: 'carChange' };
+
+/** what the rules need to know about the rest of the server: who owns which home */
+export type World = { homeTaken?: (id: string) => boolean };
 
 export type Result = { ok: boolean; err?: string; events: Ev[] };
 
@@ -205,9 +228,19 @@ function addMinutes(s: Save, n: number, ev: Ev[]): void {
 
 function newDay(s: Save, ev: Ev[]): void {
   s.day += 1;
-  const rent = Math.min(s.money, RENT);
-  addMoney(s, -rent);
-  ev.push({ t: 'toast', text: `day ${s.day}: rent ${money(rent)}${rent < RENT ? ' (all you had)' : ''}`, colour: '#ff9a6a' });
+  const h = s.residence ? home(s.residence) : undefined;
+  const due = h ? Math.max(1, Math.round(h.price * HOME_FEES)) : RENT;
+  const paid = Math.min(s.money, due);
+  addMoney(s, -paid);
+  const parts = [h ? `fees and rates ${money(paid)}` : `rent ${money(paid)}`];
+  if (s.car) {
+    const m = carModel(s.car.model)!;
+    const run = Math.min(s.money, m.daily);
+    addMoney(s, -run);
+    s.car.value = Math.max(Math.round(m.price * CAR_FLOOR), Math.round(s.car.value - m.price * CAR_LOSS_PER_DAY));
+    parts.push(`car ${money(run)}`);
+  }
+  ev.push({ t: 'toast', text: `day ${s.day}: ${parts.join(', ')}${paid < due ? ' (all you had)' : ''}`, colour: '#ff9a6a' });
   for (const [id, until] of Object.entries(s.lic)) {
     if (s.inv.includes(id) && until === s.day) ev.push({ t: 'toast', text: `your ${item(id)?.name ?? id} licence ran out`, colour: '#ff9a6a', secs: 5 });
   }
@@ -261,7 +294,19 @@ export function itemValue(s: Save, id: string): number {
 /** the leaderboard: cash plus gear at what it is worth now. Buying gear moves money into gear, so
  *  it never drops you; wear, expiry and rent do */
 export function netWorth(s: Save): number {
-  return Math.round(s.money + s.inv.reduce((sum, id) => sum + itemValue(s, id), 0));
+  const homes = Object.values(s.homes).reduce((sum, h) => sum + h.paid, 0);
+  return Math.round(s.money + s.inv.reduce((sum, id) => sum + itemValue(s, id), 0) + homes + (s.car?.value ?? 0));
+}
+
+/** tenants' rent so far that has not been collected yet, by home */
+export function tenantsOwe(s: Save, now: number): number {
+  let sum = 0;
+  for (const [id, h] of Object.entries(s.homes)) {
+    if (id === s.residence) continue;
+    const hours = Math.floor((now - h.rentTo) / HOUR);
+    if (hours > 0) sum += (home(id)!.price * TENANT_PER_REAL_DAY * hours) / 24;
+  }
+  return sum;
 }
 
 export function repairCost(s: Save, id: string): number {
@@ -329,6 +374,16 @@ function commit(s: Save, o: Offence, now: number, ev: Ev[]): void {
 /** issue work tasks that fell due, warn, fire; let people out of prison; close a missed callout.
  *  Safe to run any number of times: it only looks at the wall clock */
 function tick(s: Save, now: number, ev: Ev[]): void {
+  // tenants pay by the real hour (a home you live in has none)
+  let rent = 0;
+  for (const [id, h] of Object.entries(s.homes)) {
+    if (id === s.residence) { h.rentTo = now; continue; }
+    const hours = Math.floor((now - h.rentTo) / HOUR);
+    if (hours <= 0) continue;
+    rent += (home(id)!.price * TENANT_PER_REAL_DAY * hours) / 24;
+    h.rentTo += hours * HOUR;
+  }
+  if (rent >= 0.1) addMoney(s, Math.round(rent * 10) / 10);
   if (s.jail && now >= s.jail.until) {
     s.jail = null;
     ev.push({ t: 'released' });
@@ -381,22 +436,23 @@ const num = (a: Args, k: string): number => (typeof a[k] === 'number' && Number.
 export const ACTIONS = [
   'tick', 'quiz.start', 'quiz.answer', 'quiz.end', 'buy', 'repair', 'renew', 'crime', 'offer.decline',
   'work.apply', 'work.quit', 'sleep', 'fare', 'ride.end', 'job.wrong', 'job.done', 'job.crime',
-  'mission.new', 'mission.take', 'mission.leave', 'study.time',
+  'mission.new', 'mission.take', 'mission.leave', 'study.time', 'home.buy', 'home.sell', 'home.live',
+  'car.buy', 'car.sell', 'car.park',
 ] as const;
 export type ActionName = (typeof ACTIONS)[number];
 
-export function act(s: Save, name: string, a: Args, now: number): Result {
+export function act(s: Save, name: string, a: Args, now: number, world: World = {}): Result {
   const ev: Ev[] = [];
   tick(s, now, ev);
   if (name === 'tick') return { ok: true, events: ev };
   if (s.jail) return { ok: false, err: 'you are in prison', events: ev };
-  const r = run(s, name, a, now, ev);
+  const r = run(s, name, a, now, ev, world);
   // a failed action still delivers what the tick said
   if (!r.ok) r.events = [...ev.filter((e) => !r.events.includes(e)), ...r.events];
   return r;
 }
 
-function run(s: Save, name: string, a: Args, now: number, ev: Ev[]): Result {
+function run(s: Save, name: string, a: Args, now: number, ev: Ev[], world: World): Result {
   const done = (): Result => ({ ok: true, events: ev });
   switch (name) {
     // ---------------------------------------------------------- quizzes
@@ -537,12 +593,83 @@ function run(s: Save, name: string, a: Args, now: number, ev: Ev[]): Result {
     }
     // ----------------------------------------------------------- getting about
     case 'sleep': {
-      // the bus home: a new day (rent), full energy, a new board
-      addMoney(s, -Math.min(s.money, SLEEP_FARE));
+      // the bus home, or your own front door: a new day (rent or fees), full energy, a new board
+      const h = s.residence ? home(s.residence) : undefined;
+      const atHome = str(a, 'at') === 'home';
+      if (atHome) {
+        if (!h) return fail('you do not live anywhere yet');
+        if (Math.hypot(s.x / 16 - h.tx, s.y / 16 - h.ty) > 6) return fail('go to your front door to sleep');
+      } else addMoney(s, -Math.min(s.money, SLEEP_FARE));
       s.minutes = 8 * 60;
       newDay(s, ev);
       s.energy = 5;
-      ev.push({ t: 'sound', s: 'door' }, { t: 'sleep', day: s.day });
+      ev.push({ t: 'sound', s: 'door' }, { t: 'sleep', day: s.day, home: atHome ? h!.id : undefined });
+      return done();
+    }
+    // ---------------------------------------------------------------- homes
+    case 'home.buy': {
+      const h = home(str(a, 'id'));
+      if (!h) return fail('not for sale');
+      if (s.homes[h.id]) return fail('it is yours already');
+      if (world.homeTaken?.(h.id)) return fail('someone else bought it');
+      if (s.money < h.price) return fail('not enough money');
+      addMoney(s, -h.price);
+      s.homes[h.id] = { paid: h.price, rentTo: now };
+      const first = !s.residence;
+      if (first) s.residence = h.id;
+      ev.push({ t: 'sound', s: 'cash' }, { t: 'homeChange', id: h.id, sold: true },
+        { t: 'news', text: `${h.name} sold for ${money(h.price)}`, public: `bought ${h.name} for ${money(h.price)}` },
+        { t: 'say', who: 'mr lam', text: first
+          ? `the keys to ${h.name}. you live here now: no more rent, just fees of ${money(Math.max(1, Math.round(h.price * HOME_FEES)))} a day. sleep at your own front door.`
+          : `the keys to ${h.name}. i will find you tenants: about ${money(Math.round(h.price * TENANT_PER_REAL_DAY))} a real day, paid by the hour.` });
+      return done();
+    }
+    case 'home.sell': {
+      const h = home(str(a, 'id'));
+      const own = h && s.homes[h.id];
+      if (!h || !own) return fail('that is not yours');
+      const back = Math.round(own.paid * HOME_SELL);
+      addMoney(s, back);
+      delete s.homes[h.id];
+      if (s.residence === h.id) s.residence = Object.keys(s.homes)[0] ?? null;
+      ev.push({ t: 'sound', s: 'cash' }, { t: 'homeChange', id: h.id, sold: false },
+        { t: 'toast', text: `sold ${h.name}: ${money(back)} after the agent's fee and stamp duty`, colour: '#7be08a', secs: 5 });
+      return done();
+    }
+    case 'home.live': {
+      const id = str(a, 'id');
+      if (!s.homes[id]) return fail('that is not yours');
+      s.residence = id;
+      ev.push({ t: 'toast', text: `you live at ${home(id)!.name} now`, colour: '#7be08a' });
+      return done();
+    }
+    // ----------------------------------------------------------------- cars
+    case 'car.buy': {
+      const m = carModel(str(a, 'model'));
+      if (!m) return fail('no such car');
+      if (s.car?.model === m.id) return fail('you have one');
+      const trade = s.car ? Math.round(s.car.value * CAR_BUYBACK) : 0;
+      if (s.money + trade < m.price) return fail('not enough money, even with part exchange');
+      addMoney(s, trade - m.price);
+      const x = num(a, 'x'), y = num(a, 'y');
+      s.car = { model: m.id, paid: m.price, value: m.price, x: Number.isFinite(x) ? x : s.x, y: Number.isFinite(y) ? y : s.y, angle: num(a, 'angle') || 0 };
+      ev.push({ t: 'sound', s: 'cash' }, { t: 'carChange' }, { t: 'news', text: `stanley motors sold a ${m.name}`, public: `drove a new ${m.name} out of stanley motors` },
+        { t: 'say', who: 'stanley motors', text: `${trade ? `we took your old car for ${money(trade)}. ` : ''}it is parked outside. walk up to it and press c to drive; c again to park.` });
+      return done();
+    }
+    case 'car.sell': {
+      if (!s.car) return fail('you have no car');
+      const back = Math.round(s.car.value * CAR_BUYBACK);
+      addMoney(s, back);
+      s.car = null;
+      ev.push({ t: 'sound', s: 'cash' }, { t: 'carChange' }, { t: 'toast', text: `sold your car for ${money(back)}`, colour: '#7be08a' });
+      return done();
+    }
+    case 'car.park': {
+      if (!s.car) return fail('you have no car');
+      const x = num(a, 'x'), y = num(a, 'y'), ang = num(a, 'angle');
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return fail('where?');
+      s.car.x = x; s.car.y = y; s.car.angle = Number.isFinite(ang) ? ang : 0;
       return done();
     }
     case 'fare': {

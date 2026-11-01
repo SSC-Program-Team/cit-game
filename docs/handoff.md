@@ -21,6 +21,14 @@ traps that cost time.
 | `src/protocol.ts` | Messages both ways, coat colours, the name rule |
 | `server/admin.html` | The teacher page |
 | `scripts/test-rules.ts` | Checks the rules (part of `npm run check`) |
+| `src/homes.ts` | v0.7: houses and flats for sale, worked out from the map (same ids and prices on server and browser); price by floor area, sea view, detached |
+| `src/cars.ts` | v0.7: Stanley Motors' five models |
+
+v0.7 (homes, cars, traffic): the first home you buy is where you live (fees instead of rent, sleep
+at your own door); others are let by the real hour; one owner per home on the server (`homes`
+table). Cars park where you leave them and everyone sees them; driving uses the road network
+(`drivableTile`, `onNetwork`, `driveRoute` in world.ts), not the market lanes. NPC cars drive
+routes in the left-hand lane and brake for whatever is ahead; people walk 40-300 m along paths.
 
 Deploying it: [deploy.md](deploy.md). `main.ts` no longer changes the save itself: it calls
 `act()` and reacts to the events (`handle()`).

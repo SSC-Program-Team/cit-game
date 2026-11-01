@@ -10,8 +10,9 @@ export type ToServer =
   /** first message. token: the random id this browser keeps; name: only when asked for one */
   | { t: 'hello'; token: string; name?: string }
   | { t: 'act'; id: number; name: string; args: Record<string, unknown> }
-  /** where you are, in world pixels, a few times a second while you move */
-  | { t: 'pos'; x: number; y: number }
+  /** where you are, in world pixels, a few times a second while you move; drive: the car's
+   *  heading (radians) while you drive it */
+  | { t: 'pos'; x: number; y: number; drive?: number }
   /** the quiz in progress, to carry on after a reconnect */
   | { t: 'quiz?' };
 
@@ -26,7 +27,11 @@ export type ToClient =
   | { t: 'wire'; text: string }
   /** the richest on the server: name and net worth; you: your place (1-based) and worth */
   | { t: 'board'; top: Array<[string, number]>; you: [number, number] }
-  | { t: 'paused' };
+  | { t: 'paused' }
+  /** who owns which home: all of them on joining, then each change. name '' = for sale again */
+  | { t: 'homes'; owners: Array<[string, string]> }
+  /** players' cars near you, parked or being driven: owner id, owner name, coat, model, x, y, heading, driving */
+  | { t: 'cars'; list: Array<[string, string, string, string, number, number, number, number]> };
 
 /** coats players wear, so you can tell each other apart in the street */
 export const COATS = ['#e8463a', '#3a8ae8', '#f2c230', '#3ac46a', '#c05ae8', '#f28a3a', '#3ad0d0', '#e85a9a', '#9ad03a', '#ffffff', '#5a5ae8', '#d8a070'];

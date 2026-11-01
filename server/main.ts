@@ -45,6 +45,7 @@ db.exec(`
     worth integer not null default 0
   );
   create table if not exists wire (at integer not null, text text not null);
+  create table if not exists homes (id text primary key, owner text not null);
 `);
 const q = {
   byToken: db.prepare('select * from players where token = ?'),
@@ -59,7 +60,32 @@ const q = {
   rank: db.prepare('select count(*) as n from players where worth > ?'),
   addWire: db.prepare('insert into wire (at, text) values (?, ?)'),
   lastWire: db.prepare('select text from wire order by at desc limit 8'),
+  homesAll: db.prepare('select homes.id as id, homes.owner as owner, players.name as name from homes join players on players.id = homes.owner'),
+  homeSet: db.prepare('insert or replace into homes (id, owner) values (?, ?)'),
+  homeFree: db.prepare('delete from homes where id = ?'),
+  homesOf: db.prepare('delete from homes where owner = ?'),
+  saves: db.prepare('select id, name, coat, save from players'),
 };
+
+/** who owns each home on the server: one owner each (§11.1) */
+const owner = new Map<string, { id: string; name: string }>();
+for (const r of q.homesAll.all() as Array<{ id: string; owner: string; name: string }>) owner.set(r.id, { id: r.owner, name: r.name });
+const world = (p: { id: string }) => ({ homeTaken: (id: string) => { const o = owner.get(id); return !!o && o.id !== p.id; } });
+
+/** every player's car, parked or on the road */
+type CarSpot = { name: string; coat: string; model: string; x: number; y: number; angle: number; driving: boolean };
+const cars = new Map<string, CarSpot>();
+for (const r of q.saves.all() as Array<{ id: string; name: string; coat: string; save: string }>) {
+  const c = (JSON.parse(r.save) as Save).car;
+  if (c) cars.set(r.id, { name: r.name, coat: r.coat, model: c.model, x: c.x, y: c.y, angle: c.angle, driving: false });
+}
+function syncCar(p: { id: string; name: string; coat: string; save: Save }): void {
+  const c = p.save.car;
+  const was = cars.get(p.id);
+  if (!c) { cars.delete(p.id); return; }
+  if (was?.driving) { was.model = c.model; return; }
+  cars.set(p.id, { name: p.name, coat: p.coat, model: c.model, x: c.x, y: c.y, angle: c.angle, driving: false });
+}
 
 type Row = { id: string; token: string; name: string; coat: string; save: string; created: number; seen: number; paused: number; worth: number };
 
@@ -86,7 +112,16 @@ function wire(text: string): void {
 }
 
 function deliver(p: Player, events: Ev[]): void {
-  for (const e of events) if (e.t === 'news' && e.public) wire(`${p.name} ${e.public}`);
+  const changed: Array<[string, string]> = [];
+  for (const e of events) {
+    if (e.t === 'news' && e.public) wire(`${p.name} ${e.public}`);
+    if (e.t === 'homeChange') {
+      if (e.sold) { owner.set(e.id, { id: p.id, name: p.name }); q.homeSet.run(e.id, p.id); changed.push([e.id, p.name]); }
+      else { owner.delete(e.id); q.homeFree.run(e.id); changed.push([e.id, '']); }
+    }
+    if (e.t === 'carChange') syncCar(p);
+  }
+  if (changed.length) for (const o of online.values()) send(o.sock, { t: 'homes', owners: changed });
 }
 
 let boardDirty = true;
@@ -128,6 +163,8 @@ function hello(sock: Socket, m: Extract<ToServer, { t: 'hello' }>): Player | nul
   if (r.events.length) send(sock, { t: 'push', events: r.events, save: publicSave(save), now: Date.now() });
   if (save.quiz && !save.quiz.over) send(sock, { t: 'push', events: [{ t: 'quiz', view: quizView(save.quiz) }], save: publicSave(save), now: Date.now() });
   for (const w of (q.lastWire.all() as Array<{ text: string }>).reverse()) send(sock, { t: 'wire', text: w.text });
+  send(sock, { t: 'homes', owners: [...owner].map(([id, o]) => [id, o.name] as [string, string]) });
+  syncCar(p);
   sendBoard(p);
   if (p.paused) send(sock, { t: 'paused' });
   return p;
@@ -137,6 +174,12 @@ function onMessage(p: Player, m: ToServer): void {
   if (m.t === 'pos') {
     if (Number.isFinite(m.x) && Number.isFinite(m.y) && m.x >= 0 && m.y >= 0 && m.x < 1408 * 16 && m.y < 1280 * 16) {
       p.x = m.x; p.y = m.y; p.save.x = m.x; p.save.y = m.y; p.save.mapv = 2; p.moved = Date.now(); p.dirty = true;
+      // driving: the car is where you are; it stays there until you park it properly
+      const c = cars.get(p.id);
+      if (c && p.save.car) {
+        c.driving = typeof m.drive === 'number' && Number.isFinite(m.drive);
+        if (c.driving) { c.x = m.x; c.y = m.y; c.angle = m.drive!; }
+      }
     }
     return;
   }
@@ -147,7 +190,8 @@ function onMessage(p: Player, m: ToServer): void {
   if (m.t === 'act') {
     if (p.paused) { send(p.sock, { t: 'res', id: m.id, ok: false, err: 'paused by your teacher', events: [], save: publicSave(p.save), now: Date.now() }); return; }
     const before = netWorth(p.save);
-    const r = act(p.save, String(m.name), m.args && typeof m.args === 'object' ? m.args : {}, Date.now());
+    const r = act(p.save, String(m.name), m.args && typeof m.args === 'object' ? m.args : {}, Date.now(), world(p));
+    if (m.name === 'car.park' && r.ok) { const c = cars.get(p.id); if (c) c.driving = false; syncCar(p); }
     deliver(p, r.events);
     store(p);
     if (netWorth(p.save) !== before) boardDirty = true;
@@ -163,6 +207,11 @@ setInterval(() => {
     const near = list.filter((o) => o !== me && Math.abs(o.x - me.x) < NEAR && Math.abs(o.y - me.y) < NEAR)
       .map((o) => [o.id, o.name, o.coat, Math.round(o.x), Math.round(o.y)] as [string, string, string, number, number]);
     send(me.sock, { t: 'others', list: near });
+    const nearCars: Array<[string, string, string, string, number, number, number, number]> = [];
+    for (const [id, c] of cars) {
+      if (Math.abs(c.x - me.x) < NEAR && Math.abs(c.y - me.y) < NEAR) nearCars.push([id, c.name, c.coat, c.model, Math.round(c.x), Math.round(c.y), Math.round(c.angle * 100) / 100, c.driving ? 1 : 0]);
+    }
+    send(me.sock, { t: 'cars', list: nearCars });
     me.rate = 0;
   }
 }, 200);
@@ -234,6 +283,9 @@ async function admin(req: IncomingMessage, res: ServerResponse, url: URL, path: 
     if (q.byName.get(c.name)) { json(res, 400, { err: 'name taken' }); return; }
     q.rename.run(c.name, id);
     if (live) { live.name = c.name; live.sock.close(4001); }
+    for (const o of owner.values()) if (o.id === id) o.name = c.name;
+    const cs = cars.get(id);
+    if (cs) cs.name = c.name;
     boardDirty = true;
     json(res, 200, { ok: true });
     return;
@@ -249,6 +301,12 @@ async function admin(req: IncomingMessage, res: ServerResponse, url: URL, path: 
     const s = fresh();
     if (live) { live.save = s; live.sock.close(4003); }
     q.update.run(JSON.stringify(s), Date.now(), netWorth(s), id);
+    // their homes go back on the market, their car goes
+    const freed: Array<[string, string]> = [];
+    for (const [hid, o] of owner) if (o.id === id) { owner.delete(hid); freed.push([hid, '']); }
+    q.homesOf.run(id);
+    cars.delete(id);
+    if (freed.length) for (const o of online.values()) send(o.sock, { t: 'homes', owners: freed });
     boardDirty = true;
     json(res, 200, { ok: true });
     return;
@@ -309,7 +367,13 @@ server.on('upgrade', (req, sock) => {
     onMessage(me, m);
   });
   ws.on('close', () => {
-    if (me && online.get(me.id) === me) { store(me); online.delete(me.id); }
+    if (me && online.get(me.id) === me) {
+      store(me);
+      online.delete(me.id);
+      // a car left mid-drive stays where it stopped
+      const c = cars.get(me.id);
+      if (c?.driving && me.save.car) { c.driving = false; me.save.car.x = c.x; me.save.car.y = c.y; me.save.car.angle = c.angle; store(me); }
+    }
   });
 });
 

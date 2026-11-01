@@ -91,5 +91,35 @@ now += 31 * 60 * 1000;
 r = act(p, 'tick', {}, now);
 ok(!p.jail && r.events.some((e) => e.t === 'released'), 'released after 30 real minutes');
 
+// homes: the first is where you live (fees, not rent); others are let by the real hour
+{
+  const { HOMES } = await import('../src/homes.ts');
+  const h: Save = fresh();
+  h.money = 100000;
+  const [a, b] = HOMES.filter((x) => x.price < 30000);
+  ok(!act(h, 'home.buy', { id: a.id }, now, { homeTaken: (id) => id === a.id }).ok, 'cannot buy a home someone else owns');
+  const nw = netWorth(h);
+  ok(act(h, 'home.buy', { id: a.id }, now).ok && h.residence === a.id, 'first home is where you live');
+  ok(netWorth(h) === nw, 'buying a home keeps net worth');
+  ok(!act(h, 'sleep', { at: 'home' }, now).ok, 'cannot sleep at home from across town');
+  h.x = a.tx * 16; h.y = a.ty * 16;
+  const m1 = h.money;
+  ok(act(h, 'sleep', { at: 'home' }, now).ok && m1 - h.money === Math.max(1, Math.round(a.price * 0.0003)), 'sleep at home: fees, no rent, no fare');
+  act(h, 'home.buy', { id: b.id }, now);
+  const m2 = h.money;
+  act(h, 'tick', {}, now + 24 * HOUR);
+  ok(Math.abs(h.money - m2 - b.price * 0.003) < 1, `a real day of tenants on the second home (${(h.money - m2).toFixed(1)})`);
+  act(h, 'sleep', {}, now + 24 * HOUR); act(h, 'sleep', {}, now + 24 * HOUR);
+  ok(Math.abs(h.money - m2 - b.price * 0.003) < 200, 'sleeping does not farm tenants');
+  const m3 = h.money;
+  ok(act(h, 'home.sell', { id: b.id }, now + 24 * HOUR).ok && h.money - m3 === Math.round(b.price * 0.9), 'selling returns 90%');
+  // cars
+  ok(act(h, 'car.buy', { model: 'hatch' }, now).ok && h.car?.value === 12000, 'bought a hatchback');
+  act(h, 'sleep', {}, now + 24 * HOUR);
+  ok(h.car?.value === 11880, 'a car loses 1% a day');
+  const m4 = h.money;
+  ok(act(h, 'car.buy', { model: 'saloon' }, now + 24 * HOUR).ok && Math.round(m4 - h.money) === 38000 - Math.round(11880 * 0.8), 'part exchange at 80%');
+}
+
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

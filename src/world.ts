@@ -22,7 +22,7 @@ const N = MAP_W * MAP_H;
 
 export type PlaceKind =
   | 'job' | 'board' | 'shop' | 'pirate' | 'employer' | 'library' | 'course'
-  | 'police' | 'prison' | 'flavour' | 'offer' | 'bus' | 'minibus' | 'lift';
+  | 'police' | 'prison' | 'flavour' | 'offer' | 'bus' | 'minibus' | 'lift' | 'agency' | 'motors';
 
 export type Place = {
   id: string;
@@ -840,6 +840,103 @@ export const surf = new Uint8Array(N);
   }
 }
 
+// ---------------------------------------------------------------- driving ---
+/** where a car may go (§11.2): roads, lanes, driveways and car parks, but not the market lanes or
+ *  Stanley Main Street, which are tagged as streets but full of stalls and people */
+const NO_CARS = new Uint8Array(N);
+for (const [p, , name] of OSM.roads) {
+  // only the lanes themselves: where one meets a main road, the main road stays open
+  if (/^(Stanley Main Street|Stanley Market Road|Stanley New Street)$/.test(name)) stampLine(p, 7, (k) => { if (grid[k] !== Gr.Road) NO_CARS[k] = 1; });
+}
+export function drivableTile(tx: number, ty: number): boolean {
+  if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return false;
+  const k = ty * MAP_W + tx, g = grid[k];
+  return !NO_CARS[k] && (g === Gr.Road || g === Gr.Lane || g === Gr.Parking);
+}
+/** the road network: drivable tiles joined to the bus terminus's road. Bits cut off by a kerb or a
+ *  gate are drivable but not here, so nothing parks a car where it could never leave */
+let NETWORK: Uint8Array | null = null;
+export function onNetwork(tx: number, ty: number): boolean {
+  if (!NETWORK) {
+    NETWORK = new Uint8Array(N);
+    let s0 = -1;
+    for (let r = 0; r < 30 && s0 < 0; r += 1) for (let dy = -r; dy <= r && s0 < 0; dy += 1) for (let dx = -r; dx <= r; dx += 1) {
+      if (drivableTile(752 + dx, 412 + dy) && grid[(412 + dy) * MAP_W + 752 + dx] === Gr.Road) { s0 = (412 + dy) * MAP_W + 752 + dx; break; }
+    }
+    const q = new Int32Array(N);
+    let h = 0, t = 0;
+    if (s0 >= 0) { q[t++] = s0; NETWORK[s0] = 1; }
+    while (h < t) {
+      const k = q[h++], x = k % MAP_W;
+      for (const n of [x > 0 ? k - 1 : -1, x < MAP_W - 1 ? k + 1 : -1, k - MAP_W, k + MAP_W]) {
+        if (n >= 0 && n < N && !NETWORK[n] && drivableTile(n % MAP_W, Math.floor(n / MAP_W))) { NETWORK[n] = 1; q[t++] = n; }
+      }
+    }
+  }
+  return tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H && NETWORK[ty * MAP_W + tx] === 1;
+}
+
+/** the nearest drivable tile to a point in metres, within a radius */
+export function nearestDrivable(x: number, y: number, radius = 30): { tx: number; ty: number } | null {
+  const cx = Math.round(x), cy = Math.round(y);
+  for (let r = 0; r <= radius; r += 1) {
+    let best: { tx: number; ty: number } | null = null, bd = Infinity;
+    for (let dy = -r; dy <= r; dy += 1) for (let dx = -r; dx <= r; dx += 1) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== r || !drivableTile(cx + dx, cy + dy)) continue;
+      const d = Math.hypot(dx, dy);
+      if (d < bd) { bd = d; best = { tx: cx + dx, ty: cy + dy }; }
+    }
+    if (best) return best;
+  }
+  return null;
+}
+/** the nearest tile of the road network to a point in metres */
+export function nearestOnNetwork(x: number, y: number, radius = 60): { tx: number; ty: number } | null {
+  const cx = Math.round(x), cy = Math.round(y);
+  for (let r = 0; r <= radius; r += 1) {
+    let best: { tx: number; ty: number } | null = null, bd = Infinity;
+    for (let dy = -r; dy <= r; dy += 1) for (let dx = -r; dx <= r; dx += 1) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== r || !onNetwork(cx + dx, cy + dy)) continue;
+      const d = Math.hypot(dx, dy);
+      if (d < bd) { bd = d; best = { tx: cx + dx, ty: cy + dy }; }
+    }
+    if (best) return best;
+  }
+  return null;
+}
+/** a route for your car from one point to another (world pixels), over drivable tiles only:
+ *  breadth first, then smoothed. Empty if there is no way */
+export function driveRoute(ax: number, ay: number, bx: number, by: number): Array<{ x: number; y: number }> {
+  const s = nearestDrivable(ax / TILE, ay / TILE, 6), t = nearestOnNetwork(bx / TILE, by / TILE, 60);
+  if (!s || !t) return [];
+  const sk = s.ty * MAP_W + s.tx, tk = t.ty * MAP_W + t.tx;
+  const prev = new Int32Array(N).fill(-2);
+  const q = new Int32Array(N);
+  let head = 0, tail = 0;
+  q[tail++] = sk; prev[sk] = -1;
+  while (head < tail) {
+    const k = q[head++];
+    if (k === tk) break;
+    const x = k % MAP_W;
+    for (const nk of [x > 0 ? k - 1 : -1, x < MAP_W - 1 ? k + 1 : -1, k - MAP_W, k + MAP_W]) {
+      if (nk < 0 || nk >= N || prev[nk] !== -2 || !drivableTile(nk % MAP_W, Math.floor(nk / MAP_W))) continue;
+      prev[nk] = k; q[tail++] = nk;
+    }
+  }
+  if (prev[tk] === -2) return [];
+  const tiles: number[] = [];
+  for (let k = tk; k !== -1; k = prev[k]) tiles.push(k);
+  tiles.reverse();
+  const out: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i < tiles.length; i += 3) out.push({ x: (tiles[i] % MAP_W) * TILE + 8, y: Math.floor(tiles[i] / MAP_W) * TILE + 8 });
+  const last = tiles[tiles.length - 1];
+  out.push({ x: (last % MAP_W) * TILE + 8, y: Math.floor(last / MAP_W) * TILE + 8 });
+  for (let pass = 0; pass < 3; pass += 1) {
+    for (let i = 1; i < out.length - 1; i += 1) out[i] = { x: (out[i - 1].x + out[i].x * 2 + out[i + 1].x) / 4, y: (out[i - 1].y + out[i].y * 2 + out[i + 1].y) / 4 };
+  }
+  return out;
+}
+
 const SOLID = new Set<number>([Gr.Sea, Gr.Wood, Gr.Building, Gr.Wall]);
 
 export function solidTile(tx: number, ty: number): boolean {
@@ -1099,7 +1196,14 @@ export const PLACES: Place[] = [
     line: 'graves from 1841 onwards, many from december 1941. people speak quietly here.' },
   { id: 'prison', ...at(151, 134), name: 'stanley prison', kind: 'prison',
     line: '99 tung tau wan road. you would rather not go in.' },
+  { id: 'agency', ...shopAt(86, 58), name: 'bayside property agency', kind: 'agency',
+    line: 'flats and houses all over stanley, by price. the agent, mr lam, is always on the phone.' },
+  { id: 'motors', ...shopAt(99, 52), name: 'stanley motors', kind: 'motors',
+    line: 'a small car dealer by the terminus. new and used.' },
 ];
+
+/** buildings a place uses (shops, workplaces): not for sale as homes */
+export const PLACE_BUILDINGS: ReadonlySet<Building> = taken;
 
 // green minibus stops: one place per stop, named after the routes that call there
 for (const r of ROUTES) {
