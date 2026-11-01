@@ -2794,8 +2794,16 @@ function drawProp(g: CanvasRenderingContext2D, x: number, y: number): void {
       // only on lanes wide enough to still drive past, and not too many
       const wideH = at_(x, y + 4) === Gr.Lane || at_(x, y + 4) === Gr.Road;
       const wideV = at_(x + 4, y) === Gr.Lane || at_(x + 4, y) === Gr.Road;
-      if (kerbN && x % 7 === 0 && r < 0.18 && wideH && at_(x + 4, y) === Gr.Lane) parkedCar(g, px + 2, py + 2, hash(x * 13 + y, y * 7 + x, 71), false);
-      else if (kerbW && y % 7 === 0 && r < 0.18 && wideV && at_(x, y + 4) === Gr.Lane) parkedCar(g, px + 2, py + 2, hash(x * 13 + y, y * 7 + x, 72), true);
+      // and only where the kerb runs dead straight along the car (8 m), so a car never sits across a
+      // street that runs at an angle to the grid
+      const road = (t: number): boolean => t === Gr.Lane || t === Gr.Road;
+      let straightH = true, straightV = true;
+      for (let i = -2; i <= 5; i += 1) {
+        if (!road(at_(x + i, y)) || road(at_(x + i, y - 1)) || !road(at_(x + i, y + 1))) straightH = false;
+        if (!road(at_(x, y + i)) || road(at_(x - 1, y + i)) || !road(at_(x + 1, y + i))) straightV = false;
+      }
+      if (kerbN && straightH && x % 7 === 0 && r < 0.18 && wideH && at_(x + 4, y) === Gr.Lane) parkedCar(g, px + 2, py + 2, hash(x * 13 + y, y * 7 + x, 71), false);
+      else if (kerbW && straightV && y % 7 === 0 && r < 0.18 && wideV && at_(x, y + 4) === Gr.Lane) parkedCar(g, px + 2, py + 2, hash(x * 13 + y, y * 7 + x, 72), true);
       return;
     }
     case Gr.Sea: {

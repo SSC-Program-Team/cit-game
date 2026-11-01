@@ -21,7 +21,7 @@ import {
   TILE, MAP_W, MAP_H, PLACES, START, RELEASE, drawWorld, setWorldText, renderOverview, solidAt, solidTile,
   walkableTile, findPath, isSea, areaNear, ROAD_LINES, walkDistance, roadRoute, BUILDING_LABELS, ESCALATORS,
   escalatorAt, setBuildingPhotos, MARKET_POINTS, PLAZA_POINTS, buildingsNear, behindBuilding, drawBuildingOver, type Place,
-  drivableTile, driveRoute, nearestOnNetwork,
+  drivableTile, driveRoute, nearestOnNetwork, nearestDrivable,
 } from './world';
 import { ROUTES, routesAt, type Route, type Stop } from './minibus';
 import { TOPIC_NAMES, type Tier, type Topic } from './questions';
@@ -223,10 +223,10 @@ const walkers: Walker[] = [];
  * Anyone who wanders more than about 600 m away comes back in out of sight, so the streets near
  * you stay busy.
  */
-type Car = { x: number; y: number; angle: number; speed: number; route: Array<{ x: number; y: number }>; colour: string; model: string; wait: number };
+type Car = { x: number; y: number; angle: number; speed: number; route: Array<{ x: number; y: number }>; colour: string; model: string; wait: number; stuck: number };
 const CAR_COLOURS = ['#c8382f', '#e0e0e8', '#3a6ac8', '#3aa86a', '#e8c23a', '#2a2a30', '#d86a3a', '#6a6a72', '#e0e0e8', '#3a6ac8', '#c8382f', '#2a2a30', '#9aa0a8', '#f2eee4'];
 const NPC_MODELS = ['hatch', 'saloon', 'saloon', 'suv', 'ev', 'hatch', 'saloon'];
-const cars: Car[] = CAR_COLOURS.map((colour, i) => ({ x: -1, y: -1, angle: 0, speed: 0, route: [], colour, model: NPC_MODELS[i % NPC_MODELS.length], wait: i * 0.4 }));
+const cars: Car[] = CAR_COLOURS.map((colour, i) => ({ x: -1, y: -1, angle: 0, speed: 0, route: [], colour, model: NPC_MODELS[i % NPC_MODELS.length], wait: i * 0.4, stuck: 0 }));
 
 /** a random tile of the road network between lo and hi metres from a point */
 function networkTileNear(mx: number, my: number, lo: number, hi: number): { tx: number; ty: number } | null {
@@ -259,8 +259,18 @@ function newRoute(c: Car, near: { x: number; y: number }): void {
   const r = driveRoute(from.tx * TILE + 8, from.ty * TILE + 8, to.tx * TILE + 8, to.ty * TILE + 8);
   if (r.length < 4) { c.wait = 2; return; }
   const left = keepLeft(r);
-  if (c.x < 0 || Math.hypot(c.x - near.x, c.y - near.y) > 600 * TILE) { c.x = left[0].x; c.y = left[0].y; c.speed = 0; }
-  c.route = left;
+  if (c.x < 0 || Math.hypot(c.x - near.x, c.y - near.y) > 600 * TILE) {
+    // placed facing along the road, not east
+    c.x = left[0].x; c.y = left[0].y; c.speed = 0; c.angle = headingOf(left);
+  }
+  c.route = left; c.stuck = 0;
+}
+
+/** which way a route sets off: from its start to the first point a couple of metres on */
+function headingOf(r: Array<{ x: number; y: number }>): number {
+  const a = r[0];
+  const b = r.find((p) => Math.hypot(p.x - a.x, p.y - a.y) > 2 * TILE) ?? r[r.length - 1];
+  return Math.atan2(b.y - a.y, b.x - a.x);
 }
 
 let carRoutes = 0;
@@ -316,12 +326,47 @@ function updateCars(dt: number): void {
       const dd = Math.hypot(t.x - c.x, t.y - c.y);
       if (dd > 0.5) {
         const want = Math.atan2(t.y - c.y, t.x - c.x);
-        c.angle += Math.atan2(Math.sin(want - c.angle), Math.cos(want - c.angle)) * Math.min(1, 8 * dt);
+        c.angle += Math.atan2(Math.sin(want - c.angle), Math.cos(want - c.angle)) * Math.min(1, 14 * dt);
       }
       if (dd <= dist) { c.x = t.x; c.y = t.y; c.route.shift(); dist -= dd; } else { c.x += ((t.x - c.x) / dd) * dist; c.y += ((t.y - c.y) / dd) * dist; dist = 0; }
     }
     if (!c.route.length) c.wait = 1 + Math.random() * 3;
+    // held still for 12 s out of sight (a jam the rules cannot clear): take it off; it comes back elsewhere
+    c.stuck = c.speed < 2 ? c.stuck + dt : 0;
+    if (c.stuck > 12 && !onScreen(c.x, c.y, 60)) { c.x = -1; c.y = -1; c.route = []; c.stuck = 0; c.wait = 1; }
   }
+}
+
+/** where the bus at the terminus stands: in a bay near the stop at least 3 m wide and 12 m long,
+ *  lying along it (worked out once) */
+let bay: { x: number; y: number; angle: number } | null | undefined;
+function terminusBay(): { x: number; y: number; angle: number } | null {
+  if (bay !== undefined) return bay;
+  const stop = PLACES.find((p) => p.id === 'bus')!;
+  const run = (x: number, y: number, a: number, max: number): number => {
+    let n = 0; while (n < max && drivableTile(Math.floor(x + Math.cos(a) * (n + 1) / 2), Math.floor(y + Math.sin(a) * (n + 1) / 2))) n += 1; return n / 2;
+  };
+  let best: { x: number; y: number; angle: number; score: number } | null = null;
+  for (let dy = -6; dy <= 6; dy += 1) for (let dx = -6; dx <= 6; dx += 1) {
+    const tx = stop.tx + dx, ty = stop.ty + dy;
+    if (!drivableTile(tx, ty)) continue;
+    const cx = tx + 0.5, cy = ty + 0.5;
+    for (let deg = 0; deg < 180; deg += 6) {
+      const a = (deg * Math.PI) / 180;
+      const f = run(cx, cy, a, 16), b = run(cx, cy, a + Math.PI, 16);
+      if (f < 5 || b < 5) continue; // 10 m of road either way of the middle
+      const l = run(cx, cy, a - Math.PI / 2, 8), r = run(cx, cy, a + Math.PI / 2, 8);
+      if (l < 1 || r < 1) continue; // and room either side for most of a 2.5 m bus
+      const score = -Math.abs(l - r) - Math.hypot(dx, dy) * 0.6;
+      if (!best || score > best.score) best = { x: cx * TILE, y: cy * TILE, angle: a, score };
+    }
+  }
+  return (bay = best && { x: best.x, y: best.y, angle: best.angle });
+}
+
+function onScreen(x: number, y: number, margin: number): boolean {
+  const sx = x - cam.x, sy = y - cam.y;
+  return sx > -margin && sy > -margin && sx < viewW() + margin && sy < viewH() + margin;
 }
 
 function say(title: string, line: string): void {
@@ -1223,7 +1268,7 @@ function callTaxi(d: Dest): void {
   const route = keepLeft(driveRoute(start.tx * TILE + 8, start.ty * TILE + 8, pick.tx * TILE + 8, pick.ty * TILE + 8));
   if (route.length < 2) { flash('no taxis can get to you here', '#ff9a6a'); return; }
   const place = PLACES.find((p) => p.id === d.id) ?? null;
-  taxi = { x: route[0].x, y: route[0].y, angle: 0, speed: 0, route, state: 'coming', to: place ?? ({ id: d.id, tx: d.tx, ty: d.ty, name: d.name, kind: 'flavour', line: '' } as Place), waitUntil: 0, from: { x: 0, y: 0 }, wait: 0 };
+  taxi = { x: route[0].x, y: route[0].y, angle: headingOf(route), speed: 0, route, state: 'coming', to: place ?? ({ id: d.id, tx: d.tx, ty: d.ty, name: d.name, kind: 'flavour', line: '' } as Place), waitUntil: 0, from: { x: 0, y: 0 }, wait: 0 };
   audio.play('ui');
   flash(`a taxi is on its way to ${d.name}... the nearest road to you`, '#ffc84a', 4);
 }
@@ -2162,13 +2207,17 @@ function drawCity(): void {
   }
 
   // the bus at the terminus
-  const busStop = PLACES.find((p) => p.id === 'bus')!;
-  const bx = busStop.tx * TILE - 96 - cam.x, by = busStop.ty * TILE - 70 - cam.y;
-  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(bx + 4, by + 4, 192, 40);
-  ctx.fillStyle = '#e8c23a'; ctx.fillRect(bx, by, 192, 40);
-  ctx.fillStyle = '#f2e6a0'; ctx.fillRect(bx, by, 192, 4);
-  ctx.fillStyle = '#c84a2a'; ctx.fillRect(bx, by + 30, 192, 10);
-  ctx.fillStyle = '#3a5a7a'; for (let i = 8; i < 180; i += 22) ctx.fillRect(bx + i, by + 8, 16, 14);
+  const bay = terminusBay();
+  if (bay) {
+    ctx.save(); ctx.translate(Math.round(bay.x - cam.x), Math.round(bay.y - cam.y)); ctx.rotate(bay.angle);
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(-92, -16, 192, 40);
+    ctx.fillStyle = '#e8c23a'; ctx.fillRect(-96, -20, 192, 40);
+    ctx.fillStyle = '#f2e6a0'; ctx.fillRect(-96, -20, 192, 4);
+    ctx.fillStyle = '#c84a2a'; ctx.fillRect(-96, 10, 192, 10);
+    ctx.fillStyle = '#3a5a7a'; for (let i = 8; i < 180; i += 22) ctx.fillRect(-96 + i, -12, 16, 14);
+    ctx.fillStyle = '#1c2a3a'; ctx.fillRect(84, -16, 8, 32); // windscreen at the front
+    ctx.restore();
+  }
 
   for (const c of cars) if (c.x >= 0) drawCar(c.x, c.y, c.angle, c.model, c.colour);
 
@@ -2292,7 +2341,7 @@ function drawCity(): void {
   const T = (wy: number): number => Math.round((wy - cam.y) * zoom);
   const taken: Rect[] = [];
   const free = (r: Rect): boolean => !taken.some((q) => r.x < q.x + q.w && q.x < r.x + r.w && r.y < q.y + q.h && q.y < r.y + r.h);
-  text('6 central', S(bx + cam.x + 4), T(by + cam.y) - 9, '#e8e4d8');
+  { const b = terminusBay(); if (b) text('6 central', S(b.x) - 30, T(b.y) - 34, '#e8e4d8'); }
   for (const [id, o] of net.others) {
     if (net.cars.get(id)?.driving) continue;
     const x = S(o.x), y = T(o.y) - Math.round(28 * figScale() * zoom) - 4;
