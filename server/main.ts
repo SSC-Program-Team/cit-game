@@ -1,20 +1,25 @@
 /**
- * The school server (docs/design/stanley-expansion.md §10). No packages: node:http, node:sqlite and
- * the small WebSocket in ws.ts.
+ * The school server (docs/design/one-street.md). No packages: node:http, node:sqlite and the small
+ * WebSocket in ws.ts.
  *
  *   npm run build && npm run server        (Node 22.6 or later)
  *
  * It owns every save in SQLite, holds quizzes (the browser never sees an answer before it picks),
- * keeps the real-time clock, ticks work tasks, sends each player the others near them five times a
- * second, keeps the leaderboard, serves the built game (dist/) and the teacher page (/admin).
+ * marks written answers with the school AI, keeps the real-time clock (living expenses, work tasks,
+ * prison), sends everyone the other players on the street five times a second, keeps the wealth
+ * leaderboard, the news and the prison list, and serves the built game (dist/) and the teacher
+ * page (/admin).
  *
  * Environment:
- *   PORT       default 8787
- *   HOST       default 127.0.0.1 (Apache proxies to it; set 0.0.0.0 to serve directly)
- *   DB         default data/cit-game.sqlite
- *   STATIC     default dist (the built game; set to '' when Apache serves it)
- *   ADMIN_KEY  required for /admin; without it the teacher page is off
- *   BASE       URL path the game is served under, default /cit-game/ (also answers at /)
+ *   PORT           default 8787
+ *   HOST           default 127.0.0.1 (Apache proxies to it; set 0.0.0.0 to serve directly)
+ *   DB             default data/cit-game.sqlite
+ *   STATIC         default dist (the built game; set to '' when Apache serves it)
+ *   ADMIN_KEY      required for /admin; without it the teacher page is off
+ *   BASE           URL path the game is served under, default /cit-game/ (also answers at /)
+ *   SPARK_URL      the school AI, default https://ai.ssc.edu.hk/spark/v1 (OpenAI-compatible)
+ *   SPARK_API_KEY  its key. Without it, written answers are marked by the keyword check
+ *   SPARK_MODEL    optional; by default the first model the endpoint lists
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
@@ -22,9 +27,11 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync, existsSync, statSync, mkdirSync } from 'node:fs';
 import { join, normalize, extname, dirname } from 'node:path';
 import { accept, type Socket } from './ws.ts';
-import { act, migrate, publicSave, quizView, netWorth, fresh, type Save, type Ev } from '../src/rules.ts';
-import { checkName, coatFor, NEAR, type ToClient, type ToServer } from '../src/protocol.ts';
+import { act, migrate, publicSave, quizView, netWorth, fresh, essayOf, type Save, type Ev } from '../src/rules.ts';
+import { aiMessages, parseAi, type Mark } from '../src/marking.ts';
+import { checkName, checkClass, coatFor, NEWS_HOURS, type ToClient, type ToServer, type Prisoner, type NewsItem } from '../src/protocol.ts';
 import { TOPIC_NAMES } from '../src/questions.ts';
+import { HOUR } from '../src/economy.ts';
 
 const PORT = Number(process.env.PORT ?? 8787);
 const HOST = process.env.HOST ?? '127.0.0.1';
@@ -32,6 +39,9 @@ const DB = process.env.DB ?? 'data/cit-game.sqlite';
 const STATIC = process.env.STATIC ?? 'dist';
 const ADMIN_KEY = process.env.ADMIN_KEY ?? '';
 const BASE = (process.env.BASE ?? '/cit-game/').replace(/\/?$/, '/');
+const SPARK_URL = (process.env.SPARK_URL ?? 'https://ai.ssc.edu.hk/spark/v1').replace(/\/+$/, '');
+const SPARK_KEY = process.env.SPARK_API_KEY ?? '';
+let sparkModel = process.env.SPARK_MODEL ?? '';
 const ROOT = new URL('..', import.meta.url).pathname;
 
 // ----------------------------------------------------------------- storage ---
@@ -45,56 +55,41 @@ db.exec(`
     worth integer not null default 0
   );
   create table if not exists wire (at integer not null, text text not null);
-  create table if not exists homes (id text primary key, owner text not null);
+  create table if not exists meta (k text primary key, v text not null);
 `);
+// v0.11: class and number (5C01), for the prison list
+if (!(db.prepare('pragma table_info(players)').all() as Array<{ name: string }>).some((c) => c.name === 'cls')) {
+  db.exec("alter table players add column cls text not null default ''");
+}
 const q = {
   byToken: db.prepare('select * from players where token = ?'),
   byName: db.prepare('select id from players where name = ?'),
   byId: db.prepare('select * from players where id = ?'),
-  insert: db.prepare('insert into players (id, token, name, coat, save, created, seen, worth) values (?, ?, ?, ?, ?, ?, ?, ?)'),
+  insert: db.prepare('insert into players (id, token, name, cls, coat, save, created, seen, worth) values (?, ?, ?, ?, ?, ?, ?, ?, ?)'),
   update: db.prepare('update players set save = ?, seen = ?, worth = ? where id = ?'),
   rename: db.prepare('update players set name = ? where id = ?'),
+  setCls: db.prepare('update players set cls = ? where id = ?'),
   pause: db.prepare('update players set paused = ? where id = ?'),
-  all: db.prepare('select id, name, coat, save, created, seen, paused, worth from players order by worth desc'),
+  all: db.prepare('select id, name, cls, coat, save, created, seen, paused, worth from players order by worth desc'),
   top: db.prepare('select id, name, worth from players order by worth desc limit 10'),
   rank: db.prepare('select count(*) as n from players where worth > ?'),
   addWire: db.prepare('insert into wire (at, text) values (?, ?)'),
-  lastWire: db.prepare('select text from wire order by at desc limit 8'),
-  homesAll: db.prepare('select homes.id as id, homes.owner as owner, players.name as name from homes join players on players.id = homes.owner'),
-  homeSet: db.prepare('insert or replace into homes (id, owner) values (?, ?)'),
-  homeFree: db.prepare('delete from homes where id = ?'),
-  homesOf: db.prepare('delete from homes where owner = ?'),
-  saves: db.prepare('select id, name, coat, save from players'),
+  news: db.prepare('select at, text from wire where at > ? order by at desc limit 120'),
+  saves: db.prepare('select id, cls, save from players'),
+  getMeta: db.prepare('select v from meta where k = ?'),
+  setMeta: db.prepare('insert or replace into meta (k, v) values (?, ?)'),
 };
 
-/** who owns each home on the server: one owner each (§11.1) */
-const owner = new Map<string, { id: string; name: string }>();
-for (const r of q.homesAll.all() as Array<{ id: string; owner: string; name: string }>) owner.set(r.id, { id: r.owner, name: r.name });
-const world = (p: { id: string }) => ({ homeTaken: (id: string) => { const o = owner.get(id); return !!o && o.id !== p.id; } });
-
-/** every player's car, parked or on the road */
-type CarSpot = { name: string; coat: string; model: string; x: number; y: number; angle: number; driving: boolean };
-const cars = new Map<string, CarSpot>();
-for (const r of q.saves.all() as Array<{ id: string; name: string; coat: string; save: string }>) {
-  const c = (JSON.parse(r.save) as Save).car;
-  if (c) cars.set(r.id, { name: r.name, coat: r.coat, model: c.model, x: c.x, y: c.y, angle: c.angle, driving: false });
-}
-function syncCar(p: { id: string; name: string; coat: string; save: Save }): void {
-  const c = p.save.car;
-  const was = cars.get(p.id);
-  if (!c) { cars.delete(p.id); return; }
-  if (was?.driving) { was.model = c.model; return; }
-  cars.set(p.id, { name: p.name, coat: p.coat, model: c.model, x: c.x, y: c.y, angle: c.angle, driving: false });
-}
-
-type Row = { id: string; token: string; name: string; coat: string; save: string; created: number; seen: number; paused: number; worth: number };
+type Row = { id: string; token: string; name: string; cls: string; coat: string; save: string; created: number; seen: number; paused: number; worth: number };
 
 // --------------------------------------------------------------- players ---
 type Player = {
-  id: string; name: string; coat: string; save: Save; paused: boolean;
-  sock: Socket; x: number; y: number; moved: number; dirty: boolean;
-  /** messages in the last second, to stop a runaway client */
+  id: string; name: string; cls: string; coat: string; save: Save; paused: boolean;
+  sock: Socket; x: number; y: number; dirty: boolean;
+  /** messages in the last fifth of a second, to stop a runaway client */
   rate: number;
+  /** a written answer is with the AI */
+  marking: boolean;
 };
 const online = new Map<string, Player>();
 
@@ -105,131 +100,236 @@ function store(p: Player): void {
 
 const send = (sock: Socket, m: ToClient): void => sock.send(JSON.stringify(m));
 
-/** a public line on everyone's wire: "ka ho was paid $770 by tide restaurant" */
+/** a line on everyone's news: "ka ho was hired by bayview cafe" */
 function wire(text: string): void {
-  q.addWire.run(Date.now(), text);
-  for (const p of online.values()) send(p.sock, { t: 'wire', text });
+  const at = Date.now();
+  q.addWire.run(at, text);
+  for (const p of online.values()) send(p.sock, { t: 'wire', at, text });
+}
+
+const newsList = (): NewsItem[] =>
+  (q.news.all(Date.now() - NEWS_HOURS * HOUR) as Array<{ at: number; text: string }>).map((r) => [r.at, r.text]);
+
+// -------------------------------------------------------------- the prison ---
+/** who is inside: player id -> class number, offence, release time */
+const jailed = new Map<string, Prisoner>();
+for (const r of q.saves.all() as Array<{ id: string; cls: string; save: string }>) {
+  const j = migrate(JSON.parse(r.save)).jail;
+  if (j && j.until > Date.now()) jailed.set(r.id, [r.cls || '?', j.offence, j.until]);
+}
+const prisonList = (): Prisoner[] => [...jailed.values()].filter((p) => p[2] > Date.now()).sort((a, b) => a[2] - b[2]);
+function sendPrison(): void {
+  const list = prisonList();
+  for (const p of online.values()) send(p.sock, { t: 'prison', list });
+}
+function syncJail(p: Player): void {
+  const j = p.save.jail;
+  const was = jailed.has(p.id);
+  if (j && j.until > Date.now()) jailed.set(p.id, [p.cls || '?', j.offence, j.until]);
+  else jailed.delete(p.id);
+  if (was !== jailed.has(p.id)) sendPrison();
 }
 
 function deliver(p: Player, events: Ev[]): void {
-  const changed: Array<[string, string]> = [];
-  for (const e of events) {
-    if (e.t === 'news' && e.public) wire(`${p.name} ${e.public}`);
-    if (e.t === 'homeChange') {
-      if (e.sold) { owner.set(e.id, { id: p.id, name: p.name }); q.homeSet.run(e.id, p.id); changed.push([e.id, p.name]); }
-      else { owner.delete(e.id); q.homeFree.run(e.id); changed.push([e.id, '']); }
-    }
-    if (e.t === 'carChange') syncCar(p);
-  }
-  if (changed.length) for (const o of online.values()) send(o.sock, { t: 'homes', owners: changed });
+  // the prison and its news name people by class and number only (5C01)
+  for (const e of events) if (e.t === 'news' && e.public) wire(`${events.some((x) => x.t === 'arrest') ? p.cls || 'a student' : p.name} ${e.public}`);
+  if (events.some((e) => e.t === 'arrest' || e.t === 'released')) syncJail(p);
 }
 
+// -------------------------------------------------------- the leaderboard ---
 let boardDirty = true;
+let richest = (q.getMeta.get('richest') as { v: string } | undefined)?.v ?? '';
 function sendBoard(p?: Player): void {
-  const top = (q.top.all() as Array<{ name: string; worth: number }>).map((r) => [r.name, r.worth] as [string, number]);
-  const targets = p ? [p] : [...online.values()];
-  for (const t of targets) {
+  const rows = q.top.all() as Array<{ id: string; name: string; worth: number }>;
+  // a new richest person makes the news
+  if (!p && rows[0] && rows[0].id !== richest && rows[0].worth > 0 && (!rows[1] || rows[0].worth > rows[1].worth)) {
+    if (richest) wire(`${rows[0].name} is now the richest person in stanley`);
+    richest = rows[0].id;
+    q.setMeta.run('richest', richest);
+  }
+  const top = rows.map((r) => [r.name, r.worth] as [string, number]);
+  for (const t of p ? [p] : [...online.values()]) {
     const worth = netWorth(t.save);
     const ahead = (q.rank.get(worth) as { n: number }).n;
     send(t.sock, { t: 'board', top, you: [ahead + 1, worth] });
   }
 }
 
+// ------------------------------------------------------------ joining in ---
 function hello(sock: Socket, m: Extract<ToServer, { t: 'hello' }>): Player | null {
   if (typeof m.token !== 'string' || m.token.length < 16 || m.token.length > 64) { sock.close(1008); return null; }
   let row = q.byToken.get(m.token) as Row | undefined;
   if (!row) {
-    if (!m.name) { send(sock, { t: 'need-name' }); return null; }
+    if (!m.name || !m.cls) { send(sock, { t: 'need-name', ask: ['name', 'cls'] }); return null; }
     const c = checkName(m.name);
-    if ('err' in c) { send(sock, { t: 'need-name', why: c.err }); return null; }
-    if (q.byName.get(c.name)) { send(sock, { t: 'need-name', why: 'someone has that name already' }); return null; }
+    if ('err' in c) { send(sock, { t: 'need-name', why: c.err, ask: ['name', 'cls'] }); return null; }
+    const k = checkClass(m.cls);
+    if ('err' in k) { send(sock, { t: 'need-name', why: k.err, ask: ['name', 'cls'] }); return null; }
+    if (q.byName.get(c.name)) { send(sock, { t: 'need-name', why: 'someone has that name already', ask: ['name', 'cls'] }); return null; }
     const id = randomBytes(6).toString('hex');
     const save = fresh();
-    q.insert.run(id, m.token, c.name, coatFor(id), JSON.stringify(save), Date.now(), Date.now(), netWorth(save));
+    q.insert.run(id, m.token, c.name, k.cls, coatFor(id), JSON.stringify(save), Date.now(), Date.now(), netWorth(save));
     row = q.byToken.get(m.token) as Row;
-    wire(`${c.name} got off the bus in stanley`);
+    wire(`${c.name} arrived in stanley`);
     boardDirty = true;
+  } else if (!row.cls) {
+    // players from before class numbers: ask once
+    const k = checkClass(m.cls ?? '');
+    if ('err' in k) { send(sock, { t: 'need-name', why: m.cls ? k.err : undefined, ask: ['cls'] }); return null; }
+    q.setCls.run(k.cls, row.id);
+    row.cls = k.cls;
   }
   const old = online.get(row.id);
   if (old) { old.sock.close(4000); online.delete(row.id); }
   const save = migrate(JSON.parse(row.save));
-  const p: Player = { id: row.id, name: row.name, coat: row.coat, save, paused: !!row.paused, sock, x: save.x, y: save.y, moved: 0, dirty: false, rate: 0 };
+  const p: Player = { id: row.id, name: row.name, cls: row.cls, coat: row.coat, save, paused: !!row.paused, sock, x: save.x, y: save.y, dirty: false, rate: 0, marking: false };
   online.set(p.id, p);
-  // what happened while they were away (tasks, firing, release)
+  // what happened while they were away: living expenses, tasks, firing, release
   const r = act(save, 'tick', {}, Date.now());
   deliver(p, r.events);
+  syncJail(p);
   store(p);
-  send(sock, { t: 'welcome', id: p.id, name: p.name, coat: p.coat, save: publicSave(save), now: Date.now() });
+  send(sock, { t: 'welcome', id: p.id, name: p.name, cls: p.cls, coat: p.coat, save: publicSave(save), now: Date.now() });
   if (r.events.length) send(sock, { t: 'push', events: r.events, save: publicSave(save), now: Date.now() });
   if (save.quiz && !save.quiz.over) send(sock, { t: 'push', events: [{ t: 'quiz', view: quizView(save.quiz) }], save: publicSave(save), now: Date.now() });
-  for (const w of (q.lastWire.all() as Array<{ text: string }>).reverse()) send(sock, { t: 'wire', text: w.text });
-  send(sock, { t: 'homes', owners: [...owner].map(([id, o]) => [id, o.name] as [string, string]) });
-  syncCar(p);
+  send(sock, { t: 'news', list: newsList() });
+  send(sock, { t: 'prison', list: prisonList() });
   sendBoard(p);
   if (p.paused) send(sock, { t: 'paused' });
   return p;
 }
 
+// --------------------------------------------------------------- the AI ---
+async function sparkModelName(): Promise<string> {
+  if (sparkModel) return sparkModel;
+  const r = await fetch(`${SPARK_URL}/models`, { headers: { authorization: `Bearer ${SPARK_KEY}` }, signal: AbortSignal.timeout(10000) });
+  const j = (await r.json()) as { data?: Array<{ id: string }> };
+  sparkModel = j.data?.[0]?.id ?? '';
+  if (sparkModel) console.log(`spark model: ${sparkModel}`);
+  return sparkModel;
+}
+
+/** the school AI's mark for a written answer, or null (the rules then use the keyword check) */
+async function markEssay(essayId: string, text: string): Promise<Mark | null> {
+  const e = essayOf(essayId);
+  if (!e || !SPARK_KEY) return null;
+  try {
+    const model = await sparkModelName();
+    if (!model) return null;
+    const r = await fetch(`${SPARK_URL}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${SPARK_KEY}` },
+      body: JSON.stringify({ model, messages: aiMessages(e, text), temperature: 0, max_tokens: 300 }),
+      signal: AbortSignal.timeout(45000),
+    });
+    if (!r.ok) { console.warn(`spark: http ${r.status}`); return null; }
+    const j = (await r.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const mark = parseAi(e, j.choices?.[0]?.message?.content ?? '');
+    if (!mark) console.warn('spark: reply was not a mark');
+    return mark;
+  } catch (err) {
+    console.warn(`spark: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+// --------------------------------------------------------------- messages ---
+function runAct(p: Player, id: number, name: string, args: Record<string, unknown>): void {
+  const before = netWorth(p.save);
+  const r = act(p.save, name, args, Date.now());
+  deliver(p, r.events);
+  store(p);
+  if (netWorth(p.save) !== before) boardDirty = true;
+  send(p.sock, { t: 'res', id, ok: r.ok, err: r.err, events: r.events, save: publicSave(p.save), now: Date.now() });
+}
+
 function onMessage(p: Player, m: ToServer): void {
   if (m.t === 'pos') {
-    if (Number.isFinite(m.x) && Number.isFinite(m.y) && m.x >= 0 && m.y >= 0 && m.x < 1408 * 16 && m.y < 1280 * 16) {
-      p.x = m.x; p.y = m.y; p.save.x = m.x; p.save.y = m.y; p.save.mapv = 2; p.moved = Date.now(); p.dirty = true;
-      // driving: the car is where you are; it stays there until you park it properly
-      const c = cars.get(p.id);
-      if (c && p.save.car) {
-        c.driving = typeof m.drive === 'number' && Number.isFinite(m.drive);
-        if (c.driving) { c.x = m.x; c.y = m.y; c.angle = m.drive!; }
-      }
+    if (Number.isFinite(m.x) && Number.isFinite(m.y) && m.x >= 0 && m.y >= 0 && m.x <= 640 && m.y <= 360) {
+      p.x = m.x; p.y = m.y; p.save.x = m.x; p.save.y = m.y; p.dirty = true;
     }
     return;
   }
+  if (m.t === 'news?') { send(p.sock, { t: 'news', list: newsList() }); return; }
   if (m.t === 'quiz?') {
     if (p.save.quiz && !p.save.quiz.over) send(p.sock, { t: 'push', events: [{ t: 'quiz', view: quizView(p.save.quiz) }], save: publicSave(p.save), now: Date.now() });
     return;
   }
   if (m.t === 'act') {
-    if (p.paused) { send(p.sock, { t: 'res', id: m.id, ok: false, err: 'paused by your teacher', events: [], save: publicSave(p.save), now: Date.now() }); return; }
-    const before = netWorth(p.save);
-    const r = act(p.save, String(m.name), m.args && typeof m.args === 'object' ? m.args : {}, Date.now(), world(p));
-    if (m.name === 'car.park' && r.ok) { const c = cars.get(p.id); if (c) c.driving = false; syncCar(p); }
-    deliver(p, r.events);
-    store(p);
-    if (netWorth(p.save) !== before) boardDirty = true;
-    send(p.sock, { t: 'res', id: m.id, ok: r.ok, err: r.err, events: r.events, save: publicSave(p.save), now: Date.now() });
+    const no = (err: string): void => send(p.sock, { t: 'res', id: m.id, ok: false, err, events: [], save: publicSave(p.save), now: Date.now() });
+    if (p.paused) { no('paused by your teacher'); return; }
+    if (p.marking) { no('your answer is being marked'); return; }
+    const name = String(m.name);
+    const args: Record<string, unknown> = m.args && typeof m.args === 'object' ? { ...m.args } : {};
+    // only the server gives a mark
+    delete args.mark;
+    const z = p.save.quiz;
+    if (name === 'quiz.essay' && z && !z.over && z.qs[z.i]?.essay && args.q === z.i) {
+      p.marking = true;
+      markEssay(z.qs[z.i].id, String(args.text ?? '')).then((mark) => {
+        p.marking = false;
+        if (mark) args.mark = mark;
+        const now = online.get(p.id);
+        if (now === p) { runAct(p, m.id, name, args); return; }
+        // they reconnected (or left) while it was being marked: apply it to the save that is live now
+        const t = now ?? p;
+        const r = act(t.save, name, args, Date.now());
+        deliver(t, r.events);
+        store(t);
+        if (now) send(now.sock, { t: 'push', events: r.events, save: publicSave(now.save), now: Date.now() });
+      });
+      return;
+    }
+    runAct(p, m.id, name, args);
   }
 }
 
 // ------------------------------------------------------------------ timers ---
-// others near you, five times a second; players in prison are not shown
+// everyone on the street, five times a second; players in prison are not shown
 setInterval(() => {
-  const list = [...online.values()].filter((p) => p.x >= 0 && !p.save.jail);
+  const list = [...online.values()].filter((p) => !p.save.jail)
+    .map((o) => [o.id, o.name, o.coat, Math.round(o.x), Math.round(o.y)] as [string, string, string, number, number]);
   for (const me of online.values()) {
-    const near = list.filter((o) => o !== me && Math.abs(o.x - me.x) < NEAR && Math.abs(o.y - me.y) < NEAR)
-      .map((o) => [o.id, o.name, o.coat, Math.round(o.x), Math.round(o.y)] as [string, string, string, number, number]);
-    send(me.sock, { t: 'others', list: near });
-    const nearCars: Array<[string, string, string, string, number, number, number, number]> = [];
-    for (const [id, c] of cars) {
-      if (Math.abs(c.x - me.x) < NEAR && Math.abs(c.y - me.y) < NEAR) nearCars.push([id, c.name, c.coat, c.model, Math.round(c.x), Math.round(c.y), Math.round(c.angle * 100) / 100, c.driving ? 1 : 0]);
-    }
-    send(me.sock, { t: 'cars', list: nearCars });
+    send(me.sock, { t: 'others', list: list.filter((o) => o[0] !== me.id) });
     me.rate = 0;
   }
 }, 200);
 
-// real time: work tasks, warnings, firing, release, missed callouts
+// real time: living expenses, work tasks, warnings, firing, release
 setInterval(() => {
   for (const p of online.values()) {
+    if (p.marking) continue;
     const r = act(p.save, 'tick', {}, Date.now());
-    if (r.events.length) {
+    if (r.events.length || p.dirty) {
       deliver(p, r.events);
       store(p);
       boardDirty = true;
-      send(p.sock, { t: 'push', events: r.events, save: publicSave(p.save), now: Date.now() });
+      if (r.events.length) send(p.sock, { t: 'push', events: r.events, save: publicSave(p.save), now: Date.now() });
     }
   }
+  // offline players' sentences end too
+  const before = jailed.size;
+  for (const [id, j] of jailed) if (j[2] <= Date.now()) jailed.delete(id);
+  if (jailed.size !== before) sendPrison();
 }, 5000);
 
-// positions and the leaderboard
+// players who are away: living expenses come out every hour, and saves from the village (v0.10 and
+// older) start again on the one street, so the leaderboard never shows old money
+function refreshOffline(): void {
+  for (const r of q.all.all() as Row[]) {
+    if (online.has(r.id)) continue;
+    const raw = JSON.parse(r.save) as { v?: number };
+    const s = migrate(raw);
+    act(s, 'tick', {}, Date.now());
+    if (raw.v !== 4 || netWorth(s) !== r.worth || JSON.stringify(s) !== r.save) {
+      q.update.run(JSON.stringify(s), r.seen, netWorth(s), r.id);
+      boardDirty = true;
+    }
+  }
+}
+refreshOffline();
+setInterval(refreshOffline, HOUR);
+
 setInterval(() => {
   for (const p of online.values()) if (p.dirty) store(p);
   if (boardDirty) { boardDirty = false; sendBoard(); }
@@ -245,14 +345,13 @@ function adminOk(req: IncomingMessage, url: URL): boolean {
 
 function adminPlayers(): unknown[] {
   return (q.all.all() as Row[]).map((r) => {
-    const s = migrate(JSON.parse(r.save));
     const live = online.get(r.id);
-    const cur = live ? live.save : s;
+    const cur = live ? live.save : migrate(JSON.parse(r.save));
     return {
-      id: r.id, name: r.name, coat: r.coat, online: !!live, paused: !!r.paused, created: r.created, seen: live ? Date.now() : r.seen,
-      worth: netWorth(cur), money: cur.money, earned: cur.earned, day: cur.day, answered: cur.answered, right: cur.right,
+      id: r.id, name: r.name, cls: r.cls, coat: r.coat, online: !!live, paused: !!r.paused, created: r.created, seen: live ? Date.now() : r.seen,
+      worth: netWorth(cur), money: cur.money, rep: cur.rep, earned: cur.earned, spent: cur.spent, answered: cur.answered, right: cur.right,
       mastery: Object.fromEntries(Object.keys(TOPIC_NAMES).map((t) => [t, cur.mastery[t] ?? 0])),
-      record: cur.record, work: cur.work?.id ?? null, jailed: !!cur.jail, certs: cur.certs,
+      record: cur.record, work: cur.work?.id ?? null, jailed: !!cur.jail && cur.jail.until > Date.now(), certs: cur.certs,
     };
   });
 }
@@ -280,13 +379,20 @@ async function admin(req: IncomingMessage, res: ServerResponse, url: URL, path: 
   if (path === 'api/admin/rename') {
     const c = checkName(String(b.name ?? ''));
     if ('err' in c) { json(res, 400, c); return; }
-    if (q.byName.get(c.name)) { json(res, 400, { err: 'name taken' }); return; }
+    if (q.byName.get(c.name) && c.name !== row.name) { json(res, 400, { err: 'name taken' }); return; }
     q.rename.run(c.name, id);
     if (live) { live.name = c.name; live.sock.close(4001); }
-    for (const o of owner.values()) if (o.id === id) o.name = c.name;
-    const cs = cars.get(id);
-    if (cs) cs.name = c.name;
     boardDirty = true;
+    json(res, 200, { ok: true });
+    return;
+  }
+  if (path === 'api/admin/class') {
+    const k = checkClass(String(b.cls ?? ''));
+    if ('err' in k) { json(res, 400, k); return; }
+    q.setCls.run(k.cls, id);
+    if (live) live.cls = k.cls;
+    const j = jailed.get(id);
+    if (j) { j[0] = k.cls; sendPrison(); }
     json(res, 200, { ok: true });
     return;
   }
@@ -301,12 +407,7 @@ async function admin(req: IncomingMessage, res: ServerResponse, url: URL, path: 
     const s = fresh();
     if (live) { live.save = s; live.sock.close(4003); }
     q.update.run(JSON.stringify(s), Date.now(), netWorth(s), id);
-    // their homes go back on the market, their car goes
-    const freed: Array<[string, string]> = [];
-    for (const [hid, o] of owner) if (o.id === id) { owner.delete(hid); freed.push([hid, '']); }
-    q.homesOf.run(id);
-    cars.delete(id);
-    if (freed.length) for (const o of online.values()) send(o.sock, { t: 'homes', owners: freed });
+    if (jailed.delete(id)) sendPrison();
     boardDirty = true;
     json(res, 200, { ok: true });
     return;
@@ -333,7 +434,7 @@ function local(pathname: string): string {
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://x');
   const path = local(url.pathname);
-  if (path === 'api/health') { json(res, 200, { ok: true, online: online.size }); return; }
+  if (path === 'api/health') { json(res, 200, { ok: true, online: online.size, ai: !!SPARK_KEY }); return; }
   if (path === 'api/leaderboard') {
     json(res, 200, (q.top.all() as Array<{ name: string; worth: number }>).map((r) => ({ name: r.name, worth: r.worth })));
     return;
@@ -370,15 +471,12 @@ server.on('upgrade', (req, sock) => {
     if (me && online.get(me.id) === me) {
       store(me);
       online.delete(me.id);
-      // a car left mid-drive stays where it stopped
-      const c = cars.get(me.id);
-      if (c?.driving && me.save.car) { c.driving = false; me.save.car.x = c.x; me.save.car.y = c.y; me.save.car.angle = c.angle; store(me); }
     }
   });
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`cit-game server on http://${HOST}:${PORT}${BASE} (db ${DB}${STATIC ? `, serving ${STATIC}/` : ''}${ADMIN_KEY ? ', /admin on' : ', /admin off: set ADMIN_KEY'})`);
+  console.log(`cit-game server on http://${HOST}:${PORT}${BASE} (db ${DB}${STATIC ? `, serving ${STATIC}/` : ''}${ADMIN_KEY ? ', /admin on' : ', /admin off: set ADMIN_KEY'}${SPARK_KEY ? ', ai marking on' : ', ai marking off: set SPARK_API_KEY'})`);
 });
 
 const stop = (): void => { for (const p of online.values()) store(p); db.close(); process.exit(0); };

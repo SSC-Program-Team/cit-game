@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "npm run check && tsc --noEmit && vite build",
-    "check": "node --experimental-strip-types --no-warnings scripts/check-jobs.ts && node --experimental-strip-types --no-warnings scripts/test-rules.ts",
+    "check": "node --experimental-strip-types --no-warnings scripts/check-content.ts && node --experimental-strip-types --no-warnings scripts/test-rules.ts",
     "dev": "vite",
     "import": "node --experimental-strip-types --no-warnings scripts/import-questions.ts",
     "server": "node --experimental-strip-types --experimental-sqlite --no-warnings server/main.ts"

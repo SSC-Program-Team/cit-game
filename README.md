@@ -8,41 +8,41 @@ accept is a real networking task, scored.
 
 ![Sham Shui Po at night](docs/mockups/01-city-night.png)
 
-**Status:** playable slice (v0.5) — a top-down Stanley village you walk around, freelance gigs on
-the market notice board, two employers that send work tasks in real time (and fire you), a computer
-shop, courses at Stanley Plaza, free study at the library, a warning-then-jail law system, and a
-62-question MC bank tagged F1–F6 (junior ICT/CIT, coding and AI up to F3; the five DSE ICT
-compulsory modules from F4), where harder questions pay more. The map is real Stanley at 1 m per tile, built from
-OpenStreetMap (© OpenStreetMap contributors, ODbL) and the Lands Department's 3D Visualisation Map, iB1000 Digital Topographic Map and 3D Pedestrian Network, and the Transport Department's Traffic Aids Drawings (source: Lands Department and Transport Department, HKSAR Government; 3d.map.gov.hk, portal.csdi.gov.hk, open.hkmapservice.gov.hk), with the GMB 40 and 52 green minibuses to ride. The networking console jobs from v0.4 are still there.
+**Status:** v0.11, the one-street game. Back to Tung Tau Wan Road, Stanley, on one screen, on the
+school server: everyone sees each other walking, a wealth leaderboard, news from the past 12 hours,
+and Stanley Prison with its inmates (by class number) on show. Questions are multiple choice and
+written answers; written answers are marked by the school AI.
 
-**Read first:** [Stanley expansion plan](docs/design/stanley-expansion.md) — the decisions behind v0.5.
+**Read first:** [One street](docs/design/one-street.md): the decisions behind v0.11. The village
+(v0.5-v0.10) is in the git history and in [stanley-expansion.md](docs/design/stanley-expansion.md).
 
-![Tung Tau Wan Road, v0.3](docs/mockups/v03-city.png)
-![The job screen, v0.3](docs/mockups/v03-job.png)
+![Tung Tau Wan Road, v0.11](docs/mockups/01-v2-street.png)
 
-**Play:** <https://ai.ssc.edu.hk/cit-game/> · **Design page:** <https://ai.ssc.edu.hk/cit-game/design/>
+**Play:** <https://ai.ssc.edu.hk/cit-game/> · **Teacher page:** <https://ai.ssc.edu.hk/cit-game/admin>
 
 ```bash
-python3 tools/mockup/export_game.py   # 1:1 art from the mockups
-npm install && npm run build          # -> dist/
-rsync -rc --delete dist/ developer@172.100.0.211:/var/www/html/cit-game/
+npm install && npm run build            # checks, typecheck, -> dist/
+SPARK_API_KEY=... ADMIN_KEY=... npm run server
 ```
 
-WASD / arrows or tap to walk (hold Shift or tap the run button to run), **E** to use a place, **I** (or the `i` button) for your status,
-**M** mutes. In a quiz, **A–D** or **1–4** answers and **Enter** moves on. You start at the bus
-terminus with a used laptop and $1,280.
+WASD / arrows or tap to walk, **E** to go in, **L** for the news stand, **U** mutes. In a quiz, **A-D**
+or **1-4** answers and **Enter** moves on; a written answer opens a box to type in. You start with
+$500. Living costs are **$2 every real hour**, even while you are away (never below $0).
 
-| Where | What |
+| Building, left to right | What |
 |---|---|
-| Notice board, Stanley Market | freelance gigs: one-off, paid per right answer, need your own gear |
-| Bayview Café / Tide Restaurant (Murray House) | employment: a work task every 5 real hours; relaxed boss fires at 5 days, strict at 3 |
-| Pixel Fix | laptops, tools, software licences |
-| Phone stall | pirated software and two illegal side jobs |
-| Stanley Plaza | courses with a 5-question exam; Tide Restaurant wants the IT support certificate |
-| Stanley Public Library | free practice by topic, with explanations |
-| Stanley Police Station | your record |
-| Bus shelter | go home, sleep, next day |
-| GMB 40 / 52 stops | ride a green minibus between Stanley Plaza, Ma Hang, the village, SSC and the prison ($3.1) |
+| Stanley Plaza | all work. **Freelance**: a board of one-off gigs (new every 3 real hours), paid per right answer, reputation for finishing. **Companies**: interview (3 MCs, 2 to pass), then a task every 5 real hours; relaxed bosses fire at 5 days, strict at 3 |
+| Stanley Restaurant | closed for now |
+| News stand | the richest in Stanley and the news from the past 12 hours: hires, firings, arrests, exam passes, a new richest player |
+| Stanley Public Library | study notes by topic (until the notes are written: revision cards from the question bank) |
+| St Stephen's College | exams: MCs and one written answer; 70% to pass. Some gigs and companies need them. Reputation on the first pass only |
+| Stanley Prison | how many are inside, shown on the building; inside, each inmate by class number and offence |
+
+People stop you in the street: some have a quick paid job, some are traps (log into someone's
+account, sell copied discs, install cracked software). Every trap shows its warning signs; walking
+away is always safe. A first minor offence is a warning and a fine; anything else is 30 real
+minutes in Stanley Prison. Reputation (never below 0) goes up for freelance work and exams, down
+for being fired or arrested.
 
 ## What v0.3 changed
 
@@ -103,11 +103,14 @@ npm run import -- content/your-bank.csv   # writes src/questions-imported.ts
 npm run check                             # validates every question
 ```
 
+Written questions live in `src/essays.ts` (a question, 2-4 marking points with keywords, a model
+answer); study notes in `src/notes.ts`. The format is at the top of each file.
+
 ## Stack
 
-TypeScript + Vite, one 640×360 canvas, no Phaser and no backend. Content is TypeScript data
-(`src/questions.ts`, `src/economy.ts`, `src/jobs.ts`, `src/world.ts`), checked at build time by
-`npm run check`.
+TypeScript + Vite, one 640×360 canvas, no Phaser; a small Node server (`server/main.ts`, no
+packages) owns the economy. Content is TypeScript data (`src/questions.ts`, `src/essays.ts`,
+`src/notes.ts`, `src/economy.ts`), checked at build time by `npm run check`.
 
 Runs in a browser on **school laptops (keyboard + mouse) and iPads (touch, landscape)**:
 fixed 384 px design width with fluid height (216–272), every touch target ≥24 px

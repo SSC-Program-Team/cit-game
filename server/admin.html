@@ -38,7 +38,7 @@
 <script>
 const TOPICS = ['J1', 'J2', 'J3', 'J4', 'A', 'B', 'C', 'D', 'E'];
 const COLS = [
-  ['name', 'player'], ['worth', 'net worth'], ['earned', 'earned'], ['acc', 'accuracy'], ['mastery', 'mastery by topic'],
+  ['name', 'player'], ['worth', 'wealth'], ['rep', 'reputation'], ['earned', 'earned'], ['acc', 'accuracy'], ['mastery', 'mastery by topic'],
   ['record', 'record'], ['seen', 'last seen'], ['', ''],
 ];
 let key = sessionStorage.getItem('cit-admin') || new URLSearchParams(location.search).get('key') || '';
@@ -64,17 +64,18 @@ function render() {
   $('rows').innerHTML = list.map((p) => {
     const acc = p.answered ? Math.round(100 * p.right / p.answered) : 0;
     const mast = TOPICS.map((t) => { const m = p.mastery[t]; return `<span title="${t}: ${m}" style="background: rgba(42,122,70,${0.08 + m / 120})">${t}</span>`; }).join('');
-    const rec = p.record.length ? p.record.map((r) => `<span class="chip bad">day ${r.day} ${r.jailed ? 'jail' : 'warning'}</span>`).join('') : '<span class="mute">clean</span>';
+    const rec = p.record.length ? p.record.map((r) => `<span class="chip bad" title="${esc(r.id)}">${new Date(r.at).toLocaleDateString('en-GB')} ${r.jailed ? 'prison' : 'warning'}</span>`).join('') : '<span class="mute">clean</span>';
     return `<tr>
       <td><span class="dot" style="background:${p.coat}"></span><b>${esc(p.name)}</b>${p.online ? ' <span class="chip">online</span>' : ''}${p.paused ? ' <span class="chip bad">paused</span>' : ''}${p.jailed ? ' <span class="chip bad">in prison</span>' : ''}
-        <div class="mute">day ${p.day}${p.work ? ' - works at ' + esc(p.work) : ''}${p.certs.length ? ' - ' + p.certs.length + ' cert' : ''}</div></td>
-      <td class="num">${money(p.worth)}<div class="mute">${money(p.money)} cash</div></td>
-      <td class="num">${money(p.earned)}</td>
+        <div class="mute">${esc(p.cls || 'no class')}${p.work ? ' - works at ' + esc(p.work) : ''}${p.certs.length ? ' - ' + p.certs.length + ' exam' + (p.certs.length > 1 ? 's' : '') : ''}</div></td>
+      <td class="num">${money(p.worth)}</td>
+      <td class="num">${p.rep}</td>
+      <td class="num">${money(p.earned)}<div class="mute">${money(p.spent)} living</div></td>
       <td class="num">${acc}%<div class="mute">${p.right}/${p.answered}</div></td>
       <td><div class="topics">${mast}</div></td>
       <td>${rec}</td>
       <td class="mute">${ago(p.seen)}</td>
-      <td><button data-a="rename" data-id="${p.id}">rename</button><button data-a="pause" data-id="${p.id}" data-on="${p.paused ? 0 : 1}">${p.paused ? 'unpause' : 'pause'}</button><button data-a="reset" data-id="${p.id}">reset</button></td>
+      <td><button data-a="rename" data-id="${p.id}">rename</button><button data-a="class" data-id="${p.id}">class</button><button data-a="pause" data-id="${p.id}" data-on="${p.paused ? 0 : 1}">${p.paused ? 'unpause' : 'pause'}</button><button data-a="reset" data-id="${p.id}">reset</button></td>
     </tr>`;
   }).join('');
   const on = players.filter((p) => p.online).length;
@@ -90,8 +91,9 @@ $('rows').addEventListener('click', async (e) => {
   const b = e.target.closest('button'); if (!b) return;
   const p = players.find((x) => x.id === b.dataset.id); if (!p) return;
   if (b.dataset.a === 'rename') { const name = prompt(`new name for ${p.name} (3-12 letters, digits, spaces)`, p.name); if (!name) return; await api('rename', { id: p.id, name }); }
+  if (b.dataset.a === 'class') { const cls = prompt(`class and number for ${p.name} (like 5C01)`, p.cls); if (!cls) return; await api('class', { id: p.id, cls }); }
   if (b.dataset.a === 'pause') await api('pause', { id: p.id, paused: b.dataset.on === '1' });
-  if (b.dataset.a === 'reset') { if (!confirm(`reset ${p.name}? their money, gear and progress go back to the start. this cannot be undone.`)) return; await api('reset', { id: p.id }); }
+  if (b.dataset.a === 'reset') { if (!confirm(`reset ${p.name}? their money, reputation, exams and job go back to the start. this cannot be undone.`)) return; await api('reset', { id: p.id }); }
   load();
 });
 $('keyform').addEventListener('submit', (e) => { e.preventDefault(); key = $('key').value; sessionStorage.setItem('cit-admin', key); $('keyform').hidden = true; load(); });

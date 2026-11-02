@@ -5,11 +5,27 @@ traps that cost time.
 
 - **Repo:** <https://github.com/SSC-Program-Team/cit-game> (private, `main`)
 - **Live:** <https://ai.ssc.edu.hk/cit-game/> — a static build served by school Apache
-- **Status:** v0.6: the school server (below) on top of the v0.5 slice. Top-down Stanley village, MC gigs and work tasks, employers on a
-  real-time clock, shop, courses, library, warning-then-jail. See
-  [stanley-expansion.md](design/stanley-expansion.md) for the decisions. The v0.4 notes below still
-  hold for the console jobs, missions and prison; where they mention `map.png`, the road band or
-  spot anchors, they describe the old side-on street, which v0.5 replaced.
+- **Status:** v0.11, the one-street game: back to Tung Tau Wan Road on one screen, on the school
+  server. Read [one-street.md](design/one-street.md) first. Everything below about the village
+  (v0.5–v0.10: the map, homes, cars, traffic, minibuses, taxis) describes code that was removed in
+  v0.11 and is only in the git history.
+
+## v0.11: one street (2026-11-02)
+
+| Path | What it is |
+|---|---|
+| `src/main.ts` | The street (640x360 over `map.png`), the six buildings' menus, pages of text (news, notes, prison), the quiz (MC and written), the case sheet. Test hooks: `__goto(id)`, `__menu()`, `__pick(i)`, `__quiz()`, `__stranger()` |
+| `src/rules.ts` | Every action on a save: living expenses by the real hour, quizzes (`quiz.start` kinds gig, work, exam, interview, encounter), `quiz.answer`, `quiz.essay`, people in the street, the law |
+| `src/economy.ts` | Exams, companies, gigs and the board, offences, street encounters, reputation |
+| `src/essays.ts`, `src/marking.ts` | Written questions with marking points; the AI prompt, reading its reply, and the keyword fallback |
+| `src/notes.ts` | Library notes (empty until the owner writes them) |
+| `server/main.ts` | As v0.6, plus: AI marking (`SPARK_URL`, `SPARK_API_KEY`), class numbers (`cls` column), the prison list, the news stand (`news?`), a new richest player on the news, offline saves kept up to date hourly |
+| `tools/art/hi_world.py` | Draws `map.png`: plaza, restaurant, news stand, library, college, prison |
+| `scripts/check-content.ts`, `scripts/test-rules.ts` | `npm run check` |
+
+Building without npm (the registry was blocked in the build sandbox): `tsc --noEmit -p .`, then
+`esbuild src/main.ts --bundle --format=esm --outfile=dist/assets/main.js`, copy `public/` into `dist/`
+and point `index.html` at `./assets/main.js`. `npm run build` is the real build.
 
 ## v0.6: the school server (rebuilt 2026-11-01)
 

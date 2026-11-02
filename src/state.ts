@@ -9,8 +9,8 @@ export type { Save };
 
 export const state: Save = fresh();
 
-/** the v0.5 key, so a solo save from before the server carries on */
-const KEY = 'citgame.save.v1';
+/** v4: the one-street game. Older solo saves (the village) are not carried over */
+const KEY = 'citgame.save.v4';
 
 export function loadSolo(): void {
   try {
@@ -37,10 +37,4 @@ export function resetSolo(): void {
 /** take the server's copy */
 export function adopt(s: Partial<Save>): void {
   Object.assign(state, s);
-}
-
-export function clock(): string {
-  const h = Math.floor(state.minutes / 60);
-  const m = state.minutes % 60;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }

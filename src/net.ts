@@ -1,25 +1,24 @@
 /**
- * The browser's side of the school server: one WebSocket to api/ws (docs/design/stanley-expansion.md
- * §10). Every action goes through act(): online it goes to the server, which runs the rules and
+ * The browser's side of the school server: one WebSocket to api/ws (docs/design/one-street.md). Every action goes through act(): online it goes to the server, which runs the rules and
  * sends back what happened and the save; solo (no server, or ?solo in the URL) the same rules run
  * here on a save in localStorage, which is not on the leaderboard.
  */
 import { act as runRule, type Ev, type Result } from './rules.ts';
 import { state, loadSolo, saveSolo, adopt } from './state.ts';
-import type { ToClient, ToServer } from './protocol.ts';
+import type { ToClient, ToServer, NewsItem, Prisoner } from './protocol.ts';
 
 export type Other = { name: string; coat: string; x: number; y: number; tx: number; ty: number; seen: number; frame: number; facing: number };
 
 export const net = {
   mode: 'connecting' as 'connecting' | 'online' | 'solo',
-  me: { id: '', name: '', coat: '#7be0d0' },
+  me: { id: '', name: '', cls: '', coat: '#7be0d0' },
   others: new Map<string, Other>(),
   board: { top: [] as Array<[string, number]>, you: [0, 0] as [number, number] },
   paused: false,
-  /** who owns which home (online: everyone's; solo: just yours) */
-  owners: new Map<string, string>(),
-  /** players' cars near you: owner id -> where and whose */
-  cars: new Map<string, { name: string; coat: string; model: string; x: number; y: number; angle: number; driving: boolean }>(),
+  /** the news stand: the past 12 hours, newest first (solo: what you did) */
+  news: [] as NewsItem[],
+  /** who is in Stanley Prison */
+  prison: [] as Prisoner[],
   /** server clock minus ours */
   offset: 0,
   /** solo test hook: shift the wall clock forward (hours) */
@@ -52,9 +51,10 @@ function token(): string {
 }
 
 // ------------------------------------------------------------------ overlay ---
-/** a plain DOM panel over the canvas, for the few things the pixel UI does not do: typing a name,
- *  and saying the server cannot be reached */
-function panel(title: string, text: string, buttons: Array<[string, () => void]>, input?: { placeholder: string; onEnter: (v: string) => void }): () => void {
+/** a plain DOM panel over the canvas, for the few things the pixel UI does not do: typing a name
+ *  and class, and saying the server cannot be reached */
+type Field = { placeholder: string; max: number };
+function panel(title: string, text: string, buttons: Array<[string, (values: string[]) => void]>, fields: Field[] = []): () => void {
   const el = document.createElement('div');
   el.setAttribute('style', 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(6,8,14,0.82);z-index:10;font:15px/1.5 ui-monospace,Menlo,monospace;color:#e8e8f0');
   const box = document.createElement('div');
@@ -66,29 +66,29 @@ function panel(title: string, text: string, buttons: Array<[string, () => void]>
   p.textContent = text;
   p.setAttribute('style', 'color:#c8ccdc;margin-bottom:14px');
   box.append(h, p);
-  let field: HTMLInputElement | null = null;
-  if (input) {
-    field = document.createElement('input');
-    field.placeholder = input.placeholder;
-    field.maxLength = 12;
+  const inputs = fields.map((f) => {
+    const field = document.createElement('input');
+    field.placeholder = f.placeholder;
+    field.maxLength = f.max;
     field.autocapitalize = 'off';
     field.setAttribute('style', 'width:100%;box-sizing:border-box;font:inherit;padding:8px 10px;background:#0b0d16;color:#fff;border:1px solid #3a4054;margin-bottom:12px');
-    field.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') input.onEnter(field!.value); });
+    field.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter' && buttons[0]) buttons[0][1](inputs.map((i) => i.value)); });
     box.append(field);
-  }
+    return field;
+  });
   const row = document.createElement('div');
   row.setAttribute('style', 'display:flex;gap:10px;flex-wrap:wrap');
   for (const [label, fn] of buttons) {
     const b = document.createElement('button');
     b.textContent = label;
     b.setAttribute('style', 'font:inherit;padding:7px 14px;background:#1c2230;color:#46e0e6;border:1px solid #46e0e6;cursor:pointer');
-    b.addEventListener('click', () => fn());
+    b.addEventListener('click', () => fn(inputs.map((i) => i.value)));
     row.append(b);
   }
   box.append(row);
   el.append(box);
   document.body.append(el);
-  field?.focus();
+  inputs[0]?.focus();
   return () => el.remove();
 }
 
@@ -101,12 +101,13 @@ export function startNet(h: Handlers): Promise<void> {
     let started = false;
     const ready = (): void => { if (!started) { started = true; resolve(); } };
     const offline = (): void => {
-      const close = panel('school server', 'cannot reach the school server. play solo (saved on this device, not on the leaderboard), or try again.', [
+      const close = panel('school server', 'cannot reach the school server. play solo (saved on this device, not on the leaderboard or the news), or try again.', [
         ['try again', () => { close(); connect(); }],
         ['play solo', () => { close(); goSolo(); ready(); }],
       ]);
     };
     let name: string | undefined;
+    let cls: string | undefined;
     const connect = (): void => {
       const url = new URL('api/ws', location.href);
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -114,19 +115,29 @@ export function startNet(h: Handlers): Promise<void> {
       const sock = new WebSocket(url);
       ws = sock;
       const timer = setTimeout(() => { if (!opened) sock.close(); }, 5000);
-      sock.onopen = () => { opened = true; clearTimeout(timer); send({ t: 'hello', token: token(), name }); };
+      sock.onopen = () => { opened = true; clearTimeout(timer); send({ t: 'hello', token: token(), name, cls }); };
       sock.onmessage = (e) => {
         let m: ToClient;
         try { m = JSON.parse(e.data); } catch { return; }
         if (m.t === 'need-name') {
-          const close = panel('who are you?', `${m.why ? m.why + '. ' : ''}pick a name for stanley: 3-12 letters, digits or spaces. everyone on the server sees it.`, [
-            ['start', () => { name = (document.querySelector('input') as HTMLInputElement)?.value ?? ''; close(); send({ t: 'hello', token: token(), name }); }],
-          ], { placeholder: 'your name', onEnter: (v) => { name = v; close(); send({ t: 'hello', token: token(), name }); } });
+          const both = m.ask.includes('name');
+          const fields: Field[] = [
+            ...(both ? [{ placeholder: 'your name', max: 12 }] : []),
+            { placeholder: 'class and number, e.g. 5C01', max: 5 },
+          ];
+          const go = (v: string[]): void => {
+            if (both) { name = v[0]; cls = v[1]; } else cls = v[0];
+            close();
+            send({ t: 'hello', token: token(), name, cls });
+          };
+          const close = panel(both ? 'who are you?' : 'your class',
+            `${m.why ? m.why + '. ' : ''}${both ? 'pick a name for stanley (3-12 letters, digits or spaces): everyone on the server sees it. ' : ''}your class and class number (like 5C01) are only shown if you end up in stanley prison.`,
+            [['start', go]], fields);
           return;
         }
         if (m.t === 'welcome') {
           net.mode = 'online';
-          net.me = { id: m.id, name: m.name, coat: m.coat };
+          net.me = { id: m.id, name: m.name, cls: m.cls, coat: m.coat };
           net.offset = m.now - Date.now();
           adopt(m.save);
           ready();
@@ -151,7 +162,7 @@ export function startNet(h: Handlers): Promise<void> {
 
 function goSolo(): void {
   net.mode = 'solo';
-  net.me = { id: 'solo', name: 'you', coat: '#7be0d0' };
+  net.me = { id: 'solo', name: 'you', cls: '', coat: '#7be0d0' };
   loadSolo();
 }
 
@@ -185,16 +196,13 @@ function receive(m: ToClient): void {
       for (const id of net.others.keys()) if (!seen.has(id)) net.others.delete(id);
       return;
     }
-    case 'wire': on.wire(m.text); return;
+    case 'wire':
+      net.news.unshift([m.at, m.text]);
+      on.wire(m.text);
+      return;
+    case 'news': net.news = m.list; return;
+    case 'prison': net.prison = m.list; return;
     case 'board': net.board = { top: m.top, you: m.you }; return;
-    case 'homes':
-      for (const [id, name] of m.owners) { if (name) net.owners.set(id, name); else net.owners.delete(id); }
-      return;
-    case 'cars': {
-      net.cars.clear();
-      for (const [id, name, coat, model, x, y, angle, driving] of m.list) net.cars.set(id, { name, coat, model, x, y, angle, driving: !!driving });
-      return;
-    }
     case 'paused':
       net.paused = true;
       on.events([{ t: 'say', who: 'your teacher', text: 'your game is paused for now. ask your teacher.' }]);
@@ -231,24 +239,20 @@ export function act(name: string, args: Record<string, unknown> = {}): Promise<R
 
 let lastPos = 0, lastX = -1, lastY = -1, soloSaved = 0;
 /** where you are: to the server a few times a second while you move; solo, into the save */
-export function sendPos(x: number, y: number, drive?: number): void {
-  state.x = x; state.y = y; state.mapv = 2;
+export function sendPos(x: number, y: number): void {
+  state.x = x; state.y = y;
   const t = performance.now();
   if (net.mode === 'solo') {
     if (t - soloSaved > 2000) { soloSaved = t; saveSolo(); }
     return;
   }
-  if (t - lastPos < 200 || (Math.abs(x - lastX) < 1 && Math.abs(y - lastY) < 1 && drive === undefined)) return;
+  if (t - lastPos < 200 || (Math.abs(x - lastX) < 1 && Math.abs(y - lastY) < 1)) return;
   lastPos = t; lastX = x; lastY = y;
-  send({ t: 'pos', x: Math.round(x), y: Math.round(y), drive: drive === undefined ? undefined : Math.round(drive * 100) / 100 });
+  send({ t: 'pos', x: Math.round(x), y: Math.round(y) });
 }
 
-/** solo: the owners map is just your own homes */
-export function soloOwners(): void {
-  if (net.mode !== 'solo') return;
-  net.owners.clear();
-  for (const id of Object.keys(state.homes)) net.owners.set(id, 'you');
-}
+/** ask for the news stand's paper again */
+export function askNews(): void { send({ t: 'news?' }); }
 
 /** ease other players towards where the server last saw them */
 export function updateOthers(dt: number): void {

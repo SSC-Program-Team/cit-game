@@ -1,4 +1,7 @@
-"""v2 world art — Tung Tau Wan Road, Stanley, at 640x360.
+"""World art — Tung Tau Wan Road, Stanley, at 640x360 (the one-street game, v0.11).
+
+North side, left to right: Stanley Plaza, Stanley Restaurant (shut), the news stand, the library,
+St Stephen's College, Stanley Prison.
 
 Four times the pixels of the v1 sheet: 16px tiles, three-tone materials, cast shadows,
 wet road with neon pooling, a real beach, and the shops that actually exist on the road.
@@ -277,7 +280,7 @@ def shopfront(c, x, y, w, h, rng, glow=(255, 214, 150), goods=GOODS, shut=0.28, 
             shop_unit(c, ux + 1, y + 3, unit - 6, h - 8, rng, glow, goods)
         else:
             # roller shutter, sometimes left half up with the light spilling under it
-            drop = h - 8 if rng.random() < 0.5 else (h - 8) // 2
+            drop = h - 8 if (shut >= 1 or rng.random() < 0.5) else (h - 8) // 2
             if drop < h - 8:
                 shop_unit(c, ux + 1, y + 3, unit - 6, h - 8, rng, glow, goods)
             c.rect(ux + 1, y + 3, unit - 6, drop, (70, 70, 80, 255))
@@ -408,74 +411,209 @@ def tenement(c, rng, x, y, w, h, base, roof, sign=None, sign_colour=None,
     return sy
 
 
-# ---------------------------------------------------------------- street ---
+
+# ------------------------------------------------------- the six places ---
+def plaza(c, rng):
+    """Stanley Plaza: the mall, all work goes through it. Glass, timber louvres, a lit sign."""
+    x, y, w, h = 6, 46, 132, 122
+    shade(c, x + w - 4, y + 6, w - 8, h - 6, (86, 92, 106, 255))
+    c.rect(x, y, w, h, (70, 74, 86, 255))
+    tone(c, x, y, w, h, (70, 74, 86, 255), 10)
+    # roof terrace with planters
+    c.rect(x - 2, y - 6, w + 4, 7, (54, 56, 66, 255))
+    c.hline(x - 2, y - 6, w + 4, (110, 114, 128, 255))
+    for px in range(x + 4, x + w - 8, 18):
+        c.rect(px, y - 12, 12, 6, (96, 70, 52, 255))
+        c.rect(px + 1, y - 16, 10, 4, (62, 120, 74, 255))
+    # three floors of glass behind dark steel frames and timber louvres
+    for fl in range(3):
+        fy = y + 6 + fl * 30
+        c.rect(x + 4, fy, w - 8, 24, GLASS2)
+        for gx in range(x + 4, x + w - 8, 12):
+            lit = rng.random() < 0.55
+            c.rect(gx + 1, fy + 1, 10, 22, LIT if lit else GLASS)
+            if lit:
+                c.alpha_rect(gx + 1, fy + 14, 10, 9, (150, 110, 70), 80)   # shoppers' shelves
+            c.vline(gx, fy, 24, (30, 32, 40, 255))
+        for lx in range(x + 6, x + w - 8, 4):                                # louvres
+            c.vline(lx, fy + 1, 7, (176, 124, 76, 255))
+        c.hline(x + 4, fy + 24, w - 8, (40, 42, 52, 255))
+        c.hline(x + 4, fy + 25, w - 8, (120, 124, 138, 255))
+    # the lit sign across the top
+    c.rect(x + 16, y - 2, w - 32, 11, (20, 22, 30, 255))
+    c.frame(x + 16, y - 2, w - 32, 11, NEON_C)
+    c.text_c(x + w // 2, y, "stanley plaza", NEON_C)
+    # entrance: glass doors, canopy, a poster box each side
+    ey = y + h - 26
+    c.rect(x + 38, ey, 56, 26, (34, 36, 46, 255))
+    c.alpha_rect(x + 38, ey, 56, 26, (255, 224, 170), 120)
+    for dx in (x + 40, x + 54, x + 68, x + 80):
+        c.rect(dx, ey + 3, 12, 23, (210, 220, 210, 255))
+        c.alpha_rect(dx, ey + 3, 12, 23, (92, 144, 164), 150)
+    c.rect(x + 30, ey - 6, 72, 5, (210, 206, 198, 255))
+    c.alpha_rect(x + 30, ey - 1, 72, 3, (0, 0, 0), 70)
+    for px in (x + 10, x + 108):
+        c.rect(px, ey + 2, 16, 22, (24, 26, 34, 255))
+        c.rect(px + 2, ey + 4, 12, 18, (226, 196, 120, 255) if px < x + 50 else (120, 196, 210, 255))
+        for ly in range(ey + 7, ey + 20, 4):
+            c.hline(px + 4, ly, 8, (40, 40, 48, 255))
+
+
+def restaurant(c, rng):
+    """Stanley Restaurant: shut for now. Shutters down, the neon off."""
+    tenement(c, rng, 146, 54, 88, 114, (196, 176, 156, 255), (104, 84, 74, 255),
+             awning_cols=((92, 96, 104, 255), (122, 126, 134, 255)), shut=1)
+    sign_cjk(c, 158, 102, "赤柱餐廳", (120, 128, 140, 255), size=16)
+    # a paper notice taped to the middle shutter
+    c.rect(180, 140, 18, 14, (232, 226, 206, 255))
+    c.hline(182, 144, 12, (120, 110, 100, 255))
+    c.hline(182, 147, 14, (120, 110, 100, 255))
+    c.hline(182, 150, 9, (120, 110, 100, 255))
+    sign_plate(c, 160, 84, "closed", (200, 90, 90, 255), h=13)
+
+
+def news_stand(c, rng):
+    """A walk-up with a green newspaper kiosk on the pavement in front of it."""
+    tenement(c, rng, 240, 70, 58, 98, (184, 170, 150, 255), (112, 90, 78, 255), shop_h=34, shut=0.5)
+    kx, ky = 246, 120
+    c.alpha_rect(kx + 3, ky + 40, 46, 4, (0, 0, 0), 80)
+    c.rect(kx, ky, 46, 40, (46, 108, 74, 255))
+    c.rect(kx - 3, ky - 6, 52, 7, (36, 88, 60, 255))
+    c.hline(kx - 3, ky - 6, 52, (88, 160, 112, 255))
+    c.rect(kx + 3, ky + 3, 40, 20, (24, 30, 26, 255))
+    c.alpha_rect(kx + 3, ky + 3, 40, 20, (255, 220, 160), 90)
+    papers = ((236, 236, 230, 255), (226, 196, 92, 255), (214, 92, 108, 255), (120, 168, 210, 255), (236, 236, 230, 255))
+    for i in range(10):                                   # papers and magazines on the rack
+        px = kx + 4 + (i % 5) * 8
+        py = ky + 4 + (i // 5) * 10
+        c.rect(px, py, 6, 8, papers[(i * 3) % len(papers)])
+        c.hline(px + 1, py + 2, 4, (60, 60, 70, 255))
+    c.rect(kx + 2, ky + 26, 42, 12, (36, 88, 60, 255))
+    for i in range(5):                                    # the day's papers stacked on the ledge
+        c.rect(kx + 4 + i * 8, ky + 24, 7, 3, (230, 228, 220, 255))
+    sign_cjk(c, kx + 10, ky - 26, "報攤", NEON_G, size=13)
+    c.rect(kx + 8, ky + 28, 30, 9, (20, 40, 28, 255))
+    c.text_c(kx + 23, ky + 29, "news", NEON_G)
+
+
+def library(c, rng):
+    """Stanley Public Library: pale civic stone, tall windows full of shelves."""
+    x, y, w, h = 306, 62, 106, 106
+    shade(c, x + w - 4, y + 6, w - 8, h - 6, STONE)
+    c.rect(x, y, w, h, STONE)
+    tone(c, x, y, w, h, STONE)
+    c.vline(x, y, h, STONE3)
+    c.alpha_rect(x + w - 4, y, 4, h, (10, 10, 20), 60)
+    c.rect(x - 3, y - 7, w + 6, 8, (128, 120, 108, 255))
+    c.hline(x - 3, y - 7, w + 6, (160, 152, 140, 255))
+    c.alpha_rect(x - 3, y + 1, w + 6, 2, (0, 0, 0), 60)
+    book = ((150, 60, 60, 255), (60, 96, 150, 255), (200, 170, 90, 255), (70, 120, 80, 255), (120, 80, 130, 255))
+    for wx in range(x + 8, x + w - 14, 20):                # tall windows with shelves behind
+        c.rect(wx - 1, y + 10, 14, 52, STONE2)
+        c.rect(wx, y + 11, 12, 50, (40, 34, 30, 255))
+        c.alpha_rect(wx, y + 11, 12, 50, (255, 214, 150), 110)
+        for sy in range(y + 16, y + 58, 8):
+            c.hline(wx, sy + 5, 12, (110, 84, 64, 255))
+            for bx in range(wx + 1, wx + 11, 2):
+                if rng.random() < 0.85:
+                    c.rect(bx, sy + 1, 1, 4, rng.choice(book))
+        c.vline(wx + 6, y + 11, 50, STONE2)
+    c.rect(x + 8, y + 68, w - 16, 12, (34, 32, 36, 255))
+    c.frame(x + 8, y + 68, w - 16, 12, (226, 214, 180, 255))
+    c.text_c(x + w // 2, y + 71, "public library", (226, 214, 180, 255))
+    # steps and doors
+    c.rect(x + 36, y + 84, 34, 22, (44, 40, 40, 255))
+    c.alpha_rect(x + 36, y + 84, 34, 22, (255, 214, 150), 130)
+    c.vline(x + 53, y + 84, 22, (90, 70, 56, 255))
+    c.rect(x + 30, y + 82, 4, 24, STONE3)
+    c.rect(x + 72, y + 82, 4, 24, STONE3)
+    for i in range(3):
+        c.rect(x + 26 - i * 3, y + h - 6 + i * 2, 54 + i * 6, 2, lift(STONE2, -i * 10))
+
+
 def college(c, rng):
-    x0 = 432
-    # brick block behind the wall
-    shade(c, 484, 64, 6, 48, BRICK)
-    c.rect(438, 58, 46, 54, BRICK)
-    for ty in range(58, 112, 5):
-        c.hline(438, ty, 46, BRICK2)
-        for bx in range(438 + (ty // 5 % 2) * 4, 484, 8):
+    """St Stephen's College: brick behind a stone wall, the gate at no. 22, the field."""
+    shade(c, 474, 64, 6, 48, BRICK)
+    c.rect(426, 54, 52, 58, BRICK)
+    for ty in range(54, 112, 5):
+        c.hline(426, ty, 52, BRICK2)
+        for bx in range(426 + (ty // 5 % 2) * 4, 478, 8):
             c.set(bx, ty + 2, BRICK2)
-    c.vline(438, 58, 54, BRICK3)
-    c.alpha_rect(480, 58, 4, 54, (10, 10, 20), 60)
-    for wx in range(443, 478, 12):
-        c.rect(wx, 66, 8, 10, LIT if rng.random() < 0.4 else GLASS2)
-        c.rect(wx, 84, 8, 10, LIT if rng.random() < 0.3 else GLASS2)
-        c.hline(wx, 76, 8, STONE3)
-        c.hline(wx, 94, 8, STONE3)
-    c.rect(432, 50, 58, 10, (86, 58, 54, 255))
-    c.hline(432, 50, 58, (112, 76, 70, 255))
-    # wall with pillars
-    c.rect(x0, 118, 128, 30, STONE)
-    tone(c, x0, 118, 128, 30, STONE)
-    for px in range(x0, x0 + 128, 20):
+    c.vline(426, 54, 58, BRICK3)
+    c.alpha_rect(474, 54, 4, 58, (10, 10, 20), 60)
+    for wx in range(431, 470, 12):
+        c.rect(wx, 62, 8, 10, LIT if rng.random() < 0.4 else GLASS2)
+        c.rect(wx, 80, 8, 10, LIT if rng.random() < 0.6 else GLASS2)
+        c.hline(wx, 72, 8, STONE3)
+        c.hline(wx, 90, 8, STONE3)
+    c.rect(420, 46, 64, 10, (86, 58, 54, 255))
+    c.hline(420, 46, 64, (112, 76, 70, 255))
+    c.rect(486, 70, 40, 42, PLASTER2)                     # the hall
+    c.rect(484, 64, 44, 7, (86, 58, 54, 255))
+    for wx in range(490, 522, 10):
+        c.rect(wx, 76, 6, 14, LIT if rng.random() < 0.5 else GLASS2)
+    x0 = 420
+    c.rect(x0, 118, 120, 30, STONE)
+    tone(c, x0, 118, 120, 30, STONE)
+    for px in range(x0, x0 + 120, 20):
         c.rect(px, 114, 5, 34, STONE2)
         c.hline(px, 114, 5, STONE3)
         c.vline(px + 4, 115, 33, lift(STONE2, -20))
-    streaks(c, x0, 118, 128, 30, random.Random(5))
-    # gate opening
-    c.rect(464, 112, 40, 36, (52, 54, 48, 255))
-    c.rect(462, 108, 6, 40, STONE2)
-    c.rect(500, 108, 6, 40, STONE2)
-    c.rect(470, 104, 28, 10, (232, 230, 218, 255))
-    c.text_c(484, 105, "ssc 22", (58, 62, 50, 255))
-    # sports field
-    c.rect(506, 116, 50, 32, (66, 106, 74, 255))
-    c.dither(506, 116, 50, 32, (58, 96, 66, 255), 2)
-    c.frame(510, 119, 42, 26, (208, 212, 202, 255))
-    tree(c, 508, 96, 9, rng)
-    tree(c, 552, 90, 7, rng)
+    streaks(c, x0, 118, 120, 30, random.Random(5))
+    c.rect(452, 112, 40, 36, (52, 54, 48, 255))
+    c.alpha_rect(452, 112, 40, 36, (255, 220, 160), 40)
+    c.rect(450, 108, 6, 40, STONE2)
+    c.rect(488, 108, 6, 40, STONE2)
+    c.rect(452, 98, 40, 12, (232, 230, 218, 255))
+    c.text_c(472, 100, "ssc 22", (58, 62, 50, 255))
+    c.rect(498, 120, 40, 28, (66, 106, 74, 255))
+    c.dither(498, 120, 40, 28, (58, 96, 66, 255), 2)
+    c.frame(501, 123, 34, 22, (208, 212, 202, 255))
+    tree(c, 500, 100, 8, rng)
 
 
 def prison(c, rng):
-    x0 = 560
-    c.rect(x0, 92, 74, 56, PRISON)
-    tone(c, x0, 92, 74, 56, PRISON)
-    c.hline(x0, 92, 74, PRISON3)
-    # barbed wire
-    c.hline(x0, 88, 74, (76, 76, 82, 255))
-    for i in range(x0, x0 + 74, 5):
+    """Stanley Prison at no. 99: high wall, wire, a tower. The game shows the count above it."""
+    x0 = 548
+    c.rect(x0 + 8, 60, 70, 32, PRISON2)                   # cell block behind the wall
+    for wx in range(x0 + 12, x0 + 74, 7):
+        c.rect(wx, 66, 3, 6, (36, 38, 46, 255))
+        c.rect(wx, 78, 3, 6, (36, 38, 46, 255))
+        if rng.random() < 0.3:
+            c.rect(wx, 66, 3, 6, (190, 170, 120, 255))
+    c.rect(x0, 92, 86, 56, PRISON)
+    tone(c, x0, 92, 86, 56, PRISON)
+    c.hline(x0, 92, 86, PRISON3)
+    c.hline(x0, 88, 86, (76, 76, 82, 255))
+    for i in range(x0, x0 + 86, 5):
         c.set(i, 87, (104, 104, 110, 255))
         c.set(i + 2, 85, (104, 104, 110, 255))
-    for px in range(x0, x0 + 74, 24):
+    for px in range(x0, x0 + 86, 22):
         c.rect(px, 90, 4, 58, PRISON2)
-    # tower
-    c.rect(x0 + 4, 62, 16, 30, PRISON2)
-    c.rect(x0 + 2, 58, 20, 7, (92, 92, 98, 255))
-    c.rect(x0 + 7, 66, 10, 8, (44, 46, 54, 255))
-    c.alpha_rect(x0 + 7, 66, 10, 8, (255, 220, 150), 40)
-    # mosque dome at 53
-    c.rect(612, 74, 16, 18, (232, 232, 226, 255))
-    for i, wdt in enumerate((10, 12, 14, 14, 12, 10, 8)):
-        c.rect(612 + (16 - wdt) // 2, 74 - i, wdt, 1, (244, 244, 238, 255))
-    c.rect(630, 58, 4, 34, (236, 236, 230, 255))
-    c.rect(629, 55, 6, 4, (112, 154, 124, 255))
-    # vehicle gate at 99
-    c.rect(596, 118, 26, 30, (58, 58, 64, 255))
-    c.text_c(609, 126, "99", (206, 206, 200, 255))
+    c.rect(x0 + 66, 50, 16, 42, PRISON2)                  # tower
+    c.rect(x0 + 64, 46, 20, 7, (92, 92, 98, 255))
+    c.rect(x0 + 69, 56, 10, 8, (44, 46, 54, 255))
+    c.alpha_rect(x0 + 69, 56, 10, 8, (255, 220, 150), 50)
+    c.rect(x0 + 24, 116, 34, 32, (58, 58, 64, 255))      # the gate
+    for gx in range(x0 + 26, x0 + 58, 4):
+        c.vline(gx, 118, 30, (44, 44, 50, 255))
+    c.rect(x0 + 22, 104, 38, 11, (32, 34, 40, 255))
+    c.frame(x0 + 22, 104, 38, 11, (200, 200, 196, 255))
+    c.text_c(x0 + 41, 106, "99", (206, 206, 200, 255))
 
+
+def waterfront(c, rng):
+    murray_house(c, rng, 10, SW_Y, 110, 46)
+    # the promenade garden: benches and planters
+    for bx in (140, 186):
+        c.rect(bx, SW_Y + 26, 30, 4, (140, 100, 70, 255))
+        c.rect(bx, SW_Y + 18, 30, 3, (120, 86, 60, 255))
+        c.vline(bx + 2, SW_Y + 30, 6, (60, 60, 66, 255))
+        c.vline(bx + 27, SW_Y + 30, 6, (60, 60, 66, 255))
+    for px in (130, 176, 222):
+        c.rect(px, SW_Y + 20, 8, 16, (120, 116, 110, 255))
+        tree(c, px + 4, SW_Y + 12, 7, rng)
+    bus_terminus(c, rng)
 
 def fort(c):
     c.rect(628, 92, 12, 66, (86, 88, 96, 255))
@@ -517,21 +655,6 @@ def bus_terminus(c, rng):
         c.alpha_rect(x + 6 + i * 18, y + 6, 14, 20, (255, 214, 150), 70)
     c.rect(x + 4, y + 28, 52, 3, (150, 150, 160, 255))
     c.text(x + 22, y - 9, "6  40  n40", (196, 200, 212, 255))
-
-
-def waterfront(c, rng):
-    murray_house(c, rng, 10, SW_Y, 110, 46)
-    # plaza: modern glass box
-    c.rect(130, SW_Y - 4, 112, 50, (86, 92, 106, 255))
-    tone(c, 130, SW_Y - 4, 112, 50, (86, 92, 106, 255))
-    for i in range(5):
-        c.rect(136 + i * 22, SW_Y + 4, 16, 34, GLASS)
-        c.alpha_rect(136 + i * 22, SW_Y + 4, 16, 34, (255, 230, 180), 40)
-        for k in range(4):
-            c.hline(136 + i * 22, SW_Y + 8 + k * 8, 16, GLASS2)
-    c.rect(126, SW_Y - 12, 120, 10, (64, 70, 84, 255))
-    c.text(140, SW_Y - 10, "stanley plaza", (150, 210, 220, 255))
-    bus_terminus(c, rng)
 
 
 def beach(c, rng):
@@ -648,37 +771,18 @@ def render(with_people=True) -> Canvas:
     sea(c, rng)
     waterfront(c, rng)
 
-    # ---- north: the village shops
-    tenement(c, rng, 8, 60, 88, 108, PLASTER, (120, 92, 78, 255),
-             awning_cols=((150, 62, 70, 255), (196, 96, 100, 255)), box=NEON_A)
-    sign_cjk(c, 22, 106, "茶餐廳", NEON_P, size=16)
-    tenement(c, rng, 104, 52, 96, 116, (196, 176, 156, 255), (104, 84, 74, 255),
-             awning_cols=((62, 130, 140, 255), (104, 186, 196, 255)), box=NEON_P)
-    sign_cjk(c, 118, 100, "赤柱餐廳", NEON_C, size=16)
-    tenement(c, rng, 208, 66, 60, 102, (188, 170, 154, 255), (110, 88, 78, 255),
-             awning_cols=((52, 120, 76, 255), (226, 226, 214, 255)),
-             sign="store", sign_colour=NEON_G, glow=(220, 240, 255))
-    tenement(c, rng, 276, 58, 96, 110, (176, 164, 148, 255), (98, 80, 70, 255),
-             awning_cols=((176, 66, 62, 255), (222, 214, 190, 255)), box=NEON_C)
-    sign_cjk(c, 288, 104, "赤柱市場", GOLD, size=15)
-    tenement(c, rng, 378, 88, 52, 80, (214, 196, 168, 255), (126, 96, 74, 255),
-             awning_cols=((196, 132, 66, 255), (240, 222, 180, 255)),
-             sign="bakery", sign_colour=NEON_A, goods=BREAD, shut=0, unit=22)
-    # market stalls on the pavement
-    for i, col in enumerate(((176, 66, 62, 255), (62, 130, 140, 255), (196, 160, 74, 255))):
-        sx = 286 + i * 28
-        c.rect(sx, NPAV_Y - 14, 24, 12, col)
-        c.hline(sx, NPAV_Y - 14, 24, tuple(min(255, ch + 30) for ch in col[:3]) + (255,))
-        c.vline(sx + 4, NPAV_Y - 2, 4, (86, 74, 60, 255))
-        c.vline(sx + 19, NPAV_Y - 2, 4, (86, 74, 60, 255))
-
+    # ---- north, left to right: plaza, restaurant, news stand, library, college, prison
+    plaza(c, rng)
+    restaurant(c, rng)
+    news_stand(c, rng)
+    library(c, rng)
     college(c, rng)
     prison(c, rng)
-    fort(c)
+
 
     # trees and lamps along the north pavement
-    for tx in (100, 200, 268, 436, 550):
-        tree(c, tx, NPAV_Y - 18, 8, rng)
+    for tx in (142, 300, 416, 542):
+        tree(c, tx, NPAV_Y - 18, 7, rng)
     for lx in (140, 246, 348, 452, 556):
         c.alpha_rect(lx - 16, NPAV_Y + 2, 34, 22, (255, 210, 150), 18)
         c.rect(lx, NPAV_Y + 6, 2, 14, (150, 148, 156, 255))
@@ -696,7 +800,7 @@ def render(with_people=True) -> Canvas:
         person(c, 330, NPAV_Y + 12, 3, shirt=(158, 138, 96, 255))
         person(c, 430, SPAV_Y + 4, 2, shirt=(132, 96, 148, 255))
 
-    wet(c, rng, [(52, NEON_P, 8), (140, NEON_C, 10), (300, GOLD, 7), (404, NEON_A, 6), (620, (200, 70, 70), 6)])
+    wet(c, rng, [(72, NEON_C, 10), (268, NEON_G, 6), (358, GOLD, 7), (590, (200, 70, 70), 6)])
 
     # rain
     for _ in range(220):

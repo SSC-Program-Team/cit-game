@@ -51,6 +51,9 @@ After=network.target
 WorkingDirectory=%h/cit-game
 Environment=PORT=8787 HOST=127.0.0.1 STATIC= DB=%h/cit-game-data/cit-game.sqlite
 Environment=ADMIN_KEY=change-me-to-something-long
+# the school AI marks written answers; without the key they are marked by keywords
+Environment=SPARK_URL=https://ai.ssc.edu.hk/spark/v1
+Environment=SPARK_API_KEY=put-the-key-here
 ExecStart=/usr/bin/node --experimental-strip-types --experimental-sqlite --no-warnings server/main.ts
 Restart=on-failure
 
@@ -61,7 +64,7 @@ WantedBy=default.target
 ```bash
 systemctl --user daemon-reload && systemctl --user enable --now cit-game
 loginctl enable-linger developer            # keep it running when nobody is logged in (needs sudo once)
-curl -s localhost:8787/cit-game/api/health  # {"ok":true,"online":0}
+curl -s localhost:8787/cit-game/api/health  # {"ok":true,"online":0,"ai":true}
 ```
 
 `STATIC=` (empty) because Apache keeps serving the built game; the server only answers `api/`
@@ -76,8 +79,14 @@ ProxyPass        /cit-game/admin   http://127.0.0.1:8787/cit-game/admin
 ProxyPreserveHost On
 ```
 
-- Teacher page: <https://ai.ssc.edu.hk/cit-game/admin> (asks for `ADMIN_KEY`): every player's net
-  worth, earnings, accuracy, mastery by topic, record and last visit; rename, pause or reset.
+- Teacher page: <https://ai.ssc.edu.hk/cit-game/admin> (asks for `ADMIN_KEY`): every player's
+  wealth, reputation, class number, earnings, accuracy, mastery by topic, record and last visit;
+  rename, change class number, pause or reset.
+- Keep `SPARK_API_KEY` in the service file (or an `EnvironmentFile=` readable only by `developer`),
+  never in the repo. The key is only ever used by the server: the browser never sees it. If the AI
+  cannot be reached, a written answer is marked by its keyword list and the player is told so.
+- v0.11 (the one street) starts everyone's progress again: money, exams and jobs from the village
+  are not carried over. Names stay; each player is asked once for their class and number.
 - The database is one SQLite file (`DB`). Back it up by copying it while the service is stopped,
   or with `sqlite3 cit-game.sqlite ".backup copy.sqlite"` while it runs.
 - Try it on one machine first: `npm run build && ADMIN_KEY=test npm run server`, then open
